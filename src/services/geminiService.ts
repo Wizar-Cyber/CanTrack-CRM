@@ -9,17 +9,21 @@ export async function getCompanyIntelligence(companyName: string, location?: str
       model: "gemini-2.5-flash",
       contents: `Provide detailed intelligence for the company "${companyName}"${location ? ` located in ${location}` : ""}. 
       Include: industry, approximate size, official website, a brief description, and any known contact information for recruitment.
-      Focus on their presence in Canada.`,
+      Focus on their presence in Canada.
+      
+      IMPORTANT: Return ONLY a valid JSON object with the keys: "industry", "size", "website", "description". Do not include markdown formatting like \`\`\`json.`,
       config: {
         tools: [{ googleMaps: {} }],
-        responseMimeType: "application/json",
       },
     });
 
     // Note: In a real app, we'd parse the JSON response. 
     // For this demo, we'll simulate the extraction if the model doesn't return perfect JSON.
     try {
-      return JSON.parse(response.text || "{}");
+      const text = response.text || "{}";
+      // Clean up potential markdown blocks if the model still includes them
+      const cleanedText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+      return JSON.parse(cleanedText);
     } catch {
       // Fallback if JSON parsing fails
       return {

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { X, Globe, MapPin, Building, ExternalLink, Mail, Phone, Users, Briefcase, Sparkles, Loader2 } from 'lucide-react';
+import { X, Globe, MapPin, Building, ExternalLink, Mail, Phone, Users, Briefcase, Sparkles, Loader2, AlertTriangle, ShieldAlert, Code } from 'lucide-react';
 import { Company, Job } from '../../types';
 import { getCompanyIntelligence } from '../../services/geminiService';
 
@@ -18,14 +18,19 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
   useEffect(() => {
     async function loadIntelligence() {
       setLoading(true);
-      const data = await getCompanyIntelligence(company.name, company.location || '');
-      setIntelligence(data);
-      setLoading(false);
+      // In a real app, this would fetch from the PostgreSQL DB where the pipeline saved it
+      // For now, we simulate a small delay to show the skeleton loader
+      setTimeout(() => {
+        setIntelligence(company); // The mock data already has the enriched fields
+        setLoading(false);
+      }, 800);
     }
     loadIntelligence();
-  }, [company.name, company.location]);
+  }, [company]);
 
   const companyJobs = jobs.filter(j => j.companyId === company.id || j.companyName === company.name);
+
+  const displayCompany = { ...company, ...intelligence };
 
   return (
     <motion.div
@@ -41,8 +46,8 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
             <Building className="text-blue-600 w-6 h-6" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-slate-900">{company.name}</h2>
-            <p className="text-sm text-slate-500">{company.industry || intelligence?.industry || 'Company'}</p>
+            <h2 className="text-lg font-bold text-slate-900">{displayCompany.name}</h2>
+            <p className="text-sm text-slate-500">{displayCompany.legalName || 'Legal Name Pending'}</p>
           </div>
         </div>
         <button 
@@ -54,23 +59,40 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
       </div>
 
       <div className="p-8 space-y-8">
+        {displayCompany.needsManualReview && (
+          <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl flex items-start gap-3">
+            <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <h4 className="text-sm font-bold text-amber-900">Manual Review Required</h4>
+              <p className="text-xs text-amber-700 mt-1">
+                The enrichment pipeline flagged this company with a low confidence score ({displayCompany.confidenceScore}%). Please verify the details below.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Quick Info */}
         <div className="flex flex-wrap gap-3 items-center">
-          {company.location && (
+          {(displayCompany.hqCity || displayCompany.location) && (
             <div className="flex items-center gap-1 px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-medium">
               <MapPin className="w-3 h-3" />
-              {company.location}
+              {displayCompany.hqCity ? `${displayCompany.hqCity}, ${displayCompany.hqProvince}` : displayCompany.location}
             </div>
           )}
-          {company.size && (
+          {displayCompany.size && (
             <div className="flex items-center gap-1 px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-medium">
               <Users className="w-3 h-3" />
-              {company.size}
+              {displayCompany.size}
             </div>
           )}
-          {(company.website || intelligence?.website) && (
+          {displayCompany.isPubliclyTraded && (
+            <div className="flex items-center gap-1 px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full text-xs font-bold">
+              {displayCompany.stockTicker}
+            </div>
+          )}
+          {displayCompany.website && (
             <a 
-              href={company.website || intelligence?.website} 
+              href={displayCompany.website} 
               target="_blank" 
               rel="noreferrer"
               className="flex items-center gap-1 px-3 py-1 bg-blue-600 text-white rounded-full text-xs font-medium hover:bg-blue-700 transition-colors"
@@ -86,7 +108,7 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
               <Sparkles className="w-4 h-4 text-blue-500" />
-              Company Intelligence
+              Enriched Data
             </h3>
             {loading && <Loader2 className="w-4 h-4 animate-spin text-slate-400" />}
           </div>
@@ -102,39 +124,50 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
               <>
                 <div className="grid grid-cols-2 gap-x-4 gap-y-6">
                   <div className="space-y-1">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Industry</p>
-                    <p className="text-sm font-medium text-slate-900">{company.industry || intelligence?.industry || 'N/A'}</p>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase">Sector / Industry</p>
+                    <p className="text-sm font-medium text-slate-900">
+                      {displayCompany.sector} • {displayCompany.industry}
+                    </p>
                   </div>
                   <div className="space-y-1">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Size</p>
-                    <p className="text-sm font-medium text-slate-900">{company.size || intelligence?.size || 'N/A'}</p>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase">Canadian HQ</p>
+                    <p className="text-sm font-medium text-slate-900">
+                      {displayCompany.canadianHQ ? 'Yes' : 'No'}
+                    </p>
                   </div>
                   <div className="space-y-1">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Contact Email</p>
-                    {company.contact_email || intelligence?.contact_email ? (
-                      <a href={`mailto:${company.contact_email || intelligence?.contact_email}`} className="text-sm font-medium text-blue-600 hover:underline flex items-center gap-1">
-                        <Mail className="w-3 h-3" /> {company.contact_email || intelligence?.contact_email}
-                      </a>
-                    ) : (
-                      <p className="text-sm font-medium text-slate-900">N/A</p>
-                    )}
+                    <p className="text-[10px] font-bold text-slate-400 uppercase">Known ATS Portal</p>
+                    <p className="text-sm font-medium text-slate-900 capitalize">
+                      {displayCompany.knownATSPortal || 'Unknown'}
+                    </p>
                   </div>
                   <div className="space-y-1">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Phone</p>
-                    {company.phone || intelligence?.phone ? (
-                      <p className="text-sm font-medium text-slate-900 flex items-center gap-1">
-                        <Phone className="w-3 h-3" /> {company.phone || intelligence?.phone}
-                      </p>
-                    ) : (
-                      <p className="text-sm font-medium text-slate-900">N/A</p>
-                    )}
+                    <p className="text-[10px] font-bold text-slate-400 uppercase">Confidence Score</p>
+                    <p className={`text-sm font-bold ${displayCompany.confidenceScore && displayCompany.confidenceScore >= 80 ? 'text-emerald-600' : 'text-amber-600'}`}>
+                      {displayCompany.confidenceScore}%
+                    </p>
                   </div>
                 </div>
                 
-                <div className="space-y-2">
+                {displayCompany.techStack && displayCompany.techStack.length > 0 && (
+                  <div className="space-y-2 pt-4 border-t border-slate-200">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1">
+                      <Code className="w-3 h-3" /> Tech Stack
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {displayCompany.techStack.map(tech => (
+                        <span key={tech} className="px-2 py-1 bg-white border border-slate-200 text-slate-600 text-xs rounded-md font-medium">
+                          {tech}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-2 pt-4 border-t border-slate-200">
                   <p className="text-[10px] font-bold text-slate-400 uppercase">About</p>
                   <p className="text-sm text-slate-600 leading-relaxed">
-                    {company.description || intelligence?.description || 'No description available.'}
+                    {displayCompany.description || 'No description available.'}
                   </p>
                 </div>
               </>

@@ -3,14 +3,27 @@ export type JobStatus = 'Saved' | 'Applied' | 'Interview' | 'Offer' | 'Rejected'
 
 export interface Company {
   id: string;
-  name: string;
-  location?: string;
-  size?: string;
+  name: string; // normalized name
+  slug: string;
+  legalName?: string;
   industry?: string;
+  sector?: string;
+  size?: string;
+  canadianHQ?: boolean;
+  hqCity?: string;
+  hqProvince?: string;
+  exactAddress?: string;
   website?: string;
-  contact_email?: string;
-  phone?: string;
   description?: string;
+  isPubliclyTraded?: boolean;
+  stockTicker?: string;
+  knownATSPortal?: string;
+  techStack?: string[];
+  confidenceScore?: number;
+  needsManualReview?: boolean;
+  enrichedAt?: string;
+  location?: string; // Legacy fallback
+  enrichmentStatus?: 'pending' | 'db_matched' | 'scraped';
 }
 
 export interface Candidate {
@@ -55,6 +68,8 @@ export interface Job {
   status?: JobStatus;
   appliedDate?: string;
   notes?: string;
+  isEasyApply?: boolean;
+  country?: string;
 }
 
 export interface DashboardStats {
@@ -62,4 +77,19 @@ export interface DashboardStats {
   activeCandidates: number;
   totalApplications: number;
   placements: number;
+}
+
+export interface ImportStats {
+  total: number;
+  jobsNew: number;
+  jobsDuplicate: number;
+  companiesExact: number;
+  companiesFuzzy: number;
+  companiesNew: number;
+  companiesSkipped: number;
+  apiCallsGemini: number;
+  apiCallsPlaces: number;
+  estimatedCostUSD: number;
+  errors: Array<{ company: string; error: string }>;
+  duration: number;
 }
