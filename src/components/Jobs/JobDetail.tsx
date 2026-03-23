@@ -209,14 +209,14 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
     >
       <div className="sticky top-0 bg-white border-b border-slate-100 p-6 flex items-center justify-between z-20">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-emerald-50 rounded-lg flex items-center justify-center">
-            <Building className="text-emerald-600 w-6 h-6" />
+          <div className="w-10 h-10 bg-lime-50 rounded-lg flex items-center justify-center">
+            <Building className="text-lime-600 w-6 h-6" />
           </div>
           <div>
             <h2 className="text-lg font-bold text-slate-900">{job.title}</h2>
             <button 
               onClick={() => onSelectCompany?.(job.companyName)}
-              className="text-sm text-slate-500 hover:text-emerald-600 transition-colors"
+              className="text-sm text-slate-500 hover:text-lime-600 transition-colors"
             >
               {job.companyName}
             </button>
@@ -236,7 +236,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
           <div className="relative group">
             <div className="flex items-center gap-1 cursor-pointer">
               <StatusBadge status={currentStatus as any} />
-              <div className="w-4 h-4 text-slate-400 group-hover:text-emerald-500 transition-colors">
+              <div className="w-4 h-4 text-slate-400 group-hover:text-lime-500 transition-colors">
                 <svg viewBox="0 0 20 20" fill="currentColor">
                   <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
                 </svg>
@@ -250,7 +250,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
                   onClick={() => handleUpdateStatus(s)}
                   disabled={updatingStatus}
                   className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                    currentStatus === s ? 'bg-emerald-50 text-emerald-700' : 'hover:bg-slate-50 text-slate-600'
+                    currentStatus === s ? 'bg-lime-50 text-lime-700' : 'hover:bg-slate-50 text-slate-600'
                   }`}
                 >
                   {s}
@@ -266,7 +266,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
             href={job.url} 
             target="_blank" 
             rel="noreferrer"
-            className="flex items-center gap-1 px-3 py-1 bg-emerald-600 text-white rounded-full text-xs font-medium hover:bg-emerald-700 transition-colors"
+            className="flex items-center gap-1 px-3 py-1 bg-lime-600 text-white rounded-full text-xs font-medium hover:bg-lime-700 transition-colors"
           >
             Apply Now
             <ExternalLink className="w-3 h-3" />
@@ -277,7 +277,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
         <section className="space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-emerald-500" />
+              <Sparkles className="w-4 h-4 text-lime-500" />
               Company Intelligence
             </h3>
             {loading && <Loader2 className="w-4 h-4 animate-spin text-slate-400" />}
@@ -304,7 +304,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
                   <div className="space-y-1">
                     <p className="text-[10px] font-bold text-slate-400 uppercase">Website</p>
                     {intelligence?.website ? (
-                      <a href={intelligence.website} target="_blank" rel="noreferrer" className="text-sm font-medium text-emerald-600 hover:underline flex items-center gap-1">
+                      <a href={intelligence.website} target="_blank" rel="noreferrer" className="text-sm font-medium text-lime-600 hover:underline flex items-center gap-1">
                         Visit Site <Globe className="w-3 h-3" />
                       </a>
                     ) : (
@@ -318,7 +318,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
                   <div className="space-y-1">
                     <p className="text-[10px] font-bold text-slate-400 uppercase">Contact Email</p>
                     {intelligence?.contact_email ? (
-                      <a href={`mailto:${intelligence.contact_email}`} className="text-sm font-medium text-emerald-600 hover:underline">
+                      <a href={`mailto:${intelligence.contact_email}`} className="text-sm font-medium text-lime-600 hover:underline">
                         {intelligence.contact_email}
                       </a>
                     ) : (
@@ -345,7 +345,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
         {/* Extension Sync Section */}
         <section className="space-y-4">
           <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
-            <ExternalLink className="w-4 h-4 text-emerald-500" />
+            <ExternalLink className="w-4 h-4 text-lime-500" />
             Extension Sync (Auto-Fill)
           </h3>
           
@@ -355,7 +355,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
               <select 
                 value={selectedCandidateId}
                 onChange={(e) => setSelectedCandidateId(e.target.value)}
-                className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500/20 outline-none"
+                className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-lime-500/20 outline-none"
               >
                 <option value="">-- Choose an employee --</option>
                 {MOCK_CANDIDATES.map(c => (
@@ -383,9 +383,9 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
             </button>
 
             {syncResult && (
-              <div className="p-3 bg-emerald-50 border border-emerald-100 rounded-lg">
-                <p className="text-[10px] text-emerald-700 font-bold uppercase mb-1">Status: Ready</p>
-                <p className="text-xs text-emerald-600">Data mapped for {job.source}. Open the job portal to auto-fill.</p>
+              <div className="p-3 bg-lime-50 border border-lime-100 rounded-lg">
+                <p className="text-[10px] text-lime-700 font-bold uppercase mb-1">Status: Ready</p>
+                <p className="text-xs text-lime-600">Data mapped for {job.source}. Open the job portal to auto-fill.</p>
               </div>
             )}
           </div>
@@ -394,19 +394,19 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
         {/* Fit Analysis */}
         <section className="space-y-4">
           <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
-            <MessageSquare className="w-4 h-4 text-emerald-500" />
+            <MessageSquare className="w-4 h-4 text-lime-500" />
             AI Fit Analysis
           </h3>
           
           {fitAnalysis ? (
-            <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-6 text-emerald-900 text-sm leading-relaxed whitespace-pre-wrap">
+            <div className="bg-lime-50 border border-lime-100 rounded-xl p-6 text-lime-900 text-sm leading-relaxed whitespace-pre-wrap">
               {fitAnalysis}
             </div>
           ) : (
             <button 
               onClick={handleAnalyzeFit}
               disabled={analyzing}
-              className="w-full py-3 border-2 border-dashed border-slate-200 rounded-xl text-slate-500 text-sm font-medium hover:border-emerald-500 hover:text-emerald-600 transition-all flex items-center justify-center gap-2"
+              className="w-full py-3 border-2 border-dashed border-slate-200 rounded-xl text-slate-500 text-sm font-medium hover:border-lime-500 hover:text-lime-600 transition-all flex items-center justify-center gap-2"
             >
               {analyzing ? (
                 <>
@@ -427,7 +427,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
         <section className="space-y-4">
           <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">My Notes</h3>
           <textarea 
-            className="w-full h-32 p-4 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+            className="w-full h-32 p-4 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-lime-500/20 focus:border-lime-500 transition-all"
             placeholder="Add your thoughts about this application..."
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
@@ -478,26 +478,26 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
               {verification && (
                 <div className="grid grid-cols-3 gap-2">
                   <div className={`p-3 rounded-xl border flex flex-col items-center gap-1 text-center ${
-                    verification.layer1_submit === 'success' ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 
+                    verification.layer1_submit === 'success' ? 'bg-lime-50 border-lime-100 text-lime-700' : 
                     verification.layer1_submit === 'failed' ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-slate-50 border-slate-100 text-slate-400'
                   }`}>
-                    <CheckCircle className={`w-4 h-4 ${verification.layer1_submit === 'success' ? 'text-emerald-500' : 'text-slate-300'}`} />
+                    <CheckCircle className={`w-4 h-4 ${verification.layer1_submit === 'success' ? 'text-lime-500' : 'text-slate-300'}`} />
                     <span className="text-[10px] font-bold uppercase">Layer 1</span>
                     <span className="text-[9px]">Submit Confirmed</span>
                   </div>
                   <div className={`p-3 rounded-xl border flex flex-col items-center gap-1 text-center ${
-                    verification.layer2_email === 'success' ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 
+                    verification.layer2_email === 'success' ? 'bg-lime-50 border-lime-100 text-lime-700' : 
                     verification.layer2_email === 'failed' ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-slate-50 border-slate-100 text-slate-400'
                   }`}>
-                    <MessageSquare className={`w-4 h-4 ${verification.layer2_email === 'success' ? 'text-emerald-500' : 'text-slate-300'}`} />
+                    <MessageSquare className={`w-4 h-4 ${verification.layer2_email === 'success' ? 'text-lime-500' : 'text-slate-300'}`} />
                     <span className="text-[10px] font-bold uppercase">Layer 2</span>
                     <span className="text-[9px]">Email Verified</span>
                   </div>
                   <div className={`p-3 rounded-xl border flex flex-col items-center gap-1 text-center ${
-                    verification.layer3_portal === 'success' ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 
+                    verification.layer3_portal === 'success' ? 'bg-lime-50 border-lime-100 text-lime-700' : 
                     verification.layer3_portal === 'failed' ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-slate-50 border-slate-100 text-slate-400'
                   }`}>
-                    <Globe className={`w-4 h-4 ${verification.layer3_portal === 'success' ? 'text-emerald-500' : 'text-slate-300'}`} />
+                    <Globe className={`w-4 h-4 ${verification.layer3_portal === 'success' ? 'text-lime-500' : 'text-slate-300'}`} />
                     <span className="text-[10px] font-bold uppercase">Layer 3</span>
                     <span className="text-[9px]">Portal Status</span>
                   </div>
@@ -508,7 +508,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
               {applicationId && (
                 <div className="flex items-center justify-between p-3 bg-slate-900 rounded-xl border border-slate-800">
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Application ID</span>
-                  <span className="font-mono text-xs text-emerald-400">{applicationId}</span>
+                  <span className="font-mono text-xs text-lime-400">{applicationId}</span>
                 </div>
               )}
 
@@ -519,7 +519,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
                 <div className="flex gap-1">
                   <div className="w-2 h-2 rounded-full bg-rose-500"></div>
                   <div className="w-2 h-2 rounded-full bg-amber-500"></div>
-                  <div className="w-2 h-2 rounded-full bg-emerald-500"></div>
+                  <div className="w-2 h-2 rounded-full bg-lime-500"></div>
                 </div>
               </div>
               <div className="p-4 max-h-60 overflow-y-auto font-mono text-[11px] space-y-2 custom-scrollbar">
@@ -538,7 +538,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
                   >
                     <span className="text-slate-600 shrink-0">[{new Date(log.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]</span>
                     <span className={`${
-                      log.level === 'success' ? 'text-emerald-400' : 
+                      log.level === 'success' ? 'text-lime-400' : 
                       log.level === 'error' ? 'text-rose-400' : 
                       log.level === 'warning' ? 'text-amber-400' : 'text-slate-300'
                     }`}>
@@ -584,7 +584,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
                 className={`mt-4 p-4 rounded-xl text-sm font-medium flex items-center gap-3 ${
-                  submitFeedback.success ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-rose-50 text-rose-700 border border-rose-100'
+                  submitFeedback.success ? 'bg-lime-50 text-lime-700 border border-lime-100' : 'bg-rose-50 text-rose-700 border border-rose-100'
                 }`}
               >
                 {submitFeedback.success ? <CheckCircle className="w-5 h-5" /> : <X className="w-5 h-5" />}

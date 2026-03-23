@@ -3,9 +3,26 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import { AutomationService, AutomationLogEntry, VerificationStatus } from "./server/services/automation.service.js";
+import pkg from 'pg';
+const { Pool } = pkg;
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Initialize PostgreSQL Pool
+// It will only connect if DATABASE_URL is provided in the environment
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
+if (process.env.DATABASE_URL) {
+  console.log("✅ DATABASE_URL is configured.");
+} else {
+  console.log("⚠️ DATABASE_URL is NOT configured. API will return empty arrays.");
+}
 
 interface ApplicationData {
   jobId: string;
@@ -31,6 +48,101 @@ async function startServer() {
   ];
 
   // API routes
+  app.get("/api/companies", async (req, res) => {
+    try {
+      if (!process.env.DATABASE_URL) {
+        return res.json([]); // Return empty if no DB connected yet
+      }
+      const result = await pool.query('SELECT * FROM companies ORDER BY created_at DESC');
+      res.json(result.rows);
+    } catch (error) {
+      console.error("[DB Error] Fetching companies:", error);
+      res.status(500).json({ error: "Failed to fetch companies" });
+    }
+  });
+
+  app.get("/api/jobs", async (req, res) => {
+    try {
+      if (!process.env.DATABASE_URL) {
+        return res.json([]);
+      }
+      const result = await pool.query(`
+        SELECT j.*, c.name as company_name 
+        FROM jobs j 
+        JOIN companies c ON j.company_id = c.id 
+        ORDER BY j.created_at DESC
+      `);
+      res.json(result.rows);
+    } catch (error) {
+      console.error("[DB Error] Fetching jobs:", error);
+      res.status(500).json({ error: "Failed to fetch jobs" });
+    }
+  });
+
+  app.post("/api/webhook/scraper", async (req, res) => {
+    const { fuente, titulo, empresa, url_postulacion } = req.body;
+    
+    if (!empresa || !titulo || !url_postulacion) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+
+    try {
+      if (!process.env.DATABASE_URL) {
+        return res.status(503).json({ error: "Database not configured yet" });
+      }
+
+      // 1. Upsert Company
+      const slug = empresa.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+      const companyResult = await pool.query(`
+        INSERT INTO companies (name, slug, enrichment_status) 
+        VALUES ($1, $2, 'pending')
+        ON CONFLICT (slug) DO UPDATE SET updated_at = CURRENT_TIMESTAMP
+        RETURNING id
+      `, [empresa, slug]);
+      
+      const companyId = companyResult.rows[0].id;
+
+      // 2. Insert Job
+      await pool.query(`
+        INSERT INTO jobs (company_id, title, source, url)
+        VALUES ($1, $2, $3, $4)
+      `, [companyId, titulo, fuente || 'other', url_postulacion]);
+
+      res.json({ success: true, message: "Job and company processed successfully" });
+    } catch (error) {
+      console.error("[Webhook Error]:", error);
+      res.status(500).json({ error: "Internal server error processing webhook" });
+    }
+  });
+
+  app.patch("/api/companies/:id", async (req, res) => {
+    const { id } = req.params;
+    const updates = req.body;
+    
+    try {
+      if (!process.env.DATABASE_URL) {
+        return res.status(503).json({ error: "Database not configured yet" });
+      }
+
+      const setClause = Object.keys(updates)
+        .map((key, index) => `${key} = $${index + 2}`)
+        .join(', ');
+      
+      const values = Object.values(updates);
+      
+      await pool.query(`
+        UPDATE companies 
+        SET ${setClause}, updated_at = CURRENT_TIMESTAMP, enriched_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+      `, [id, ...values]);
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("[DB Error] Updating company:", error);
+      res.status(500).json({ error: "Failed to update company" });
+    }
+  });
+
   app.post("/api/apply/auto", async (req, res) => {
     const { job, candidate } = req.body;
     

@@ -1,7 +1,7 @@
 import React from 'react';
 import { Job } from '../../types';
 import { StatusBadge, SourceBadge } from '../UI/Badges';
-import { ExternalLink, MoreVertical, MapPin } from 'lucide-react';
+import { ExternalLink, MoreVertical, MapPin, Zap } from 'lucide-react';
 
 interface JobTableProps {
   jobs: Job[];
@@ -32,13 +32,20 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onViewJob, onSelectCom
             >
               <td className="px-6 py-4">
                 <div>
-                  <p className="text-sm font-semibold text-slate-900 group-hover:text-emerald-700 transition-colors">{job.title}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-semibold text-slate-900 group-hover:text-lime-700 transition-colors">{job.title}</p>
+                    {job.isEasyApply && (
+                      <span className="flex items-center gap-1 px-1.5 py-0.5 bg-blue-50 text-blue-700 text-[10px] font-bold rounded uppercase tracking-wider">
+                        <Zap className="w-3 h-3" /> Easy Apply
+                      </span>
+                    )}
+                  </div>
                   <button 
                     onClick={(e) => {
                       e.stopPropagation();
                       onSelectCompany?.(job.companyName);
                     }}
-                    className="text-xs text-slate-500 hover:text-emerald-600 transition-colors"
+                    className="text-xs text-slate-500 hover:text-lime-600 transition-colors"
                   >
                     {job.companyName}
                   </button>
@@ -50,7 +57,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onViewJob, onSelectCom
               <td className="px-6 py-4">
                 <div className="flex items-center gap-1 text-xs text-slate-600">
                   <MapPin className="w-3 h-3" />
-                  {job.location}
+                  {job.location} {job.country && <span className="text-slate-400">({job.country})</span>}
                 </div>
               </td>
               <td className="px-6 py-4">
@@ -66,7 +73,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onViewJob, onSelectCom
                     target="_blank" 
                     rel="noreferrer"
                     onClick={(e) => e.stopPropagation()}
-                    className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded transition-all"
+                    className="p-1.5 text-slate-400 hover:text-lime-600 hover:bg-lime-50 rounded transition-all"
                   >
                     <ExternalLink className="w-4 h-4" />
                   </a>
