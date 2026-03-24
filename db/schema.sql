@@ -1,10 +1,29 @@
--- 1. Asegurarnos de que las extensiones y tipos existan (por si acaso)
+-- ═══════════════════════════════════════════════════════════════════════
+-- CanTrack CRM — Schema completo
+-- Ejecutar en la BD: casaos (vía tunnel SSH)
+-- Para aplicar: psql "postgresql://casaos:casaos@127.0.0.1:5434/casaos" -f db/schema.sql
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- ── 0. Renombrar tabla del scraper para preservar datos ───────────────────────
+ALTER TABLE IF EXISTS jobs RENAME TO scraped_jobs;
+
+-- ── 1. Extensiones y tipos ENUM ───────────────────────────────────────────────
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 DO $$ BEGIN
-    CREATE TYPE enrichment_status_enum AS ENUM ('pending', 'scraped', 'verified', 'failed');
+    CREATE TYPE enrichment_status_enum AS ENUM ('pending', 'processing', 'db_matched', 'scraped', 'verified', 'failed');
 EXCEPTION
     WHEN duplicate_object THEN null;
+END $$;
+
+-- Migración: agregar valores nuevos al enum si ya existe (idempotente)
+DO $$ BEGIN
+    ALTER TYPE enrichment_status_enum ADD VALUE IF NOT EXISTS 'processing';
+EXCEPTION WHEN others THEN null;
+END $$;
+DO $$ BEGIN
+    ALTER TYPE enrichment_status_enum ADD VALUE IF NOT EXISTS 'db_matched';
+EXCEPTION WHEN others THEN null;
 END $$;
 
 DO $$ BEGIN
@@ -134,6 +153,17 @@ CREATE TABLE IF NOT EXISTS applications (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(job_id, candidate_id)
+);
+
+-- Tabla de datos crudos del scraper (preserva el histórico de scraping)
+CREATE TABLE IF NOT EXISTS scraped_jobs (
+    id SERIAL PRIMARY KEY,
+    fuente VARCHAR(50),
+    titulo TEXT,
+    empresa TEXT,
+    url_postulacion TEXT,
+    keyword VARCHAR(100),
+    fecha_creacion TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
 );
 
 -- 3. Insertar las empresas (UPSERT para evitar duplicados)
@@ -273,3 +303,63 @@ INSERT INTO jobs (company_id, title, source, url) VALUES
 ((SELECT id FROM companies WHERE slug = 'tripleten'), 'Data Analytics Teaching Experts LATAM', 'indeed', 'https://co.indeed.com/viewjob?jk=abcdef0123456789'),
 ((SELECT id FROM companies WHERE slug = 'epam-systems-inc'), 'Python Developer', 'indeed', 'https://co.indeed.com/rc/clk?jk=b7a93941379c6585&bb=C8kIGRNaphhJh4NxzdQoqjlRuW23t90yV2EzlYbTqxDFlzQD7TYNV_qxcqWlKpVz3NGIrqVzpq4lNYKGo2tIUClPHrfDVuPEOAdKYl7pU0gjBC1vSGiH9OvfcLP9gqAIl_wr0h-yHcQ%3D&xkcb=SoAk67M3lIZgQ3QpZh0EbzkdCdPP&fccid=532afac41b2663f7&vjs=3'),
 ((SELECT id FROM companies WHERE slug = 'stefanini-latam'), 'QA Automation', 'indeed', 'https://co.indeed.com/rc/clk?jk=25f5df54bdc20bab&bb=C8kIGRNaphhJh4NxzdQoqvCYLGF5fBWCG52xkLNtjlPZNlnnxsKx6PdhqDsSXo9UXzEroQGD2uAbqSDrlcwJKNw_bVyzQgmLQeBOOdlEFA6sK2UfTE_9IbDOkyR4URakEv0jPPrjMWo%3D&xkcb=SoAD67M3lIZgQ3QpZh0bbzkdCdPP&fccid=0082619c33c67b45&vjs=3');
+
+-- ============================================================================
+-- ÍNDICES de rendimiento
+-- ============================================================================
+CREATE INDEX IF NOT EXISTS idx_jobs_company_id ON jobs(company_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_source ON jobs(source);
+CREATE INDEX IF NOT EXISTS idx_jobs_is_active ON jobs(is_active);
+CREATE INDEX IF NOT EXISTS idx_companies_slug ON companies(slug);
+CREATE INDEX IF NOT EXISTS idx_companies_enrichment_status ON companies(enrichment_status);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+CREATE INDEX IF NOT EXISTS idx_candidates_status ON candidates(status);
+CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status);
+CREATE INDEX IF NOT EXISTS idx_applications_job_id ON applications(job_id);
+CREATE INDEX IF NOT EXISTS idx_applications_candidate_id ON applications(candidate_id);
+CREATE INDEX IF NOT EXISTS idx_scraped_jobs_fuente ON scraped_jobs(fuente);
+CREATE INDEX IF NOT EXISTS idx_scraped_jobs_fecha ON scraped_jobs(fecha_creacion DESC);
+
+-- ============================================================================
+-- MIGRACIÓN: Importar datos del scraper a las tablas del CRM
+-- Inserta en companies y jobs CRM los registros de scraped_jobs
+-- que aún no existan (idempotente).
+-- ============================================================================
+
+-- 1. Crear empresas nuevas detectadas por el scraper (upsert por slug)
+INSERT INTO companies (name, slug, enrichment_status)
+SELECT DISTINCT
+    empresa AS name,
+    lower(regexp_replace(translate(empresa,
+        'áéíóúÁÉÍÓÚàèìòùÀÈÌÒÙäëïöüÄËÏÖÜñÑçÇ',
+        'aeiouAEIOUaeiouAEIOUaeiouAEIOUnncc'
+    ), '[^a-z0-9]+', '-', 'g')) AS slug,
+    'pending' AS enrichment_status
+FROM scraped_jobs
+WHERE empresa IS NOT NULL AND empresa <> ''
+ON CONFLICT (slug) DO NOTHING;
+
+-- 2. Importar ofertas del scraper como jobs del CRM
+INSERT INTO jobs (company_id, title, source, url, created_at)
+SELECT
+    c.id,
+    sj.titulo,
+    CASE
+        WHEN lower(sj.fuente) = 'linkedin' THEN 'linkedin'::job_source_enum
+        WHEN lower(sj.fuente) = 'indeed'   THEN 'indeed'::job_source_enum
+        WHEN lower(sj.fuente) = 'glassdoor' THEN 'glassdoor'::job_source_enum
+        ELSE 'other'::job_source_enum
+    END,
+    sj.url_postulacion,
+    COALESCE(sj.fecha_creacion, NOW())
+FROM scraped_jobs sj
+JOIN companies c ON c.slug = lower(regexp_replace(translate(sj.empresa,
+    'áéíóúÁÉÍÓÚàèìòùÀÈÌÒÙäëïöüÄËÏÖÜñÑçÇ',
+    'aeiouAEIOUaeiouAEIOUaeiouAEIOUnncc'
+), '[^a-z0-9]+', '-', 'g'))
+WHERE sj.url_postulacion IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM jobs j WHERE j.url = sj.url_postulacion
+  );
+

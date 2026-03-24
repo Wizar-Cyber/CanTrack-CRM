@@ -1,4 +1,4 @@
-export type JobSource = 'linkedin' | 'indeed';
+export type JobSource = 'linkedin' | 'indeed' | 'glassdoor' | 'company_website' | 'other';
 export type JobStatus = 'Saved' | 'Applied' | 'Interview' | 'Offer' | 'Rejected';
 
 export interface Company {
@@ -12,6 +12,7 @@ export interface Company {
   canadianHQ?: boolean;
   hqCity?: string;
   hqProvince?: string;
+  hqCountry?: string;
   exactAddress?: string;
   website?: string;
   description?: string;
@@ -23,7 +24,7 @@ export interface Company {
   needsManualReview?: boolean;
   enrichedAt?: string;
   location?: string; // Legacy fallback
-  enrichmentStatus?: 'pending' | 'db_matched' | 'scraped';
+  enrichmentStatus?: 'pending' | 'db_matched' | 'scraped' | 'verified' | 'failed' | 'processing';
 }
 
 export interface Candidate {
@@ -70,6 +71,14 @@ export interface Job {
   notes?: string;
   isEasyApply?: boolean;
   country?: string;
+  postedAt?: string;
+  // Datos de la empresa asociada (ya enriquecidos o pendientes)
+  companyEnrichmentStatus?: Company['enrichmentStatus'];
+  companyIndustry?: string;
+  companyHqCity?: string;
+  companyHqCountry?: string;
+  companyWebsite?: string;
+  companyConfidenceScore?: number;
 }
 
 export interface DashboardStats {
@@ -77,6 +86,7 @@ export interface DashboardStats {
   activeCandidates: number;
   totalApplications: number;
   placements: number;
+  enrichedCompanies: number;
 }
 
 export interface ImportStats {

@@ -4,8 +4,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { Layers, Loader2 } from 'lucide-react';
 
 export const Login: React.FC = () => {
-  const [email, setEmail] = useState('admin@vsm.com');
-  const [password, setPassword] = useState('admin123');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();

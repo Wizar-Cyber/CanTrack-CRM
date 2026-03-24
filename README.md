@@ -1,20 +1,92 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# CanTrack CRM
 
-# Run and deploy your AI Studio app
+CRM para rastreo de aplicaciones de trabajo e inteligencia de empresas en el mercado canadiense.
 
-This contains everything you need to run your app locally.
+---
 
-View your app in AI Studio: https://ai.studio/apps/1a0f9521-74ae-414d-8ab1-342bc2982481
+## Stack
 
-## Run Locally
+| Capa | Tecnología |
+|------|-----------|
+| Frontend | React 19 + TypeScript + Tailwind CSS |
+| Backend | Express + Node.js (`server.ts`) |
+| Auth + Firestore | Firebase (Auth + Firestore named DB) |
+| Base de datos | PostgreSQL (empresas, trabajos) |
+| IA | Google Gemini |
 
-**Prerequisites:**  Node.js
+---
 
+## Configuración inicial
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+### 1. Instalar dependencias
+```bash
+npm install
+```
+
+### 2. Configurar variables de entorno
+Copia `.env.example` a `.env` (ya incluido) y completa los valores:
+```env
+GEMINI_API_KEY=tu_clave_aqui
+DATABASE_URL=postgresql://user:password@host:5432/cantrack
+APP_URL=http://localhost:3000
+```
+
+### 3. Configurar base de datos PostgreSQL
+Ejecuta el schema SQL en tu base de datos:
+```bash
+psql $DATABASE_URL -f db/schema.sql
+```
+
+### 4. Iniciar el servidor
+```bash
+npm run dev
+```
+Abre [http://localhost:3000](http://localhost:3000)
+
+---
+
+## Estructura del proyecto
+
+```
+cantrack-crm/
+├── db/
+│   └── schema.sql              # Schema y seed de PostgreSQL
+├── server/
+│   └── services/               # Lógica del backend (Express)
+│       ├── automation.service.ts
+│       ├── gemini.service.ts
+│       ├── greenhouse.service.ts
+│       ├── lever.service.ts
+│       └── portal-detector.ts
+├── src/
+│   ├── components/             # Componentes React por módulo
+│   │   ├── Auth/
+│   │   ├── Companies/
+│   │   ├── Dashboard/
+│   │   ├── Jobs/
+│   │   ├── Layout/
+│   │   └── Settings/
+│   ├── contexts/
+│   │   └── AuthContext.tsx     # Firebase Auth + Firestore
+│   ├── services/               # Servicios del frontend
+│   ├── firebase.ts             # Inicialización Firebase
+│   ├── types.ts                # Tipos TypeScript globales
+│   └── App.tsx                 # Rutas principales
+├── firebase-applet-config.json # Config Firebase SDK
+├── firestore.rules             # Reglas de seguridad Firestore
+├── server.ts                   # Entry point del servidor Express
+└── .env                        # Variables de entorno (NO commitear)
+```
+
+---
+
+## Firebase
+
+La app usa una base de datos Firestore con ID `ai-studio-1a0f9521-74ae-414d-8ab1-342bc2982481`.
+Las reglas de seguridad están en `firestore.rules`.
+
+Para desplegar reglas:
+```bash
+firebase deploy --only firestore:rules
+```
+

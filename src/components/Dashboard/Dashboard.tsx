@@ -11,8 +11,8 @@ interface DashboardProps {
 
 export const Dashboard: React.FC<DashboardProps> = ({ stats, recentJobs, onSelectCompany }) => {
   const statCards = [
-    { label: 'Total Scraped Jobs', value: 1245, icon: Briefcase, color: 'text-blue-600', bg: 'bg-blue-50' },
-    { label: 'Enriched Companies', value: 342, icon: Building, color: 'text-purple-600', bg: 'bg-purple-50' },
+    { label: 'Total Scraped Jobs', value: stats.totalJobs, icon: Briefcase, color: 'text-blue-600', bg: 'bg-blue-50' },
+    { label: 'Enriched Companies', value: stats.enrichedCompanies, icon: Building, color: 'text-purple-600', bg: 'bg-purple-50' },
     { label: 'Active Applications', value: stats.totalApplications, icon: Calendar, color: 'text-lime-600', bg: 'bg-lime-50' },
     { label: 'Placements', value: stats.placements, icon: CheckCircle, color: 'text-rose-600', bg: 'bg-rose-50' },
   ];

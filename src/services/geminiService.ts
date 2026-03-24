@@ -1,9 +1,13 @@
 import { GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { Company } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+function getAI() {
+  const key = (import.meta as any).env?.VITE_GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env.GEMINI_API_KEY : '') || '';
+  return new GoogleGenAI({ apiKey: key });
+}
 
 export async function getCompanyIntelligence(companyName: string, location?: string): Promise<Partial<Company>> {
+  const ai = getAI();
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
@@ -37,6 +41,7 @@ export async function getCompanyIntelligence(companyName: string, location?: str
 }
 
 export async function analyzeJobFit(jobTitle: string, companyName: string, notes: string) {
+  const ai = getAI();
   try {
     const response = await ai.models.generateContent({
       model: "gemini-3.1-pro-preview",
