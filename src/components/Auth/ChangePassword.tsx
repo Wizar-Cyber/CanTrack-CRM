@@ -17,19 +17,19 @@ export const ChangePassword: React.FC = () => {
     e.preventDefault();
     setError('');
 
-    if (newPassword !== confirmPassword) return setError('Las contraseñas no coinciden.');
-    if (newPassword.length < 8) return setError('La contraseña debe tener al menos 8 caracteres.');
+    if (newPassword !== confirmPassword) return setError('Passwords do not match.');
+    if (newPassword.length < 8) return setError('Password must be at least 8 characters.');
 
     setLoading(true);
     try {
-      if (!currentUser) throw new Error('No hay usuario activo.');
+      if (!currentUser) throw new Error('No active user.');
       await apiJson('/api/auth/password', {
         method: 'PATCH',
         body: JSON.stringify({ currentPassword, newPassword }),
       });
       navigate('/');
     } catch (err: any) {
-      setError(err.message || 'Error al cambiar contraseña.');
+      setError(err.message || 'Error changing password.');
     } finally {
       setLoading(false);
     }
@@ -44,10 +44,10 @@ export const ChangePassword: React.FC = () => {
           </div>
         </div>
         <h2 className="mt-6 text-center text-3xl font-black text-slate-900 uppercase tracking-tight">
-          Actualizar contraseña
+          Update Password
         </h2>
         <p className="mt-2 text-center text-sm text-slate-600">
-          Cambia tu contraseña para continuar
+          Change your password to continue
         </p>
       </div>
 
@@ -58,24 +58,24 @@ export const ChangePassword: React.FC = () => {
               <div className="bg-rose-50 border border-rose-200 text-rose-600 text-sm rounded-lg p-4">{error}</div>
             )}
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Contraseña actual</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Current Password</label>
               <input type="password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-amber-500 focus:border-amber-500" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Nueva contraseña (mín. 8 caracteres)</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">New Password (min. 8 characters)</label>
               <input type="password" required minLength={8} value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-amber-500 focus:border-amber-500" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Confirmar nueva contraseña</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Confirm New Password</label>
               <input type="password" required value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-amber-500 focus:border-amber-500" />
             </div>
             <button type="submit" disabled={loading}
               className="w-full py-2.5 bg-amber-600 text-white rounded-lg text-sm font-bold hover:bg-amber-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50">
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-              Cambiar contraseña
+              Change Password
             </button>
           </form>
         </div>

@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Briefcase, Building2, Star, Bell, Settings as SettingsIcon, LogOut, Users, Layers, ChevronLeft, ChevronRight } from 'lucide-react';
+import { LayoutDashboard, Briefcase, Building2, Star, Bell, Settings as SettingsIcon, LogOut, Users, ChevronLeft, ChevronRight, MapPin } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../contexts/AuthContext';
+import logoImg from '../../public/logo.jpg';
 
 export const Sidebar: React.FC = () => {
   const location = useLocation();
@@ -14,6 +15,7 @@ export const Sidebar: React.FC = () => {
     { id: '/jobs', label: 'Job Board', icon: Briefcase },
     { id: '/candidates', label: 'Candidates', icon: Users },
     { id: '/companies', label: 'Companies', icon: Building2 },
+    { id: '/visits', label: 'Visits', icon: MapPin },
     { id: '/favorites', label: 'Favorites', icon: Star },
   ];
 
@@ -25,8 +27,8 @@ export const Sidebar: React.FC = () => {
     >
       <div className="p-6 flex items-center justify-between">
         <div className="flex items-center gap-2 overflow-hidden">
-          <div className="w-8 h-8 shrink-0 bg-gradient-to-br from-lime-400 to-stone-800 rounded-lg flex items-center justify-center">
-            <Layers className="text-white w-5 h-5" />
+          <div className="w-8 h-8 shrink-0 overflow-hidden">
+            <img src={logoImg} alt="Logo" className="w-full h-full object-cover" />
           </div>
           {!collapsed && (
             <motion.h1 

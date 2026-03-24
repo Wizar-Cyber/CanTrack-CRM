@@ -26,7 +26,7 @@ export const Setup: React.FC = () => {
         body: JSON.stringify({ email, password, firstName, lastName }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Error en la configuración.');
+      if (!res.ok) throw new Error(data.error || 'Configuration error.');
       // Store token and redirect to login
       localStorage.setItem('cantrack_token', data.token);
       navigate('/');
@@ -47,10 +47,10 @@ export const Setup: React.FC = () => {
           </div>
         </div>
         <h2 className="mt-6 text-center text-3xl font-black text-slate-900 uppercase tracking-tight">
-          Configuración inicial
+          Initial Setup
         </h2>
         <p className="mt-2 text-center text-sm text-slate-600">
-          Crea el primer usuario administrador
+          Create the first admin user
         </p>
       </div>
 
@@ -64,12 +64,12 @@ export const Setup: React.FC = () => {
             )}
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Nombre</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">First Name</label>
                 <input type="text" required value={firstName} onChange={(e) => setFirstName(e.target.value)}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-lime-500 focus:border-lime-500" />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Apellido</label>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Last Name</label>
                 <input type="text" required value={lastName} onChange={(e) => setLastName(e.target.value)}
                   className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-lime-500 focus:border-lime-500" />
               </div>
@@ -80,14 +80,14 @@ export const Setup: React.FC = () => {
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-lime-500 focus:border-lime-500" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Contraseña (mín. 8 caracteres)</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Password (min. 8 characters)</label>
               <input type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-lime-500 focus:border-lime-500" />
             </div>
             <button type="submit" disabled={loading}
               className="w-full py-2.5 bg-lime-600 text-white rounded-lg text-sm font-bold hover:bg-lime-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50">
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-              Crear administrador
+              Create Admin
             </button>
           </form>
         </div>

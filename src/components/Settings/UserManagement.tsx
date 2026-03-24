@@ -30,7 +30,7 @@ export const UserManagement: React.FC = () => {
   useEffect(() => {
     apiJson<TeamUser[]>('/api/users')
       .then(setUsers)
-      .catch(() => setError('Error al cargar usuarios.'))
+      .catch(() => setError('Error loading users.'))
       .finally(() => setLoading(false));
   }, []);
 
@@ -45,22 +45,22 @@ export const UserManagement: React.FC = () => {
         body: JSON.stringify({ email, password, firstName, lastName, role }),
       });
       setUsers(prev => [...prev, newUser]);
-      setSuccess(`Usuario ${email} creado correctamente.`);
+      setSuccess(`User ${email} created successfully.`);
       setEmail(''); setPassword(''); setFirstName(''); setLastName(''); setRole('viewer');
     } catch (err: any) {
-      setError(err.message || 'Error al crear usuario.');
+      setError(err.message || 'Error creating user.');
     } finally {
       setCreating(false);
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('¿Desactivar este usuario?')) return;
+    if (!confirm('Deactivate this user?')) return;
     try {
       await apiJson(`/api/users/${id}`, { method: 'DELETE' });
       setUsers(prev => prev.filter(u => u.id !== id));
     } catch (err: any) {
-      setError(err.message || 'Error al eliminar usuario.');
+      setError(err.message || 'Error deactivating user.');
     }
   };
 
@@ -72,7 +72,7 @@ export const UserManagement: React.FC = () => {
       });
       setUsers(prev => prev.map(u => u.id === id ? updated : u));
     } catch (err: any) {
-      setError(err.message || 'Error al cambiar rol.');
+      setError(err.message || 'Error changing role.');
     }
   };
 
@@ -98,12 +98,12 @@ export const UserManagement: React.FC = () => {
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Nombre</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">First Name</label>
               <input type="text" required value={firstName} onChange={(e) => setFirstName(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Apellido</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Last Name</label>
               <input type="text" required value={lastName} onChange={(e) => setLastName(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm" />
             </div>
@@ -113,12 +113,12 @@ export const UserManagement: React.FC = () => {
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Contraseña temporal</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Temporary Password</label>
               <input type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Rol</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Role</label>
               <select value={role} onChange={(e) => setRole(e.target.value as any)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm">
                 <option value="viewer">Viewer</option>
@@ -189,10 +189,10 @@ export const UserManagement: React.FC = () => {
                     {user.role.charAt(0).toUpperCase() + user.role.slice(1)}
                   </span>
                   <span className={`text-xs font-medium ${user.isActive ? 'text-lime-600' : 'text-slate-400'}`}>
-                    {user.isActive ? 'Activo' : 'Inactivo'}
+                    {user.isActive ? 'Active' : 'Inactive'}
                   </span>
                   {user.id !== userProfile?.id && (
-                    <button onClick={() => handleDelete(user.id)} className="p-1.5 text-slate-400 hover:text-rose-500 transition-colors" title="Desactivar usuario">
+                    <button onClick={() => handleDelete(user.id)} className="p-1.5 text-slate-400 hover:text-rose-500 transition-colors" title="Deactivate user">
                       <Trash2 className="w-4 h-4" />
                     </button>
                   )}

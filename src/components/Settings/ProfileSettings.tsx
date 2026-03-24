@@ -27,9 +27,9 @@ export const ProfileSettings: React.FC = () => {
         body: JSON.stringify({ firstName, lastName }),
       });
       await refreshUser();
-      setMessage('Perfil actualizado correctamente.');
+      setMessage('Profile updated successfully.');
     } catch (err: any) {
-      setMessage(err.message || 'Error al actualizar.');
+      setMessage(err.message || 'Error updating profile.');
     } finally {
       setLoading(false);
     }
@@ -44,11 +44,11 @@ export const ProfileSettings: React.FC = () => {
         method: 'PATCH',
         body: JSON.stringify({ currentPassword, newPassword }),
       });
-      setPasswordMsg('Contraseña cambiada correctamente.');
+      setPasswordMsg('Password changed successfully.');
       setCurrentPassword('');
       setNewPassword('');
     } catch (err: any) {
-      setPasswordMsg(err.message || 'Error al cambiar contraseña.');
+      setPasswordMsg(err.message || 'Error changing password.');
     } finally {
       setPasswordLoading(false);
     }
@@ -62,7 +62,7 @@ export const ProfileSettings: React.FC = () => {
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
         <h3 className="text-lg font-bold text-slate-900 mb-6 flex items-center gap-2">
           <User className="w-5 h-5 text-lime-600" />
-          Información Personal
+          Personal Information
         </h3>
 
         <form onSubmit={handleUpdateProfile} className="space-y-4">
@@ -73,12 +73,12 @@ export const ProfileSettings: React.FC = () => {
           )}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Nombre</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">First Name</label>
               <input type="text" required value={firstName} onChange={(e) => setFirstName(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Apellido</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Last Name</label>
               <input type="text" required value={lastName} onChange={(e) => setLastName(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm" />
             </div>
@@ -91,7 +91,7 @@ export const ProfileSettings: React.FC = () => {
             </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Rol</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Role</label>
             <div className="flex items-center gap-2 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-500 sm:text-sm">
               <Shield className="w-4 h-4" />
               <span className="capitalize">{userProfile.role}</span>
@@ -101,7 +101,7 @@ export const ProfileSettings: React.FC = () => {
             <button type="submit" disabled={loading}
               className="px-4 py-2 bg-lime-600 text-white rounded-lg text-sm font-medium hover:bg-lime-700 transition-colors flex items-center gap-2 disabled:opacity-50">
               {loading && <Loader2 className="w-4 h-4 animate-spin" />}
-              Guardar cambios
+              Save Changes
             </button>
           </div>
         </form>
@@ -111,7 +111,7 @@ export const ProfileSettings: React.FC = () => {
       <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
         <h3 className="text-lg font-bold text-slate-900 mb-6 flex items-center gap-2">
           <Lock className="w-5 h-5 text-lime-600" />
-          Cambiar Contraseña
+          Change Password
         </h3>
         <form onSubmit={handleChangePassword} className="space-y-4">
           {passwordMsg && (
@@ -120,12 +120,12 @@ export const ProfileSettings: React.FC = () => {
             </div>
           )}
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Contraseña actual</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Current Password</label>
             <input type="password" required value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm" />
           </div>
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Nueva contraseña (mín. 8 caracteres)</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1">New Password (min. 8 characters)</label>
             <input type="password" required minLength={8} value={newPassword} onChange={(e) => setNewPassword(e.target.value)}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm" />
           </div>
@@ -133,7 +133,7 @@ export const ProfileSettings: React.FC = () => {
             <button type="submit" disabled={passwordLoading}
               className="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm font-medium hover:bg-slate-800 transition-colors flex items-center gap-2 disabled:opacity-50">
               {passwordLoading && <Loader2 className="w-4 h-4 animate-spin" />}
-              Cambiar contraseña
+              Change Password
             </button>
           </div>
         </form>
