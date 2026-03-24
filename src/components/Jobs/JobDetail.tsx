@@ -1,22 +1,23 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Globe, MapPin, Users, Building, ExternalLink, MessageSquare, Sparkles, Loader2, CheckCircle } from 'lucide-react';
+import { X, Globe, MapPin, Users, Building, ExternalLink, MessageSquare, Sparkles, Loader2, CheckCircle, Mail, Phone, Building2, Calendar, Zap } from 'lucide-react';
 import { Job, Company, Candidate } from '../../types';
-import { StatusBadge } from '../UI/Badges';
-import { getCompanyIntelligence, analyzeJobFit } from '../../services/geminiService';
+import { StatusBadge, SourceBadge } from '../UI/Badges';
+import { analyzeJobFit } from '../../services/geminiService';
 import { prepareMappingData } from '../../services/mappingService';
-import { MOCK_CANDIDATES } from '../../mockData';
 
 interface JobDetailProps {
   job: Job;
+  company?: Company;
+  candidates?: Candidate[];
   onClose: () => void;
   onSelectCompany?: (name: string) => void;
 }
 
-export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectCompany }) => {
+export const JobDetail: React.FC<JobDetailProps> = ({ job, company, candidates = [], onClose, onSelectCompany }) => {
   const [intelligence, setIntelligence] = useState<Partial<Company> | null>(null);
   const [fitAnalysis, setFitAnalysis] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -33,15 +34,9 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
   const [submitFeedback, setSubmitFeedback] = useState<{ success: boolean; message: string } | null>(null);
   const [notes, setNotes] = useState(job.notes || '');
 
-  useEffect(() => {
-    async function loadIntelligence() {
-      setLoading(true);
-      const data = await getCompanyIntelligence(job.companyName, job.location);
-      setIntelligence(data);
-      setLoading(false);
-    }
-    loadIntelligence();
-  }, [job.companyName, job.location]);
+  // Use DB company data if enriched; otherwise null
+  const isEnriched = company && company.enrichmentStatus !== 'pending' && company.enrichmentStatus !== undefined;
+  const displayCompany = isEnriched ? company : null;
 
   useEffect(() => {
     async function fetchStatus() {
@@ -85,7 +80,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
   const handleSyncWithExtension = async () => {
     if (!selectedCandidateId) return;
     setSyncing(true);
-    const candidate = MOCK_CANDIDATES.find(c => c.id === selectedCandidateId);
+    const candidate = candidates.find(c => c.id === selectedCandidateId);
     if (candidate) {
       const data = await prepareMappingData(candidate, job);
       setSyncResult(data);
@@ -105,7 +100,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
     setSubmitFeedback(null);
 
     try {
-      const candidate = MOCK_CANDIDATES.find(c => c.id === selectedCandidateId);
+      const candidate = candidates.find(c => c.id === selectedCandidateId);
       setAutomationLogs([]);
       setShowLogs(true);
       
@@ -200,400 +195,333 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, onClose, onSelectComp
   };
 
   return (
-    <motion.div
-      initial={{ x: '100%' }}
-      animate={{ x: 0 }}
-      exit={{ x: '100%' }}
-      transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-      className="fixed inset-y-0 right-0 w-full max-w-xl bg-white shadow-2xl z-50 overflow-y-auto border-l border-slate-200"
-    >
-      <div className="sticky top-0 bg-white border-b border-slate-100 p-6 flex items-center justify-between z-20">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-lime-50 rounded-lg flex items-center justify-center">
-            <Building className="text-lime-600 w-6 h-6" />
-          </div>
-          <div>
-            <h2 className="text-lg font-bold text-slate-900">{job.title}</h2>
-            <button 
-              onClick={() => onSelectCompany?.(job.companyName)}
-              className="text-sm text-slate-500 hover:text-lime-600 transition-colors"
-            >
-              {job.companyName}
-            </button>
-          </div>
-        </div>
-        <button 
-          onClick={onClose}
-          className="p-2 hover:bg-slate-100 rounded-full transition-colors"
+    <>
+      {/* Backdrop */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-40"
+        onClick={onClose}
+      />
+
+      {/* Centered Modal — igual a CompanyDetail */}
+      <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center p-3 sm:p-6 overflow-y-auto pointer-events-none">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.96, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.96, y: 20 }}
+          transition={{ type: 'spring', damping: 30, stiffness: 350 }}
+          className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl pointer-events-auto my-4 border border-slate-100 overflow-hidden flex flex-col max-h-[90vh]"
         >
-          <X className="w-5 h-5 text-slate-400" />
-        </button>
-      </div>
-
-      <div className="p-8 space-y-8">
-        {/* Quick Actions */}
-        <div className="flex flex-wrap gap-3 items-center">
-          <div className="relative group">
-            <div className="flex items-center gap-1 cursor-pointer">
-              <StatusBadge status={currentStatus as any} />
-              <div className="w-4 h-4 text-slate-400 group-hover:text-lime-500 transition-colors">
-                <svg viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
-                </svg>
+          {/* ── Header ── */}
+          <div className="sticky top-0 bg-white border-b border-slate-100 p-5 flex items-start justify-between z-20 shrink-0">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 bg-lime-50 rounded-xl flex items-center justify-center shrink-0">
+                <Building className="text-lime-600 w-5 h-5" />
               </div>
-            </div>
-            <div className="absolute top-full left-0 mt-2 w-40 bg-white border border-slate-200 rounded-xl shadow-xl opacity-0 group-hover:opacity-100 transition-all pointer-events-none group-hover:pointer-events-auto z-30 p-2 space-y-1">
-              <p className="text-[10px] font-bold text-slate-400 uppercase px-2 mb-1">Update Status</p>
-              {['Saved', 'Applied', 'Interview', 'Offer', 'Rejected'].map((s) => (
-                <button
-                  key={s}
-                  onClick={() => handleUpdateStatus(s)}
-                  disabled={updatingStatus}
-                  className={`w-full text-left px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                    currentStatus === s ? 'bg-lime-50 text-lime-700' : 'hover:bg-slate-50 text-slate-600'
-                  }`}
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center gap-1 px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-medium">
-            <MapPin className="w-3 h-3" />
-            {job.location}
-          </div>
-          <a 
-            href={job.url} 
-            target="_blank" 
-            rel="noreferrer"
-            className="flex items-center gap-1 px-3 py-1 bg-lime-600 text-white rounded-full text-xs font-medium hover:bg-lime-700 transition-colors"
-          >
-            Apply Now
-            <ExternalLink className="w-3 h-3" />
-          </a>
-        </div>
-
-        {/* AI Intelligence Section */}
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-lime-500" />
-              Company Intelligence
-            </h3>
-            {loading && <Loader2 className="w-4 h-4 animate-spin text-slate-400" />}
-          </div>
-
-          <div className="bg-slate-50 rounded-xl p-6 border border-slate-200 space-y-6">
-            {loading ? (
-              <div className="space-y-3">
-                <div className="h-4 bg-slate-200 rounded w-3/4 animate-pulse"></div>
-                <div className="h-4 bg-slate-200 rounded w-1/2 animate-pulse"></div>
-                <div className="h-4 bg-slate-200 rounded w-5/6 animate-pulse"></div>
-              </div>
-            ) : (
-              <>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-6">
-                  <div className="space-y-1">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Industry</p>
-                    <p className="text-sm font-medium text-slate-900">{intelligence?.industry || 'N/A'}</p>
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Size</p>
-                    <p className="text-sm font-medium text-slate-900">{intelligence?.size || 'N/A'}</p>
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Website</p>
-                    {intelligence?.website ? (
-                      <a href={intelligence.website} target="_blank" rel="noreferrer" className="text-sm font-medium text-lime-600 hover:underline flex items-center gap-1">
-                        Visit Site <Globe className="w-3 h-3" />
-                      </a>
-                    ) : (
-                      <p className="text-sm font-medium text-slate-900">N/A</p>
-                    )}
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Location</p>
-                    <p className="text-sm font-medium text-slate-900">{intelligence?.location || job.location || 'N/A'}</p>
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Contact Email</p>
-                    {intelligence?.contact_email ? (
-                      <a href={`mailto:${intelligence.contact_email}`} className="text-sm font-medium text-lime-600 hover:underline">
-                        {intelligence.contact_email}
-                      </a>
-                    ) : (
-                      <p className="text-sm font-medium text-slate-900">N/A</p>
-                    )}
-                  </div>
-                  <div className="space-y-1">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Phone</p>
-                    <p className="text-sm font-medium text-slate-900">{intelligence?.phone || 'N/A'}</p>
-                  </div>
+              <div>
+                <h2 className="text-lg font-bold text-slate-900 leading-tight">{job.title}</h2>
+                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                  <button onClick={() => onSelectCompany?.(job.companyName)}
+                    className="text-sm text-slate-500 hover:text-lime-600 transition-colors font-medium">
+                    {job.companyName}
+                  </button>
+                  {displayCompany?.industry && <span className="text-xs text-slate-400">· {displayCompany.industry}</span>}
                 </div>
-                
-                <div className="space-y-2">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase">About</p>
-                  <p className="text-sm text-slate-600 leading-relaxed">
-                    {intelligence?.description || 'N/A'}
-                  </p>
-                </div>
-              </>
-            )}
-          </div>
-        </section>
-
-        {/* Extension Sync Section */}
-        <section className="space-y-4">
-          <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
-            <ExternalLink className="w-4 h-4 text-lime-500" />
-            Extension Sync (Auto-Fill)
-          </h3>
-          
-          <div className="bg-slate-50 rounded-xl p-6 border border-slate-200 space-y-4">
-            <div className="space-y-2">
-              <label className="text-[10px] font-bold text-slate-400 uppercase">Select Candidate to Apply</label>
-              <select 
-                value={selectedCandidateId}
-                onChange={(e) => setSelectedCandidateId(e.target.value)}
-                className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-lime-500/20 outline-none"
-              >
-                <option value="">-- Choose an employee --</option>
-                {MOCK_CANDIDATES.map(c => (
-                  <option key={c.id} value={c.id}>{c.name} ({c.role})</option>
-                ))}
-              </select>
-            </div>
-
-            <button 
-              onClick={handleSyncWithExtension}
-              disabled={!selectedCandidateId || syncing}
-              className="w-full py-3 bg-slate-900 text-white rounded-xl text-sm font-medium hover:bg-slate-800 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {syncing ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Preparing Data...
-                </>
-              ) : (
-                <>
-                  <Globe className="w-4 h-4" />
-                  Sync with Browser Extension
-                </>
-              )}
-            </button>
-
-            {syncResult && (
-              <div className="p-3 bg-lime-50 border border-lime-100 rounded-lg">
-                <p className="text-[10px] text-lime-700 font-bold uppercase mb-1">Status: Ready</p>
-                <p className="text-xs text-lime-600">Data mapped for {job.source}. Open the job portal to auto-fill.</p>
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* Fit Analysis */}
-        <section className="space-y-4">
-          <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider flex items-center gap-2">
-            <MessageSquare className="w-4 h-4 text-lime-500" />
-            AI Fit Analysis
-          </h3>
-          
-          {fitAnalysis ? (
-            <div className="bg-lime-50 border border-lime-100 rounded-xl p-6 text-lime-900 text-sm leading-relaxed whitespace-pre-wrap">
-              {fitAnalysis}
-            </div>
-          ) : (
-            <button 
-              onClick={handleAnalyzeFit}
-              disabled={analyzing}
-              className="w-full py-3 border-2 border-dashed border-slate-200 rounded-xl text-slate-500 text-sm font-medium hover:border-lime-500 hover:text-lime-600 transition-all flex items-center justify-center gap-2"
-            >
-              {analyzing ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Analyzing your fit...
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-4 h-4" />
-                  Analyze my fit for this role
-                </>
-              )}
-            </button>
-          )}
-        </section>
-
-        {/* User Notes */}
-        <section className="space-y-4">
-          <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">My Notes</h3>
-          <textarea 
-            className="w-full h-32 p-4 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-lime-500/20 focus:border-lime-500 transition-all"
-            placeholder="Add your thoughts about this application..."
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-          ></textarea>
-        </section>
-
-          {/* Submit Action */}
-        <section className="pt-4 border-t border-slate-100">
-          <div className="mb-4 p-3 bg-blue-50 border-l-4 border-blue-500 rounded-r-xl flex items-start gap-3">
-            <Sparkles className="w-5 h-5 text-blue-600 mt-0.5" />
-            <div>
-              <p className="text-xs font-bold text-blue-900">Honest Backend Automation</p>
-              <p className="text-[10px] text-blue-700">We detect the portal (Greenhouse, Lever, etc.) and apply via API if possible, or guide you through the extension for LinkedIn/Indeed.</p>
-            </div>
-          </div>
-
-          {requiresExtension && (
-            <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-3">
-              <div className="flex items-center gap-2 text-amber-800">
-                <Globe className="w-5 h-5" />
-                <p className="text-sm font-bold">Extension Required for {portalType?.toUpperCase()}</p>
-              </div>
-              <p className="text-xs text-amber-700">
-                {portalType} requires you to be logged in. The AgencySync extension will auto-fill the form for you.
-              </p>
-              <div className="flex gap-2">
-                <a 
-                  href={job.url} 
-                  target="_blank" 
-                  rel="noreferrer"
-                  className="px-4 py-2 bg-amber-600 text-white rounded-lg text-xs font-bold hover:bg-amber-700 transition-colors flex items-center gap-2"
-                >
-                  Open Job Posting <ExternalLink className="w-3 h-3" />
-                </a>
-                <button 
-                  onClick={() => alert("Checking extension status...")}
-                  className="px-4 py-2 border border-amber-300 text-amber-700 rounded-lg text-xs font-bold hover:bg-amber-100 transition-colors"
-                >
-                  Check Extension
-                </button>
-              </div>
-            </div>
-          )}
-
-          {showLogs && (
-            <div className="space-y-4 mb-4">
-              {/* Verification Layers */}
-              {verification && (
-                <div className="grid grid-cols-3 gap-2">
-                  <div className={`p-3 rounded-xl border flex flex-col items-center gap-1 text-center ${
-                    verification.layer1_submit === 'success' ? 'bg-lime-50 border-lime-100 text-lime-700' : 
-                    verification.layer1_submit === 'failed' ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-slate-50 border-slate-100 text-slate-400'
-                  }`}>
-                    <CheckCircle className={`w-4 h-4 ${verification.layer1_submit === 'success' ? 'text-lime-500' : 'text-slate-300'}`} />
-                    <span className="text-[10px] font-bold uppercase">Layer 1</span>
-                    <span className="text-[9px]">Submit Confirmed</span>
-                  </div>
-                  <div className={`p-3 rounded-xl border flex flex-col items-center gap-1 text-center ${
-                    verification.layer2_email === 'success' ? 'bg-lime-50 border-lime-100 text-lime-700' : 
-                    verification.layer2_email === 'failed' ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-slate-50 border-slate-100 text-slate-400'
-                  }`}>
-                    <MessageSquare className={`w-4 h-4 ${verification.layer2_email === 'success' ? 'text-lime-500' : 'text-slate-300'}`} />
-                    <span className="text-[10px] font-bold uppercase">Layer 2</span>
-                    <span className="text-[9px]">Email Verified</span>
-                  </div>
-                  <div className={`p-3 rounded-xl border flex flex-col items-center gap-1 text-center ${
-                    verification.layer3_portal === 'success' ? 'bg-lime-50 border-lime-100 text-lime-700' : 
-                    verification.layer3_portal === 'failed' ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-slate-50 border-slate-100 text-slate-400'
-                  }`}>
-                    <Globe className={`w-4 h-4 ${verification.layer3_portal === 'success' ? 'text-lime-500' : 'text-slate-300'}`} />
-                    <span className="text-[10px] font-bold uppercase">Layer 3</span>
-                    <span className="text-[9px]">Portal Status</span>
-                  </div>
-                </div>
-              )}
-
-              {/* Application ID Badge */}
-              {applicationId && (
-                <div className="flex items-center justify-between p-3 bg-slate-900 rounded-xl border border-slate-800">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Application ID</span>
-                  <span className="font-mono text-xs text-lime-400">{applicationId}</span>
-                </div>
-              )}
-
-              {/* Logs Terminal */}
-              <div className="bg-slate-900 rounded-xl overflow-hidden border border-slate-800 shadow-inner">
-              <div className="p-3 border-b border-slate-800 flex items-center justify-between bg-slate-900/50">
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Backend Automation Logs</p>
-                <div className="flex gap-1">
-                  <div className="w-2 h-2 rounded-full bg-rose-500"></div>
-                  <div className="w-2 h-2 rounded-full bg-amber-500"></div>
-                  <div className="w-2 h-2 rounded-full bg-lime-500"></div>
-                </div>
-              </div>
-              <div className="p-4 max-h-60 overflow-y-auto font-mono text-[11px] space-y-2 custom-scrollbar">
-                {automationLogs.length === 0 && submitting && (
-                  <div className="flex items-center gap-2 text-slate-500 italic">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    Connecting to automation engine...
-                  </div>
-                )}
-                {automationLogs.map((log, i) => (
-                  <motion.div 
-                    initial={{ opacity: 0, x: -5 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    key={i} 
-                    className="flex gap-3"
-                  >
-                    <span className="text-slate-600 shrink-0">[{new Date(log.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]</span>
-                    <span className={`${
-                      log.level === 'success' ? 'text-lime-400' : 
-                      log.level === 'error' ? 'text-rose-400' : 
-                      log.level === 'warning' ? 'text-amber-400' : 'text-slate-300'
-                    }`}>
-                      {log.level === 'success' && '✓ '}
-                      {log.level === 'error' && '✗ '}
-                      {log.message}
+                <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                  <SourceBadge source={job.source} />
+                  {job.isEasyApply && (
+                    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-blue-50 text-blue-700 text-[10px] font-bold rounded uppercase tracking-wide">
+                      <Zap className="w-2.5 h-2.5" />Easy Apply
                     </span>
-                  </motion.div>
-                ))}
-                {submitting && automationLogs.length > 0 && (
-                  <div className="flex items-center gap-2 text-blue-400 animate-pulse">
-                    <span className="inline-block w-1 h-3 bg-blue-400"></span>
-                    Processing next step...
+                  )}
+                  <div className="relative group">
+                    <div className="flex items-center gap-1 cursor-pointer">
+                      <StatusBadge status={currentStatus as any} />
+                      <svg viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3 text-slate-400">
+                        <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                      </svg>
+                    </div>
+                    <div className="absolute top-full left-0 mt-1.5 w-36 bg-white border border-slate-200 rounded-xl shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-all z-30 p-1.5 space-y-0.5">
+                      {['Saved', 'Applied', 'Interview', 'Offer', 'Rejected'].map(s => (
+                        <button key={s} onClick={() => handleUpdateStatus(s)} disabled={updatingStatus}
+                          className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${currentStatus === s ? 'bg-lime-50 text-lime-700' : 'hover:bg-slate-50 text-slate-600'}`}>
+                          {s}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                )}
+                </div>
               </div>
             </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <a href={job.url} target="_blank" rel="noreferrer"
+                className="flex items-center gap-1 px-3 py-1.5 bg-lime-600 text-white rounded-xl text-xs font-semibold hover:bg-lime-700 transition-colors">
+                Aplicar <ExternalLink className="w-3 h-3" />
+              </a>
+              <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-full transition-colors">
+                <X className="w-5 h-5 text-slate-400" />
+              </button>
+            </div>
           </div>
-          )}
-          
-          <button 
-            onClick={handleSubmitApplication}
-            disabled={!selectedCandidateId || submitting}
-            className="w-full py-4 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition-all shadow-lg shadow-slate-200 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {submitting ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin" />
-                Executing Automation...
-              </>
-            ) : (
-              <>
-                <Sparkles className="w-5 h-5" />
-                Trigger Smart Auto-Apply
-              </>
-            )}
-          </button>
 
-          <AnimatePresence>
-            {submitFeedback && (
-              <motion.div 
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-                className={`mt-4 p-4 rounded-xl text-sm font-medium flex items-center gap-3 ${
-                  submitFeedback.success ? 'bg-lime-50 text-lime-700 border border-lime-100' : 'bg-rose-50 text-rose-700 border border-rose-100'
-                }`}
-              >
-                {submitFeedback.success ? <CheckCircle className="w-5 h-5" /> : <X className="w-5 h-5" />}
-                {submitFeedback.message}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </section>
+          {/* ── Scrollable body: 2 columnas ── */}
+          <div className="overflow-y-auto flex-1">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-0">
+
+              {/* ── COLUMNA IZQUIERDA: info de la vacante + empresa ── */}
+              <div className="p-6 space-y-5 border-b lg:border-b-0 lg:border-r border-slate-100">
+
+                {/* Quick info pills */}
+                <div className="flex flex-wrap gap-2">
+                  {job.location && (
+                    <div className="flex items-center gap-1 px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-medium">
+                      <MapPin className="w-3 h-3" />{job.location}{job.country && `, ${job.country}`}
+                    </div>
+                  )}
+                  {job.category && (
+                    <div className="flex items-center gap-1 px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-medium">
+                      {job.category}
+                    </div>
+                  )}
+                  {job.postedAt && (
+                    <div className="flex items-center gap-1 px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-medium">
+                      <Calendar className="w-3 h-3" />{new Date(job.postedAt).toLocaleDateString('en')}
+                    </div>
+                  )}
+                </div>
+
+                {/* Información de la empresa */}
+                <section className="space-y-3">
+                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                    <Building2 className="w-3.5 h-3.5 text-lime-500" />Company Information
+                  </h3>
+
+                  {displayCompany ? (
+                    <div className="bg-slate-50 rounded-xl border border-slate-200 overflow-hidden">
+                      <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-4 py-3 flex items-center justify-between">
+                        <div>
+                          <p className="text-sm font-bold text-white">{displayCompany.name}</p>
+                          <p className="text-xs text-slate-300">{displayCompany.legalName || displayCompany.industry || '—'}</p>
+                        </div>
+                        {displayCompany.confidenceScore && (
+                          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${displayCompany.confidenceScore >= 80 ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}`}>
+                            {displayCompany.confidenceScore}%
+                          </span>
+                        )}
+                      </div>
+                      <div className="p-4 space-y-3">
+                        <div className="grid grid-cols-2 gap-3">
+                          <InfoField label="Industry" value={displayCompany.industry} />
+                          <InfoField label="Size" value={displayCompany.size} icon={<Users className="w-3 h-3" />} />
+                          <InfoField label="City" value={[displayCompany.hqCity, displayCompany.hqProvince].filter(Boolean).join(', ')} icon={<MapPin className="w-3 h-3" />} />
+                          <InfoField label="Country" value={displayCompany.hqCountry} />
+                          {displayCompany.phone && <InfoField label="Phone" value={displayCompany.phone} icon={<Phone className="w-3 h-3" />} />}
+                          {displayCompany.contactEmail && (
+                            <div className="space-y-0.5">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1"><Mail className="w-3 h-3" /> Email</p>
+                              <a href={`mailto:${displayCompany.contactEmail}`} className="text-xs font-medium text-blue-600 hover:underline truncate block">{displayCompany.contactEmail}</a>
+                            </div>
+                          )}
+                        </div>
+                        {displayCompany.exactAddress && (
+                          <div className="p-2.5 bg-white rounded-lg border border-slate-200 flex items-start gap-2">
+                            <MapPin className="w-3 h-3 text-slate-400 mt-0.5 shrink-0" />
+                            <p className="text-[11px] text-slate-600">{displayCompany.exactAddress}</p>
+                          </div>
+                        )}
+                        {displayCompany.website && (
+                          <a href={displayCompany.website} target="_blank" rel="noreferrer"
+                            className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline">
+                            <Globe className="w-3 h-3" />{displayCompany.website}
+                          </a>
+                        )}
+                        {displayCompany.description && (
+                          <p className="text-xs text-slate-600 leading-relaxed border-t border-slate-100 pt-3">{displayCompany.description}</p>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-slate-50 rounded-xl border border-dashed border-slate-300 p-5 flex items-center gap-4">
+                      <div className="w-9 h-9 bg-slate-200 rounded-xl flex items-center justify-center shrink-0">
+                        <Building className="w-4 h-4 text-slate-400" />
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-slate-700">{job.companyName}</p>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          {job.companyEnrichmentStatus === 'pending'
+                            ? 'Enrichment pending — data will appear when complete.'
+                            : 'This company has no enriched data yet.'}
+                        </p>
+                        {(job.companyHqCity || job.companyIndustry) && (
+                          <div className="flex gap-1.5 mt-2 flex-wrap">
+                            {job.companyIndustry && <span className="text-[10px] px-2 py-0.5 bg-slate-200 rounded-full text-slate-600">{job.companyIndustry}</span>}
+                            {job.companyHqCity && <span className="text-[10px] px-2 py-0.5 bg-slate-200 rounded-full text-slate-600 flex items-center gap-1"><MapPin className="w-2.5 h-2.5" />{job.companyHqCity}</span>}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                {/* Análisis de compatibilidad IA */}
+                <section className="space-y-3">
+                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                    <MessageSquare className="w-3.5 h-3.5 text-lime-500" />AI Fit Analysis
+                  </h3>
+                  {fitAnalysis ? (
+                    <div className="bg-lime-50 border border-lime-100 rounded-xl p-4 text-lime-900 text-xs leading-relaxed whitespace-pre-wrap">{fitAnalysis}</div>
+                  ) : (
+                    <button onClick={handleAnalyzeFit} disabled={analyzing}
+                      className="w-full py-3 border-2 border-dashed border-slate-200 rounded-xl text-slate-500 text-sm font-medium hover:border-lime-500 hover:text-lime-600 transition-all flex items-center justify-center gap-2">
+                      {analyzing ? <><Loader2 className="w-4 h-4 animate-spin" />Analyzing...</> : <><Sparkles className="w-4 h-4" />Analyze Fit</>}
+                    </button>
+                  )}
+                </section>
+
+                {/* Notas */}
+                <section className="space-y-2">
+                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">My Notes</h3>
+                  <textarea className="w-full h-24 p-3 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-lime-500/20 focus:border-lime-500 transition-all resize-none"
+                    placeholder="Add your notes about this position..." value={notes} onChange={e => setNotes(e.target.value)} />
+                </section>
+
+              </div>{/* end LEFT */}
+
+              {/* ── COLUMNA DERECHA: candidato + auto-apply ── */}
+              <div className="p-6 space-y-5">
+
+                {/* Selección de candidato */}
+                <section className="space-y-3">
+                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                    <ExternalLink className="w-3.5 h-3.5 text-lime-500" />Extension Sync / Auto-Apply
+                  </h3>
+                  <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 space-y-3">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-400 uppercase">Candidate to Submit</label>
+                      <select value={selectedCandidateId} onChange={e => setSelectedCandidateId(e.target.value)}
+                        className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-lime-500/20 outline-none">
+                        <option value="">-- Select Candidate --</option>
+                        {candidates.map(c => <option key={c.id} value={c.id}>{c.name} ({c.role})</option>)}
+                      </select>
+                    </div>
+                    <button onClick={handleSyncWithExtension} disabled={!selectedCandidateId || syncing}
+                      className="w-full py-2.5 bg-slate-900 text-white rounded-xl text-sm font-medium hover:bg-slate-800 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+                      {syncing ? <><Loader2 className="w-4 h-4 animate-spin" />Preparing...</> : <><Globe className="w-4 h-4" />Sync with Extension</>}
+                    </button>
+                    {syncResult && (
+                      <div className="p-3 bg-lime-50 border border-lime-100 rounded-lg">
+                        <p className="text-[10px] text-lime-700 font-bold uppercase mb-1">Ready</p>
+                        <p className="text-xs text-lime-600">Data mapped for {job.source}. Open the portal to auto-fill.</p>
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                {/* Backend automation info */}
+                <div className="p-3 bg-blue-50 border-l-4 border-blue-500 rounded-r-xl flex items-start gap-3">
+                  <Sparkles className="w-4 h-4 text-blue-600 mt-0.5 shrink-0" />
+                  <div>
+                    <p className="text-xs font-bold text-blue-900">Backend Automation</p>
+                    <p className="text-[10px] text-blue-700">We detect the portal (Greenhouse, Lever, etc.) and apply via API when possible.</p>
+                  </div>
+                </div>
+
+                {/* Extensión requerida */}
+                {requiresExtension && (
+                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
+                    <div className="flex items-center gap-2 text-amber-800">
+                      <Globe className="w-4 h-4" />
+                      <p className="text-sm font-bold">Extension required: {portalType?.toUpperCase()}</p>
+                    </div>
+                    <a href={job.url} target="_blank" rel="noreferrer"
+                      className="inline-flex px-3 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-bold hover:bg-amber-700 items-center gap-1">
+                      Open Position <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                )}
+
+                {/* Logs de automatización */}
+                {showLogs && (
+                  <div className="space-y-3">
+                    {verification && (
+                      <div className="grid grid-cols-3 gap-2">
+                        {[['layer1_submit', 'Layer 1', 'Submit'], ['layer2_email', 'Layer 2', 'Email'], ['layer3_portal', 'Layer 3', 'Portal']].map(([key, layer, label]) => (
+                          <div key={key} className={`p-2.5 rounded-xl border flex flex-col items-center gap-1 text-center text-xs ${
+                            (verification as any)[key] === 'success' ? 'bg-lime-50 border-lime-100 text-lime-700' :
+                            (verification as any)[key] === 'failed' ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-slate-50 border-slate-100 text-slate-400'}`}>
+                            <CheckCircle className={`w-3.5 h-3.5 ${(verification as any)[key] === 'success' ? 'text-lime-500' : 'text-slate-300'}`} />
+                            <span className="font-bold text-[10px] uppercase">{layer}</span>
+                            <span className="text-[9px]">{label}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {applicationId && (
+                      <div className="flex items-center justify-between p-2.5 bg-slate-900 rounded-xl">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Application ID</span>
+                        <span className="font-mono text-xs text-lime-400">{applicationId}</span>
+                      </div>
+                    )}
+                    <div className="bg-slate-900 rounded-xl overflow-hidden border border-slate-800">
+                      <div className="p-2.5 border-b border-slate-800 flex items-center justify-between">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase">Automation Logs</p>
+                        <div className="flex gap-1">
+                          {['bg-rose-500', 'bg-amber-500', 'bg-lime-500'].map(c => <div key={c} className={`w-2 h-2 rounded-full ${c}`} />)}
+                        </div>
+                      </div>
+                      <div className="p-3 max-h-40 overflow-y-auto font-mono text-[11px] space-y-1.5">
+                        {automationLogs.length === 0 && submitting && (
+                          <div className="flex items-center gap-2 text-slate-500 italic"><Loader2 className="w-3 h-3 animate-spin" />Connecting...</div>
+                        )}
+                        {automationLogs.map((log, i) => (
+                          <motion.div key={i} initial={{ opacity: 0, x: -5 }} animate={{ opacity: 1, x: 0 }} className="flex gap-2">
+                            <span className="text-slate-600 shrink-0">[{new Date(log.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]</span>
+                            <span className={log.level === 'success' ? 'text-lime-400' : log.level === 'error' ? 'text-rose-400' : log.level === 'warning' ? 'text-amber-400' : 'text-slate-300'}>
+                              {log.level === 'success' && '✓ '}{log.level === 'error' && '✗ '}{log.message}
+                            </span>
+                          </motion.div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Trigger Auto-Apply */}
+                <button onClick={handleSubmitApplication} disabled={!selectedCandidateId || submitting}
+                  className="w-full py-3.5 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm">
+                  {submitting ? <><Loader2 className="w-5 h-5 animate-spin" />Running...</> : <><Sparkles className="w-5 h-5" />Trigger Smart Auto-Apply</>}
+                </button>
+
+                <AnimatePresence>
+                  {submitFeedback && (
+                    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                      className={`p-3.5 rounded-xl text-sm font-medium flex items-center gap-3 ${submitFeedback.success ? 'bg-lime-50 text-lime-700 border border-lime-100' : 'bg-rose-50 text-rose-700 border border-rose-100'}`}>
+                      {submitFeedback.success ? <CheckCircle className="w-5 h-5" /> : <X className="w-5 h-5" />}
+                      {submitFeedback.message}
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+              </div>{/* end RIGHT */}
+
+            </div>{/* end 2-col grid */}
+          </div>{/* end scrollable body */}
+
+        </motion.div>
       </div>
-    </motion.div>
+    </>
+  );
+};
+
+// Helper sub-component
+const InfoField: React.FC<{ label: string; value?: string | null; icon?: React.ReactNode }> = ({ label, value, icon }) => {
+  if (!value) return null;
+  return (
+    <div className="space-y-0.5">
+      <p className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1">{icon}{label}</p>
+      <p className="text-xs font-medium text-slate-900">{value}</p>
+    </div>
   );
 };

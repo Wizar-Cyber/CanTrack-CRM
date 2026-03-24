@@ -2,8 +2,11 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
+import ExcelJS from 'exceljs';
 import { AutomationService, AutomationLogEntry, VerificationStatus } from "./server/services/automation.service.js";
-import { GeminiService } from "./server/services/gemini.service.js";
+import { EnrichmentService } from "./server/services/enrichment.service.js";
+import { GeminiService } from "./server/services/gemini.service.js";  // coverLetter directo
+import { MDirectorService } from "./server/services/mdirector.service.js";
 import pkg from 'pg';
 const { Pool } = pkg;
 import dotenv from 'dotenv';
@@ -59,7 +62,7 @@ function slugify(name: string): string {
 // ── Column allowlist for safe dynamic updates ─────────────────────────────────
 const ALLOWED_COMPANY_COLUMNS = new Set([
   'enrichment_status', 'industry', 'sector', 'hq_city', 'hq_province',
-  'hq_country', 'exact_address', 'website', 'description', 'known_ats_portal',
+  'hq_country', 'exact_address', 'phone', 'contact_email', 'website', 'description', 'known_ats_portal',
   'confidence_score', 'needs_manual_review', 'company_size', 'is_publicly_traded',
   'stock_ticker', 'legal_name', 'name',
 ]);
@@ -318,7 +321,23 @@ async function startServer() {
 
   app.get('/api/jobs', requireAuth, async (req, res) => {
     try {
-      const result = await pool.query(`
+      const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
+      const limit = Math.min(200, Math.max(10, parseInt(req.query.limit as string) || 50));
+      const offset = (page - 1) * limit;
+      const search = ((req.query.search as string) || '').trim();
+
+      const params: any[] = [limit, offset];
+      let searchClause = '';
+      if (search) {
+        searchClause = `AND (
+          j.title ILIKE $3
+          OR COALESCE(c.name, j.raw_company_name) ILIKE $3
+          OR j.location ILIKE $3
+        )`;
+        params.push(`%${search}%`);
+      }
+
+      const baseSelect = `
         SELECT
           j.*,
           COALESCE(c.name, j.raw_company_name) AS company_name,
@@ -333,10 +352,26 @@ async function startServer() {
           c.confidence_score   AS company_confidence_score
         FROM jobs j
         LEFT JOIN companies c ON j.company_id = c.id
-        WHERE j.is_active = true
-        ORDER BY j.created_at DESC
-      `);
-      res.json(result.rows);
+        WHERE j.is_active = true ${searchClause}
+      `;
+
+      const [rowsResult, countResult] = await Promise.all([
+        pool.query(`${baseSelect} ORDER BY j.created_at DESC LIMIT $1 OFFSET $2`, params),
+        pool.query(
+          `SELECT COUNT(*)::int AS total FROM jobs j
+           LEFT JOIN companies c ON j.company_id = c.id
+           WHERE j.is_active = true ${searchClause}`,
+          search ? [`%${search}%`] : [],
+        ),
+      ]);
+
+      res.json({
+        data:       rowsResult.rows,
+        total:      countResult.rows[0].total,
+        page,
+        limit,
+        totalPages: Math.ceil(countResult.rows[0].total / limit),
+      });
     } catch (error) {
       console.error('[DB Error] Fetching jobs:', error);
       res.status(500).json({ error: 'Error al obtener trabajos.' });
@@ -353,7 +388,10 @@ async function startServer() {
           (SELECT COUNT(*) FROM companies WHERE enrichment_status != 'pending')::int AS enriched_companies,
           (SELECT COUNT(*) FROM companies WHERE enrichment_status = 'pending')::int AS pending_enrichment,
           (SELECT COUNT(*) FROM companies WHERE needs_manual_review = true)::int AS needs_review,
-          (SELECT COUNT(*) FROM applications)::int AS total_applications
+          (SELECT COUNT(*) FROM applications)::int AS total_applications,
+          (SELECT COUNT(*) FROM candidates)::int AS total_candidates,
+          (SELECT COUNT(*) FROM candidates WHERE status = 'Available')::int AS active_candidates,
+          (SELECT COUNT(*) FROM candidates WHERE status = 'Placed')::int AS placed_candidates
       `);
       return res.json(result.rows[0]);
     } catch (error) {
@@ -478,6 +516,63 @@ async function startServer() {
     }
   });
 
+  // POST /api/mapping/prepare — genera payload estructurado para auto-fill de extensión (LLM en servidor)
+  app.post('/api/mapping/prepare', requireAuth, async (req: AuthRequest, res) => {
+    const { candidate, job } = req.body;
+    if (!candidate || !job) return res.status(400).json({ error: 'candidate y job son requeridos.' });
+
+    // Si hay proveedor LLM disponible, generar respuesta enriquecida
+    if (process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY) {
+      try {
+        const prompt = `You are a recruitment assistant. Return ONLY a valid JSON object (no markdown) with this exact structure:
+{
+  "personal_info": { "first_name": "...", "last_name": "...", "email": "...", "phone": "...", "location": "..." },
+  "links": { "linkedin": "...", "portfolio": "..." },
+  "experience_summary": "2-sentence summary tailored for this role",
+  "common_questions": [
+    { "question": "Years of experience with ${(job.requiredSkills?.[0] || 'relevant tech')}", "answer": "..." },
+    { "question": "Why are you a good fit for ${job.companyName}?", "answer": "..." }
+  ]
+}
+Candidate: ${candidate.name}, ${candidate.yearsOfExperience} years exp, skills: ${candidate.skills?.join(', ')}.
+Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(', ')}.`;
+
+        const model = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
+        const apiKey = process.env.GROQ_API_KEY!;
+        const aiRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: 'user', content: prompt }],
+            response_format: { type: 'json_object' },
+            max_tokens: 512,
+            temperature: 0.2,
+          }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (aiRes.ok) {
+          const json: any = await aiRes.json();
+          const parsed = JSON.parse(json.choices?.[0]?.message?.content ?? '{}');
+          return res.json({ ...parsed, _provider: 'groq' });
+        }
+      } catch { /* caer al fallback */ }
+    }
+
+    // Fallback básico sin LLM
+    return res.json({
+      personal_info: {
+        first_name: candidate.name?.split(' ')[0] ?? '',
+        last_name: candidate.name?.split(' ').slice(1).join(' ') ?? '',
+        email: candidate.email ?? '',
+        phone: candidate.phone ?? '',
+        location: candidate.location ?? '',
+      },
+      links: { linkedin: candidate.linkedinUrl ?? '', portfolio: candidate.portfolioUrl ?? '' },
+      _provider: 'fallback',
+    });
+  });
+
   // POST /api/gemini/enrich — enriquece una empresa específica (comprueba datos antes de llamar a Gemini)
   app.post('/api/gemini/enrich', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
     const { companyId, companyName } = req.body;
@@ -498,14 +593,20 @@ async function startServer() {
         return res.json({ success: true, source: 'db_matched', data: row });
       }
 
-      // 2. No tiene datos → llamar a Gemini
-      const data = await GeminiService.enrichCompany(companyName);
-      const updatePayload: Record<string, any> = { enrichment_status: 'scraped' };
+      // 2. No tiene datos → enriquecer (Gemini → Groq → Ollama → WebSearch)
+      const data = await EnrichmentService.enrichCompany(companyName);
+      const hasData = data.industry || data.description || data.website;
+      const newStatus = hasData ? 'scraped' : 'failed';
+      const updatePayload: Record<string, any> = { enrichment_status: newStatus };
       if (data.industry) updatePayload.industry = data.industry;
       if (data.sector) updatePayload.sector = data.sector;
       if (data.company_size) updatePayload.company_size = data.company_size;
       if (data.hq_city) updatePayload.hq_city = data.hq_city;
+      if (data.hq_province) updatePayload.hq_province = data.hq_province;
       if (data.hq_country) updatePayload.hq_country = data.hq_country;
+      if (data.exact_address) updatePayload.exact_address = data.exact_address;
+      if (data.phone) updatePayload.phone = data.phone;
+      if (data.contact_email) updatePayload.contact_email = data.contact_email;
       if (data.website) updatePayload.website = data.website;
       if (data.description) updatePayload.description = data.description;
       if (data.is_publicly_traded !== undefined) updatePayload.is_publicly_traded = data.is_publicly_traded;
@@ -520,7 +621,7 @@ async function startServer() {
         `UPDATE companies SET ${setClause}, updated_at = CURRENT_TIMESTAMP, enriched_at = CURRENT_TIMESTAMP WHERE id = $1`,
         [companyId, ...values]
       );
-      return res.json({ success: true, source: 'gemini', data });
+      return res.json({ success: true, source: data._provider ?? 'unknown', data });
     } catch (error) {
       console.error('[Gemini Enrich Error]:', error);
       return res.status(500).json({ error: 'Error en enriquecimiento con Gemini.' });
@@ -557,14 +658,23 @@ async function startServer() {
         return res.json({ done: false, source: 'db_matched', companyId, companyName });
       }
 
-      // Llamar a Gemini para enriquecer
-      const data = await GeminiService.enrichCompany(companyName);
-      const updatePayload: Record<string, any> = { enrichment_status: 'scraped' };
+      // Enriquecer con proveedor disponible (Gemini → Groq → Ollama → WebSearch)
+      const data = await EnrichmentService.enrichCompany(companyName);
+
+      // Si ningún proveedor devolvió datos reales, marcar como failed (no scraped)
+      const hasData = data.industry || data.description || data.website;
+      const newStatus = hasData ? 'scraped' : 'failed';
+
+      const updatePayload: Record<string, any> = { enrichment_status: newStatus };
       if (data.industry) updatePayload.industry = data.industry;
       if (data.sector) updatePayload.sector = data.sector;
       if (data.company_size) updatePayload.company_size = data.company_size;
       if (data.hq_city) updatePayload.hq_city = data.hq_city;
+      if (data.hq_province) updatePayload.hq_province = data.hq_province;
       if (data.hq_country) updatePayload.hq_country = data.hq_country;
+      if (data.exact_address) updatePayload.exact_address = data.exact_address;
+      if (data.phone) updatePayload.phone = data.phone;
+      if (data.contact_email) updatePayload.contact_email = data.contact_email;
       if (data.website) updatePayload.website = data.website;
       if (data.description) updatePayload.description = data.description;
       if (data.is_publicly_traded !== undefined) updatePayload.is_publicly_traded = data.is_publicly_traded;
@@ -583,7 +693,7 @@ async function startServer() {
       // Cuántas quedan
       const countResult = await pool.query(`SELECT COUNT(*) FROM companies WHERE enrichment_status = 'pending'`);
       const remaining = parseInt(countResult.rows[0].count, 10);
-      return res.json({ done: remaining === 0, source: 'gemini', companyId, companyName, data, remaining });
+      return res.json({ done: remaining === 0, source: data._provider ?? 'unknown', companyId, companyName, data, remaining });
     } catch (error: any) {
       // Si la transacción falló, liberar el lock
       console.error('[process-next Error]:', error);
@@ -591,6 +701,71 @@ async function startServer() {
         `UPDATE companies SET enrichment_status = 'pending' WHERE enrichment_status = 'processing'`
       ).catch(() => {});
       return res.status(500).json({ error: 'Error procesando cola de enriquecimiento.' });
+    }
+  });
+
+  // POST /api/companies/export — exporta empresas seleccionadas a Excel
+  app.post('/api/companies/export', requireAuth, async (req, res) => {
+    try {
+      const { ids } = req.body; // array de UUIDs; si vacío exporta todas
+      let query: string;
+      let params: any[];
+      if (Array.isArray(ids) && ids.length > 0) {
+        query = `SELECT * FROM companies WHERE id = ANY($1::uuid[]) ORDER BY name`;
+        params = [ids];
+      } else {
+        query = `SELECT * FROM companies ORDER BY name`;
+        params = [];
+      }
+      const result = await pool.query(query, params);
+      const rows = result.rows;
+
+      const wb = new ExcelJS.Workbook();
+      wb.creator = 'CanTrack CRM';
+      const ws = wb.addWorksheet('Empresas');
+
+      ws.columns = [
+        { header: 'Empresa',          key: 'name',          width: 32 },
+        { header: 'Dirección',        key: 'exact_address', width: 55 },
+        { header: 'Web',              key: 'website',       width: 38 },
+      ];
+
+      // Cabecera con fondo azul oscuro
+      ws.getRow(1).eachCell(cell => {
+        cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A5F' } };
+        cell.font   = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+        cell.border = { bottom: { style: 'thin', color: { argb: 'FF000000' } } };
+        cell.alignment = { vertical: 'middle', horizontal: 'center' };
+      });
+      ws.getRow(1).height = 22;
+
+      for (const r of rows) {
+        ws.addRow({
+          name:         r.name,
+          exact_address: r.exact_address ?? '',
+          website:      r.website ?? '',
+        });
+      }
+
+      // Zebra striping
+      ws.eachRow((row, rowNum) => {
+        if (rowNum === 1) return;
+        const bg = rowNum % 2 === 0 ? 'FFF0F4FA' : 'FFFFFFFF';
+        row.eachCell(cell => {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+          cell.alignment = { vertical: 'middle', wrapText: false };
+        });
+      });
+
+      ws.autoFilter = { from: 'A1', to: 'C1' };
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="empresas-${new Date().toISOString().slice(0,10)}.xlsx"`);
+      await wb.xlsx.write(res);
+      res.end();
+    } catch (error) {
+      console.error('[Export Error]:', error);
+      res.status(500).json({ error: 'Error al exportar Excel.' });
     }
   });
 
@@ -783,6 +958,228 @@ async function startServer() {
       if (error.code === '23503') return res.status(409).json({ error: 'No se puede eliminar: la empresa tiene vacantes asociadas.' });
       console.error('[Company DELETE Error]:', error);
       return res.status(500).json({ error: 'Error al eliminar empresa.' });
+    }
+  });
+
+  // POST /api/companies/:id/send-offer — Envía correo de oferta de personal via mDirector
+  app.post('/api/companies/:id/send-offer', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
+    const { id: companyId } = req.params;
+    const { toEmail, toName, employeeTypeId, employeeTypeName, employeeTypeDescription, subject, customMessage } = req.body;
+
+    if (!toEmail || !employeeTypeId || !employeeTypeName || !subject)
+      return res.status(400).json({ error: 'toEmail, employeeTypeId, employeeTypeName y subject son requeridos.' });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(toEmail))
+      return res.status(400).json({ error: 'Email de destino inválido.' });
+
+    try {
+      const companyRes = await pool.query('SELECT id, name FROM companies WHERE id = $1', [companyId]);
+      if (companyRes.rows.length === 0) return res.status(404).json({ error: 'Empresa no encontrada.' });
+
+      const company = companyRes.rows[0];
+      const senderName = `${req.user!.firstName} ${req.user!.lastName}`;
+
+      const htmlBody = MDirectorService.buildOfferEmailHtml({
+        companyName: company.name,
+        contactName: toName || undefined,
+        employeeTypeName,
+        employeeTypeDescription: employeeTypeDescription || '',
+        customMessage: customMessage || '',
+        senderName,
+      });
+
+      const result = await MDirectorService.sendEmail({
+        toEmail,
+        toName: toName || company.name,
+        subject,
+        htmlBody,
+        companyId,
+        employeeTypeId,
+        sentByUserId: req.user!.id,
+      });
+
+      if (!result.success) return res.status(502).json({ error: result.error || 'Error al enviar el correo.' });
+
+      // Registrar en historial
+      await pool.query(
+        `INSERT INTO email_logs (company_id, sent_by, to_email, to_name, subject, employee_type_id, employee_type_name, mdirector_message_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [companyId, req.user!.id, toEmail, toName || null, subject, employeeTypeId, employeeTypeName, result.messageId || null]
+      );
+
+      console.log(`[mDirector] Oferta enviada → ${toEmail} | empresa: ${company.name} | perfil: ${employeeTypeName}`);
+      return res.json({ success: true, messageId: result.messageId });
+    } catch (error: any) {
+      console.error('[Send Offer Error]:', error);
+      return res.status(500).json({ error: 'Error interno al enviar la oferta.' });
+    }
+  });
+
+  // GET /api/companies/:id/email-logs — historial de correos enviados
+  app.get('/api/companies/:id/email-logs', requireAuth, async (req, res) => {
+    try {
+      const result = await pool.query(
+        `SELECT el.*, u.first_name || ' ' || u.last_name AS sent_by_name
+         FROM email_logs el
+         LEFT JOIN users u ON el.sent_by = u.id
+         WHERE el.company_id = $1
+         ORDER BY el.sent_at DESC
+         LIMIT 50`,
+        [req.params.id]
+      );
+      return res.json(result.rows);
+    } catch (error) {
+      console.error('[Email Logs Error]:', error);
+      return res.status(500).json({ error: 'Error al obtener historial.' });
+    }
+  });
+
+  // ── Candidates ───────────────────────────────────────────────────────────────
+
+  // GET /api/candidates — list with skills
+  app.get('/api/candidates', requireAuth, async (_req, res) => {
+    try {
+      const result = await pool.query(`
+        SELECT c.*,
+               COALESCE(json_agg(cs.skill ORDER BY cs.skill)
+                        FILTER (WHERE cs.skill IS NOT NULL), '[]') AS skills
+        FROM candidates c
+        LEFT JOIN candidate_skills cs ON cs.candidate_id = c.id
+        GROUP BY c.id
+        ORDER BY c.created_at DESC
+      `);
+      return res.json(result.rows);
+    } catch (error) {
+      console.error('[Candidates GET Error]:', error);
+      return res.status(500).json({ error: 'Error al obtener candidatos.' });
+    }
+  });
+
+  // GET /api/candidates/:id — single candidate + applications
+  app.get('/api/candidates/:id', requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const [cRes, appRes] = await Promise.all([
+        pool.query(`
+          SELECT c.*,
+                 COALESCE(json_agg(cs.skill ORDER BY cs.skill)
+                          FILTER (WHERE cs.skill IS NOT NULL), '[]') AS skills
+          FROM candidates c
+          LEFT JOIN candidate_skills cs ON cs.candidate_id = c.id
+          WHERE c.id = $1
+          GROUP BY c.id
+        `, [id]),
+        pool.query(`
+          SELECT a.*, j.title AS job_title,
+                 COALESCE(co.name, j.raw_company_name) AS company_name
+          FROM applications a
+          JOIN jobs j ON a.job_id = j.id
+          LEFT JOIN companies co ON j.company_id = co.id
+          WHERE a.candidate_id = $1
+          ORDER BY a.created_at DESC
+        `, [id]),
+      ]);
+      if (cRes.rows.length === 0) return res.status(404).json({ error: 'Candidato no encontrado.' });
+      return res.json({ ...cRes.rows[0], applications: appRes.rows });
+    } catch (error) {
+      console.error('[Candidate GET Error]:', error);
+      return res.status(500).json({ error: 'Error al obtener candidato.' });
+    }
+  });
+
+  // POST /api/candidates — create
+  app.post('/api/candidates', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
+    const { name, role, email, phone, location, linkedin_url, resume_url, years_of_experience, bio, skills } = req.body;
+    if (!name?.trim()) return res.status(400).json({ error: 'El nombre es requerido.' });
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query(
+        `INSERT INTO candidates (name, role, email, phone, location, linkedin_url, resume_url, years_of_experience, bio)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+        [name.trim(), role||null, email||null, phone||null, location||null, linkedin_url||null, resume_url||null, years_of_experience||null, bio||null],
+      );
+      const candidate = result.rows[0];
+      if (Array.isArray(skills)) {
+        for (const skill of skills) {
+          if (skill?.trim()) {
+            await client.query(
+              'INSERT INTO candidate_skills (candidate_id, skill) VALUES ($1,$2) ON CONFLICT DO NOTHING',
+              [candidate.id, skill.trim()],
+            );
+          }
+        }
+      }
+      await client.query('COMMIT');
+      return res.status(201).json({ ...candidate, skills: skills || [] });
+    } catch (error: any) {
+      await client.query('ROLLBACK');
+      if (error.code === '23505') return res.status(409).json({ error: 'Ya existe un candidato con ese email.' });
+      console.error('[Candidate POST Error]:', error);
+      return res.status(500).json({ error: 'Error al crear candidato.' });
+    } finally {
+      client.release();
+    }
+  });
+
+  // PATCH /api/candidates/:id — update
+  app.patch('/api/candidates/:id', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
+    const { id } = req.params;
+    const ALLOWED = ['name','role','email','phone','location','linkedin_url','resume_url','years_of_experience','bio','status'];
+    const updates = Object.entries(req.body).filter(([k]) => ALLOWED.includes(k));
+
+    const dbClient = await pool.connect();
+    try {
+      await dbClient.query('BEGIN');
+      if (updates.length > 0) {
+        const set = updates.map(([k], i) => `${k} = $${i + 2}`).join(', ');
+        await dbClient.query(
+          `UPDATE candidates SET ${set}, updated_at = NOW() WHERE id = $1`,
+          [id, ...updates.map(([, v]) => v)],
+        );
+      }
+      if (Array.isArray(req.body.skills)) {
+        await dbClient.query('DELETE FROM candidate_skills WHERE candidate_id = $1', [id]);
+        for (const skill of req.body.skills) {
+          if (skill?.trim()) {
+            await dbClient.query(
+              'INSERT INTO candidate_skills (candidate_id, skill) VALUES ($1,$2) ON CONFLICT DO NOTHING',
+              [id, skill.trim()],
+            );
+          }
+        }
+      }
+      const r = await dbClient.query(`
+        SELECT c.*, COALESCE(json_agg(cs.skill ORDER BY cs.skill)
+               FILTER (WHERE cs.skill IS NOT NULL), '[]') AS skills
+        FROM candidates c LEFT JOIN candidate_skills cs ON cs.candidate_id = c.id
+        WHERE c.id = $1 GROUP BY c.id
+      `, [id]);
+      if (r.rows.length === 0) {
+        await dbClient.query('ROLLBACK');
+        return res.status(404).json({ error: 'Candidato no encontrado.' });
+      }
+      await dbClient.query('COMMIT');
+      return res.json(r.rows[0]);
+    } catch (error: any) {
+      await dbClient.query('ROLLBACK');
+      if (error.code === '23505') return res.status(409).json({ error: 'Email ya en uso.' });
+      console.error('[Candidate PATCH Error]:', error);
+      return res.status(500).json({ error: 'Error al actualizar candidato.' });
+    } finally {
+      dbClient.release();
+    }
+  });
+
+  // DELETE /api/candidates/:id
+  app.delete('/api/candidates/:id', requireAuth, requireRole('admin'), async (req, res) => {
+    try {
+      const r = await pool.query('DELETE FROM candidates WHERE id = $1 RETURNING id', [req.params.id]);
+      if (r.rows.length === 0) return res.status(404).json({ error: 'Candidato no encontrado.' });
+      return res.json({ success: true });
+    } catch (error) {
+      console.error('[Candidate DELETE Error]:', error);
+      return res.status(500).json({ error: 'Error al eliminar candidato.' });
     }
   });
 

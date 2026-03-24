@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Building2, LayoutGrid, List, MapPin, Briefcase, Database, Globe, Loader2, AlertCircle, Zap } from 'lucide-react';
+import { Building2, LayoutGrid, List, MapPin, Briefcase, Database, Globe, Loader2, AlertCircle, Zap, Search, Filter } from 'lucide-react';
 import { Company, Job } from '../../types';
 
 interface CompanyListProps {
@@ -21,9 +21,21 @@ export const CompanyList: React.FC<CompanyListProps> = ({
   const [filter, setFilter] = useState<'all' | 'with_vacancies' | 'pending'>('all');
   const [sizeFilter, setSizeFilter] = useState<'all' | 'Small' | 'Medium' | 'Large' | 'Enterprise'>('all');
   const [ownershipFilter, setOwnershipFilter] = useState<'all' | 'Public' | 'Private'>('all');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
 
   const filteredCompanies = useMemo(() => {
     let result = companies;
+
+    // Search
+    if (searchTerm.trim()) {
+      const q = searchTerm.toLowerCase();
+      result = result.filter(c =>
+        c.name.toLowerCase().includes(q) ||
+        (c.industry || '').toLowerCase().includes(q) ||
+        (c.hqCity || '').toLowerCase().includes(q)
+      );
+    }
 
     // Status Filter
     if (filter === 'pending') {
@@ -56,7 +68,7 @@ export const CompanyList: React.FC<CompanyListProps> = ({
     }
 
     return result;
-  }, [companies, jobs, filter, sizeFilter, ownershipFilter]);
+  }, [companies, jobs, filter, sizeFilter, ownershipFilter, searchTerm]);
 
   const getCompanyJobs = (company: Company) => {
     return jobs.filter(job => job.companyId === company.id || job.companyName === company.name);
@@ -66,7 +78,7 @@ export const CompanyList: React.FC<CompanyListProps> = ({
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <h2 className="text-2xl font-bold text-slate-900">Enriched Companies</h2>
+          <h2 className="text-2xl font-bold text-slate-900">Companies</h2>
           {enrichingIds.size > 0 && (
             <div className="flex items-center gap-2 px-3 py-1 bg-lime-50 text-lime-700 rounded-full border border-lime-100 animate-pulse">
               <Zap className="w-3 h-3 fill-current" />
@@ -100,58 +112,74 @@ export const CompanyList: React.FC<CompanyListProps> = ({
         </div>
       </div>
 
-      {/* Filters Bar */}
-      <div className="flex flex-wrap items-center gap-6 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-        <div className="space-y-2">
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Status</p>
-          <div className="flex bg-slate-100 p-1 rounded-lg">
-            {(['all', 'with_vacancies', 'pending'] as const).map((f) => (
-              <button
-                key={f}
-                onClick={() => setFilter(f)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  filter === f ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                }`}
-              >
-                {f === 'all' ? 'All' : f === 'with_vacancies' ? 'Vacancies' : 'Processing'}
-              </button>
-            ))}
+      {/* Search + Filter row */}
+      <div className="flex flex-col gap-3">
+        <div className="flex gap-3">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+            <input type="text" placeholder="Search company, industry or city…"
+              value={searchTerm} onChange={e => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-2.5 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-lime-500/30 focus:border-lime-500 shadow-sm" />
           </div>
+          <button onClick={() => setShowFilters(s => !s)}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border shadow-sm transition-colors ${
+              showFilters ? 'bg-lime-600 text-white border-lime-600' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}>
+            <Filter className="w-4 h-4" />
+            Filters
+            {(filter !== 'all' || sizeFilter !== 'all' || ownershipFilter !== 'all') && (
+              <span className={`text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center ${
+                showFilters ? 'bg-white text-lime-600' : 'bg-lime-600 text-white'
+              }`}>
+                {(filter !== 'all' ? 1 : 0) + (sizeFilter !== 'all' ? 1 : 0) + (ownershipFilter !== 'all' ? 1 : 0)}
+              </span>
+            )}
+          </button>
         </div>
 
-        <div className="space-y-2">
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Company Size</p>
-          <div className="flex bg-slate-100 p-1 rounded-lg">
-            {(['all', 'Small', 'Medium', 'Large', 'Enterprise'] as const).map((s) => (
-              <button
-                key={s}
-                onClick={() => setSizeFilter(s)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  sizeFilter === s ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                }`}
-              >
-                {s === 'all' ? 'All' : s}
-              </button>
-            ))}
+        {showFilters && (
+          <div className="flex flex-wrap items-center gap-6 bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+            <div className="space-y-2">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Status</p>
+              <div className="flex bg-slate-100 p-1 rounded-lg gap-1">
+                {(['all', 'with_vacancies', 'pending'] as const).map(f => (
+                  <button key={f} onClick={() => setFilter(f)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      filter === f ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    }`}>
+                    {f === 'all' ? 'All' : f === 'with_vacancies' ? 'With Vacancies' : 'Processing'}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Size</p>
+              <div className="flex bg-slate-100 p-1 rounded-lg gap-1">
+                {(['all', 'Small', 'Medium', 'Large', 'Enterprise'] as const).map(s => (
+                  <button key={s} onClick={() => setSizeFilter(s)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      sizeFilter === s ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    }`}>
+                    {s === 'all' ? 'All' : s}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Type</p>
+              <div className="flex bg-slate-100 p-1 rounded-lg gap-1">
+                {(['all', 'Public', 'Private'] as const).map(o => (
+                  <button key={o} onClick={() => setOwnershipFilter(o)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      ownershipFilter === o ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
+                    }`}>
+                    {o === 'all' ? 'All' : o === 'Public' ? 'Public' : 'Private'}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-        </div>
-
-        <div className="space-y-2">
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Ownership</p>
-          <div className="flex bg-slate-100 p-1 rounded-lg">
-            {(['all', 'Public', 'Private'] as const).map((o) => (
-              <button
-                key={o}
-                onClick={() => setOwnershipFilter(o)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  ownershipFilter === o ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                }`}
-              >
-                {o === 'all' ? 'All' : o}
-              </button>
-            ))}
-          </div>
-        </div>
+        )}
       </div>
 
       {viewMode === 'grid' ? (

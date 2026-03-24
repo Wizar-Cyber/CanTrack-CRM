@@ -14,6 +14,8 @@ export interface Company {
   hqProvince?: string;
   hqCountry?: string;
   exactAddress?: string;
+  phone?: string;
+  contactEmail?: string;
   website?: string;
   description?: string;
   isPubliclyTraded?: boolean;

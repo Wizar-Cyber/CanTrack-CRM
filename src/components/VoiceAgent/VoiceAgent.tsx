@@ -5,30 +5,30 @@ export const VoiceAgent = () => {
   const [isActive, setIsActive] = useState(false);
 
   const stats = [
-    { label: 'Llamadas Hoy', value: '42/65', icon: PhoneCall, color: 'text-blue-600', bg: 'bg-blue-50' },
-    { label: 'Minutos Consumidos', value: '128 min', icon: Clock, color: 'text-amber-600', bg: 'bg-amber-50' },
-    { label: 'Costo Estimado', value: '$15.36', icon: DollarSign, color: 'text-emerald-600', bg: 'bg-emerald-50' },
-    { label: 'Tasa de Éxito', value: '68%', icon: Globe, color: 'text-purple-600', bg: 'bg-purple-50' },
+    { label: 'Calls Today', value: '42/65', icon: PhoneCall, color: 'text-blue-600', bg: 'bg-blue-50' },
+    { label: 'Minutes Used', value: '128 min', icon: Clock, color: 'text-amber-600', bg: 'bg-amber-50' },
+    { label: 'Estimated Cost', value: '$15.36', icon: DollarSign, color: 'text-emerald-600', bg: 'bg-emerald-50' },
+    { label: 'Success Rate', value: '68%', icon: Globe, color: 'text-purple-600', bg: 'bg-purple-50' },
   ];
 
   const recentCalls = [
-    { id: '1', company: 'AutoRepair Pro', duration: '2m 15s', status: 'Interesado', lang: 'FR', cost: '$0.27', time: '10:45 AM' },
-    { id: '2', company: 'Textiles Elite', duration: '1m 30s', status: 'No contesta', lang: 'FR', cost: '$0.18', time: '10:30 AM' },
-    { id: '3', company: 'Logistics Hub', duration: '4m 10s', status: 'Reunión Agendada', lang: 'EN', cost: '$0.50', time: '09:15 AM' },
-    { id: '4', company: 'City Mechanics', duration: '3m 05s', status: 'Interesado', lang: 'FR', cost: '$0.37', time: '08:50 AM' },
+    { id: '1', company: 'AutoRepair Pro', duration: '2m 15s', status: 'Interested', lang: 'FR', cost: '$0.27', time: '10:45 AM' },
+    { id: '2', company: 'Textiles Elite', duration: '1m 30s', status: 'No Answer', lang: 'FR', cost: '$0.18', time: '10:30 AM' },
+    { id: '3', company: 'Logistics Hub', duration: '4m 10s', status: 'Meeting Scheduled', lang: 'EN', cost: '$0.50', time: '09:15 AM' },
+    { id: '4', company: 'City Mechanics', duration: '3m 05s', status: 'Interested', lang: 'FR', cost: '$0.37', time: '08:50 AM' },
   ];
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900">Agente de Voz Bilingüe</h2>
-          <p className="text-sm text-slate-500">Automatización de 65 llamadas diarias (FR/EN)</p>
+          <h2 className="text-2xl font-bold text-slate-900">Bilingual Voice Agent</h2>
+          <p className="text-sm text-slate-500">Automation of 65 daily calls (FR/EN)</p>
         </div>
         <div className="flex gap-3">
           <button className="px-4 py-2 border border-slate-200 text-slate-600 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors flex items-center gap-2">
             <Settings2 className="w-4 h-4" />
-            Configurar Guiones
+            Configure Scripts
           </button>
           <button
             onClick={() => setIsActive(!isActive)}
@@ -37,7 +37,7 @@ export const VoiceAgent = () => {
             }`}
           >
             {isActive ? <Square className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
-            {isActive ? 'Detener Agente' : 'Iniciar Campaña'}
+            {isActive ? 'Stop Agent' : 'Start Campaign'}
           </button>
         </div>
       </div>
@@ -58,18 +58,18 @@ export const VoiceAgent = () => {
 
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
         <div className="p-5 border-b border-slate-100 flex justify-between items-center">
-          <h3 className="font-bold text-slate-900">Registro de Llamadas Recientes</h3>
-          <span className="text-xs font-medium text-slate-500">Cobro por minuto activo</span>
+          <h3 className="font-bold text-slate-900">Recent Call Log</h3>
+          <span className="text-xs font-medium text-slate-500">Per-minute billing active</span>
         </div>
         <table className="w-full text-left text-sm">
           <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
             <tr>
-              <th className="px-6 py-4 font-medium">Empresa</th>
-              <th className="px-6 py-4 font-medium">Idioma</th>
-              <th className="px-6 py-4 font-medium">Duración</th>
-              <th className="px-6 py-4 font-medium">Costo</th>
-              <th className="px-6 py-4 font-medium">Resultado</th>
-              <th className="px-6 py-4 font-medium text-right">Hora</th>
+              <th className="px-6 py-4 font-medium">Company</th>
+              <th className="px-6 py-4 font-medium">Language</th>
+              <th className="px-6 py-4 font-medium">Duration</th>
+              <th className="px-6 py-4 font-medium">Cost</th>
+              <th className="px-6 py-4 font-medium">Result</th>
+              <th className="px-6 py-4 font-medium text-right">Time</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -85,8 +85,8 @@ export const VoiceAgent = () => {
                 <td className="px-6 py-4 text-slate-600">{call.cost}</td>
                 <td className="px-6 py-4">
                   <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium ${
-                    call.status === 'Reunión Agendada' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
-                    call.status === 'Interesado' ? 'bg-blue-50 text-blue-700 border border-blue-200' :
+                    call.status === 'Meeting Scheduled' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
+                    call.status === 'Interested' ? 'bg-blue-50 text-blue-700 border border-blue-200' :
                     'bg-slate-100 text-slate-700 border border-slate-200'
                   }`}>
                     {call.status}

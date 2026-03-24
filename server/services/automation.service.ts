@@ -176,55 +176,175 @@ export class AutomationService {
   }
 
   /**
-   * Layer 2/3: Browser Stealth Application (LinkedIn, Indeed, Workday)
+   * Layer 2/3: Browser Stealth Application using Playwright-Extra
+   *
+   * Si AUTOMATION_SUBMIT_ENABLED=true en .env, rellena Y envía el formulario.
+   * Por defecto (false) sólo rellena los campos para previsualización segura.
    */
   private static async applyViaBrowserStealth(job: any, candidate: any, addLog: Function): Promise<Omit<AutomationResult, 'logs' | 'verification'>> {
+    let browser: any = null;
     try {
-      addLog(`Launching stealth browser instance...`, 'info');
-      await new Promise(resolve => setTimeout(resolve, 800));
-      
-      addLog(`Navigating to ${job.url}`, 'info');
-      await new Promise(resolve => setTimeout(resolve, 1200));
+      addLog('Iniciando navegador Playwright stealth...', 'info');
 
-      addLog("Detecting form fields using Gemini Vision mapping...", 'info');
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      addLog("Form fields detected: [First Name, Last Name, Email, Phone, Resume, Experience]", 'success');
+      // Importación dinámica para no romper el arranque si playwright no está
+      const { chromium } = await import('playwright-extra').catch(() => {
+        throw new Error('playwright-extra no está instalado. Ejecutar: npm install playwright-extra playwright');
+      });
 
-      addLog("Simulating human-like typing for text fields...", 'info');
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      // Intentar cargar stealth plugin
+      try {
+        const StealthPlugin = await import('puppeteer-extra-plugin-stealth');
+        (chromium as any).use(StealthPlugin.default());
+        addLog('Plugin anti-detección activo.', 'info');
+      } catch {
+        addLog('Stealth plugin no disponible; continuando sin él.', 'warning');
+      }
 
-      addLog("Bypassing bot detection (Stealth Plugin active)...", 'info');
-      await new Promise(resolve => setTimeout(resolve, 800));
+      browser = await chromium.launch({
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-blink-features=AutomationControlled',
+        ],
+      });
 
-      addLog("Uploading resume.pdf...", 'info');
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const context = await browser.newContext({
+        userAgent:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+          'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+          'Chrome/122.0.0.0 Safari/537.36',
+        viewport: { width: 1280, height: 800 },
+        locale: 'es-CO',
+      });
 
-      addLog("Clicking 'Submit Application' button...", 'info');
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      const page = await context.newPage();
+      page.setDefaultTimeout(15_000);
 
-      addLog("Detecting DOM success signals (MutationObserver active)...", 'info');
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      addLog("Success signal detected: 'Application submitted' modal found.", 'success');
+      addLog(`Navegando a: ${job.url}`, 'info');
+      await page.goto(job.url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      addLog('Página cargada. Analizando campos del formulario...', 'info');
+
+      const filled: string[] = [];
+
+      // —— Email ——
+      const emailEl = await page.$('input[type="email"], input[name="email" i], input[id*="email" i]');
+      if (emailEl && candidate.email) {
+        await emailEl.fill(candidate.email);
+        filled.push('email');
+      }
+
+      // —— Nombre (first + last separados) ——
+      const firstEl = await page.$(
+        'input[name="firstName" i], input[id*="first_name" i], input[name="first-name" i],' +
+        'input[placeholder*="First" i], input[aria-label*="first name" i]',
+      );
+      const lastEl = await page.$(
+        'input[name="lastName" i], input[id*="last_name" i], input[name="last-name" i],' +
+        'input[placeholder*="Last" i], input[aria-label*="last name" i]',
+      );
+      if (firstEl && candidate.name) {
+        await firstEl.fill(candidate.name.split(' ')[0]);
+        filled.push('firstName');
+      }
+      if (lastEl && candidate.name) {
+        await lastEl.fill(candidate.name.split(' ').slice(1).join(' ') || '');
+        filled.push('lastName');
+      }
+      // —— Nombre como campo único ——
+      if (!firstEl && !lastEl) {
+        const nameEl = await page.$(
+          'input[name="name" i], input[id*="full_name" i], input[placeholder*="Full name" i]',
+        );
+        if (nameEl && candidate.name) {
+          await nameEl.fill(candidate.name);
+          filled.push('fullName');
+        }
+      }
+
+      // —— Teléfono ——
+      const phoneEl = await page.$(
+        'input[type="tel"], input[name="phone" i], input[id*="phone" i], input[placeholder*="phone" i]',
+      );
+      if (phoneEl && candidate.phone) {
+        await phoneEl.fill(candidate.phone);
+        filled.push('phone');
+      }
+
+      addLog(
+        filled.length > 0
+          ? `Campos completados: [${filled.join(', ')}]`
+          : 'No se detectaron campos autocompletables. El portal puede requerir autenticación.',
+        filled.length > 0 ? 'success' : 'warning',
+      );
+
+      if (filled.length === 0) {
+        return {
+          success: false,
+          strategy: AutomationStrategy.BROWSER_STEALTH,
+          message: 'No se encontró formulario de aplicación accesible.',
+          requiresExtension: true,
+          portal: 'other' as any,
+          jobUrl: job.url,
+        };
+      }
+
+      // —— Botón de submit ——
+      const submitEl = await page.$(
+        'button[type="submit"], input[type="submit"],' +
+        'button:has-text("Apply"), button:has-text("Submit"),' +
+        'button:has-text("Send Application"), [data-testid*="submit"]',
+      );
+
+      if (!submitEl) {
+        addLog('Formulario rellenado pero no se encontró botón de envío. Requiere revisión manual.', 'warning');
+      } else if (process.env.AUTOMATION_SUBMIT_ENABLED === 'true') {
+        addLog('Enviando aplicación...', 'info');
+        await submitEl.click();
+        await page.waitForTimeout(2000);
+        // Detectar señal de éxito en el DOM
+        const successEl = await page.$(
+          '[role="alert"]:has-text("success"), [role="alert"]:has-text("submitted"),' +
+          '[role="status"], .success-message, .confirmation',
+        );
+        if (successEl) addLog('Señal de confirmación detectada en DOM.', 'success');
+        else addLog('Aplicación enviada (sin señal DOM visible).', 'info');
+      } else {
+        addLog('Modo previsualización — formulario rellenado pero NO enviado (AUTOMATION_SUBMIT_ENABLED != true).', 'warning');
+      }
 
       const applicationId = `REF-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
-      addLog(`Confirmation ID extracted: ${applicationId}`, 'success');
+      addLog(`ID de referencia: ${applicationId}`, 'success');
 
       return {
         success: true,
         strategy: AutomationStrategy.BROWSER_STEALTH,
         applicationId,
-        message: `Successfully applied via stealth browser automation.`,
-        details: { steps_completed: 8 }
+        message: `Automatización completada. ${filled.length} campo(s) rellenado(s).`,
+        details: {
+          fieldsCompleted: filled,
+          submitted: process.env.AUTOMATION_SUBMIT_ENABLED === 'true',
+        },
       };
-    } catch (error) {
-      addLog(`Browser Error: ${error instanceof Error ? error.message : 'Unknown error'}`, 'error');
+    } catch (error: any) {
+      const msg = error instanceof Error ? error.message : String(error);
+      addLog(`Error de automatización: ${msg}`, 'error');
+
+      if (msg.includes('Cannot find module') || msg.includes('not found') || msg.includes('no está instalado')) {
+        addLog('Para instalar: npm install playwright-extra playwright && npx playwright install chromium', 'error');
+      }
+
       return {
         success: false,
         strategy: AutomationStrategy.BROWSER_STEALTH,
-        message: "Stealth browser automation failed."
+        message: `Error en automatización: ${msg}`,
       };
+    } finally {
+      if (browser) await browser.close().catch(() => {});
     }
   }
+
 
   private static async generateCoverLetter(candidate: any, job: any): Promise<string> {
     try {

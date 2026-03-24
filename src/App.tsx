@@ -12,10 +12,13 @@ import { JobDetail } from './components/Jobs/JobDetail';
 import { CompanyList } from './components/Companies/CompanyList';
 import { CompanyDetail } from './components/Companies/CompanyDetail';
 import { Settings } from './components/Settings/Settings';
-import { MOCK_JOBS, MOCK_CANDIDATES, MOCK_APPLICATIONS, MOCK_COMPANIES } from './mockData';
-import { Job, DashboardStats, Candidate, Application, Company } from './types';
+import { Job, DashboardStats, Candidate, Company } from './types';
 import { AnimatePresence } from 'framer-motion';
 import { Loader2 } from 'lucide-react';
+import { CandidatesList } from './components/Candidates/CandidatesList';
+import { JobsView } from './components/Jobs/JobsView';
+import { VisitPlanner } from './components/Visits/VisitPlanner';
+import { ToastContainer, useToasts } from './components/UI/Toast';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentUser, loading } = useAuth();
@@ -54,9 +57,10 @@ const MainLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
 const AppContent: React.FC = () => {
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [candidates] = useState<Candidate[]>(MOCK_CANDIDATES);
-  const [applications] = useState<Application[]>(MOCK_APPLICATIONS);
+  const [jobsTotal, setJobsTotal] = useState(0);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
+  const { toasts, add: addToast, remove: removeToast } = useToasts();
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
   const [enrichingIds, setEnrichingIds] = useState<Set<string>>(new Set());
@@ -76,7 +80,9 @@ const AppContent: React.FC = () => {
         ]);
         
         if (jobsRes.ok && companiesRes.ok) {
-          const jobsData = await jobsRes.json();
+          const jobsJson = await jobsRes.json();
+          const jobsData = Array.isArray(jobsJson) ? jobsJson : (jobsJson.data ?? []);
+          if (!Array.isArray(jobsJson)) setJobsTotal(jobsJson.total ?? jobsData.length);
           const companiesData = await companiesRes.json();
           
           const formattedJobs: Job[] = jobsData.map((j: any) => ({
@@ -115,6 +121,8 @@ const AppContent: React.FC = () => {
             hqCity: c.hq_city,
             hqProvince: c.hq_province,
             hqCountry: c.hq_country,
+            phone: c.phone,
+            contactEmail: c.contact_email,
             exactAddress: c.exact_address,
             website: c.website,
             description: c.description,
@@ -159,20 +167,34 @@ const AppContent: React.FC = () => {
 
           // Actualizar estado en frontend
           if (json.companyId) {
-            setCompanies(prev => prev.map(c => c.id === json.companyId ? {
-              ...c,
-              enrichmentStatus: json.source === 'db_matched' ? 'db_matched' : 'scraped',
-              industry: json.data?.industry ?? c.industry,
-              sector: json.data?.sector ?? c.sector,
-              size: json.data?.company_size ?? c.size,
-              hqCity: json.data?.hq_city ?? c.hqCity,
-              website: json.data?.website ?? c.website,
-              description: json.data?.description ?? c.description,
-              isPubliclyTraded: json.data?.is_publicly_traded ?? c.isPubliclyTraded,
-              confidenceScore: json.data?.confidence_score ?? c.confidenceScore,
-              needsManualReview: (json.data?.confidence_score ?? 100) < 60,
-              enrichedAt: new Date().toISOString(),
-            } : c));
+            setCompanies(prev => prev.map(c => {
+              if (c.id !== json.companyId) return c;
+              const updated = {
+                ...c,
+                enrichmentStatus: (json.source === 'db_matched' ? 'db_matched' : 'scraped') as Company['enrichmentStatus'],
+                industry: json.data?.industry ?? c.industry,
+                sector: json.data?.sector ?? c.sector,
+                size: json.data?.company_size ?? c.size,
+                hqCity: json.data?.hq_city ?? c.hqCity,
+                website: json.data?.website ?? c.website,
+                description: json.data?.description ?? c.description,
+                isPubliclyTraded: json.data?.is_publicly_traded ?? c.isPubliclyTraded,
+                confidenceScore: json.data?.confidence_score ?? c.confidenceScore,
+                exactAddress: json.data?.exact_address ?? c.exactAddress,
+                hqProvince: json.data?.hq_province ?? c.hqProvince,
+                phone: json.data?.phone ?? c.phone,
+                contactEmail: json.data?.contact_email ?? c.contactEmail,
+                needsManualReview: (json.data?.confidence_score ?? 100) < 60,
+                enrichedAt: new Date().toISOString(),
+              };
+              // Notificación toast
+              addToast({
+                type: json.source === 'db_matched' ? 'info' : 'success',
+                title: `Empresa enriquecida`,
+                message: `${updated.name || 'Empresa'} — ${updated.industry || json.source}`,
+              });
+              return updated;
+            }));
           }
 
           if (json.done) break;
@@ -194,9 +216,9 @@ const AppContent: React.FC = () => {
   };
 
   const stats: DashboardStats = {
-    totalJobs: jobs.length,
-    activeCandidates: candidates.filter(c => c.status !== 'Placed').length,
-    totalApplications: applications.length,
+    totalJobs: jobsTotal || jobs.length,
+    activeCandidates: candidates.filter(c => c.status === 'Available').length,
+    totalApplications: 0,
     placements: candidates.filter(c => c.status === 'Placed').length,
     enrichedCompanies: companies.filter(c => c.enrichmentStatus !== 'pending').length,
   };
@@ -214,64 +236,18 @@ const AppContent: React.FC = () => {
         }} /></MainLayout></ProtectedRoute>} />
         
         <Route path="/jobs" element={<ProtectedRoute><MainLayout>
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-bold text-slate-900">Job Board</h2>
-              <div className="flex gap-2">
-                <button className="px-4 py-2 bg-lime-600 text-white rounded-lg text-sm font-medium hover:bg-lime-700 transition-colors shadow-sm">
-                  Import Jobs
-                </button>
-              </div>
-            </div>
-            <JobTable jobs={jobs} onViewJob={setSelectedJob} onSelectCompany={(name) => {
+          <JobsView
+            onViewJob={setSelectedJob}
+            onSelectCompany={(name) => {
               const company = companies.find(c => c.name === name);
               if (company) setSelectedCompany(company);
               else setSelectedCompany({ id: 'temp', name } as Company);
-            }} />
-          </div>
+            }}
+          />
         </MainLayout></ProtectedRoute>} />
 
         <Route path="/candidates" element={<ProtectedRoute><MainLayout>
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-bold text-slate-900">Candidates</h2>
-              <button className="px-4 py-2 bg-lime-600 text-white rounded-lg text-sm font-medium hover:bg-lime-700 transition-colors shadow-sm">
-                Add Candidate
-              </button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {candidates.map(candidate => (
-                <div key={candidate.id} className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm hover:shadow-md transition-all">
-                  <div className="flex items-center gap-4 mb-4">
-                    <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center border border-slate-200 text-slate-600 font-bold">
-                      {candidate.name.charAt(0)}
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-slate-900">{candidate.name}</h3>
-                      <p className="text-xs text-slate-500">{candidate.role}</p>
-                    </div>
-                  </div>
-                  <div className="space-y-3">
-                    <div className="flex flex-wrap gap-1">
-                      {candidate.skills.map(skill => (
-                        <span key={skill} className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[10px] font-medium">
-                          {skill}
-                        </span>
-                      ))}
-                    </div>
-                    <div className="flex items-center justify-between pt-4 border-t border-slate-100">
-                      <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${
-                        candidate.status === 'Available' ? 'bg-lime-50 text-lime-700' : 'bg-blue-50 text-blue-700'
-                      }`}>
-                        {candidate.status}
-                      </span>
-                      <button className="text-xs font-medium text-lime-600 hover:text-lime-700">View Profile</button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <CandidatesList onCandidatesChange={setCandidates} />
         </MainLayout></ProtectedRoute>} />
 
         <Route path="/companies" element={<ProtectedRoute><MainLayout>
@@ -282,6 +258,10 @@ const AppContent: React.FC = () => {
             onUpdateCompany={handleUpdateCompany}
             enrichingIds={enrichingIds}
           />
+        </MainLayout></ProtectedRoute>} />
+
+        <Route path="/visits" element={<ProtectedRoute><MainLayout>
+          <VisitPlanner companies={companies} onSelectCompany={setSelectedCompany} />
         </MainLayout></ProtectedRoute>} />
 
         <Route path="/settings" element={<ProtectedRoute><MainLayout><Settings /></MainLayout></ProtectedRoute>} />
@@ -296,40 +276,33 @@ const AppContent: React.FC = () => {
 
       <AnimatePresence>
         {selectedJob && (
-          <>
-            <div 
-              className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-40"
-              onClick={() => setSelectedJob(null)}
-            />
-            <JobDetail 
-              job={selectedJob} 
-              onClose={() => setSelectedJob(null)} 
-              onSelectCompany={(name) => {
-                const company = companies.find(c => c.name === name);
-                if (company) setSelectedCompany(company);
-                else setSelectedCompany({ id: 'temp', name } as Company);
-              }}
-            />
-          </>
+          <JobDetail 
+            job={selectedJob}
+            company={companies.find(c => c.name === selectedJob.companyName || c.id === selectedJob.companyId)}
+            candidates={candidates}
+            onClose={() => setSelectedJob(null)} 
+            onSelectCompany={(name) => {
+              const company = companies.find(c => c.name === name);
+              if (company) setSelectedCompany(company);
+              else setSelectedCompany({ id: 'temp', name } as Company);
+            }}
+          />
         )}
         {selectedCompany && (
-          <>
-            <div 
-              className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-40"
-              onClick={() => setSelectedCompany(null)}
-            />
-            <CompanyDetail 
-              company={selectedCompany} 
-              jobs={jobs}
-              onClose={() => setSelectedCompany(null)} 
-              onViewJob={(job) => {
-                setSelectedCompany(null);
-                setSelectedJob(job);
-              }}
-            />
-          </>
+          <CompanyDetail 
+            company={selectedCompany} 
+            jobs={jobs}
+            onClose={() => setSelectedCompany(null)} 
+            onViewJob={(job) => {
+              setSelectedCompany(null);
+              setSelectedJob(job);
+            }}
+          />
         )}
       </AnimatePresence>
+
+      {/* Toast notifications */}
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
     </>
   );
 };

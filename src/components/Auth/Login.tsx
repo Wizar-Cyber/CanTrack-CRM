@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
-import { Layers, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
+import logoImg from '../../public/logo.jpg';
 
 export const Login: React.FC = () => {
   const [email, setEmail] = useState('');
@@ -30,8 +31,8 @@ export const Login: React.FC = () => {
     <div className="min-h-screen bg-slate-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
         <div className="flex justify-center">
-          <div className="w-12 h-12 bg-gradient-to-br from-lime-400 to-stone-800 rounded-xl flex items-center justify-center shadow-lg">
-            <Layers className="text-white w-7 h-7" />
+          <div className="w-12 h-12 overflow-hidden shadow-lg">
+            <img src={logoImg} alt="Logo" className="w-full h-full object-cover" />
           </div>
         </div>
         <h2 className="mt-6 text-center text-3xl font-black text-slate-900 uppercase tracking-tight">
