@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { api } from './services/apiClient';
 import { Login } from './components/Auth/Login';
+import { Setup } from './components/Auth/Setup';
 import { Sidebar } from './components/Layout/Sidebar';
 import { Topbar } from './components/Layout/Topbar';
 import { Dashboard } from './components/Dashboard/Dashboard';
@@ -64,9 +66,13 @@ const AppContent: React.FC = () => {
   React.useEffect(() => {
     const fetchData = async () => {
       try {
+        // 1. Sincronizar vacantes nuevas del scraper antes de cargar datos
+        //    (crea companies + jobs para cualquier scraped_job nuevo)
+        await api('/api/sync/scraped-jobs', { method: 'POST' }).catch(() => {});
+
         const [jobsRes, companiesRes] = await Promise.all([
-          fetch('/api/jobs'),
-          fetch('/api/companies')
+          api('/api/jobs'),
+          api('/api/companies')
         ]);
         
         if (jobsRes.ok && companiesRes.ok) {
@@ -86,7 +92,14 @@ const AppContent: React.FC = () => {
             applicationType: j.application_type || 'External',
             isEasyApply: j.is_easy_apply,
             country: j.country,
-            postedAt: j.created_at
+            postedAt: j.created_at,
+            // Datos de la empresa directamente desde el JOIN
+            companyEnrichmentStatus: j.company_enrichment_status,
+            companyIndustry: j.company_industry,
+            companyHqCity: j.company_hq_city,
+            companyHqCountry: j.company_hq_country,
+            companyWebsite: j.company_website,
+            companyConfidenceScore: j.company_confidence_score,
           }));
 
           const formattedCompanies: Company[] = companiesData.map((c: any) => ({
@@ -101,6 +114,7 @@ const AppContent: React.FC = () => {
             stockTicker: c.stock_ticker,
             hqCity: c.hq_city,
             hqProvince: c.hq_province,
+            hqCountry: c.hq_country,
             exactAddress: c.exact_address,
             website: c.website,
             description: c.description,
@@ -127,73 +141,53 @@ const AppContent: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // Global Automatic Enrichment Trigger (Now updates real DB)
+  // ── Enrichment Queue: procesa una empresa pending por vez desde el servidor ──
+  const enrichmentRunningRef = React.useRef(false);
+
   React.useEffect(() => {
-    const pendingCompanies = companies.filter(c => c.enrichmentStatus === 'pending' && !enrichingIds.has(c.id));
-    
-    pendingCompanies.forEach(async (company) => {
-      // Don't enrich mock auto-generated IDs
-      if (company.id.startsWith('auto-')) return;
+    const hasPending = companies.some(c => c.enrichmentStatus === 'pending');
+    if (!hasPending || enrichmentRunningRef.current) return;
 
-      setEnrichingIds(prev => new Set(prev).add(company.id));
-      
-      // Step 1: Search in 12k DB (Simulated)
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // Step 2: Web Scraping Fallback (Simulated)
-      await new Promise(resolve => setTimeout(resolve, 2000));
+    enrichmentRunningRef.current = true;
 
-      const sizes = ['11-50', '201-500', '1001-5000', '10001+'];
-      const randomSize = sizes[Math.floor(Math.random() * sizes.length)];
-      const isPublic = Math.random() > 0.5;
-      const confidence = 92 + Math.floor(Math.random() * 7);
+    const runQueue = async () => {
+      while (true) {
+        try {
+          const res = await api('/api/enrichment/process-next', { method: 'POST' });
+          if (!res.ok) break;
+          const json = await res.json();
 
-      // Update in real DB
-      try {
-        await fetch(`/api/companies/${company.id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            enrichment_status: 'scraped',
-            industry: 'Technology',
-            hq_city: 'Toronto',
-            hq_province: 'ON',
-            company_size: randomSize,
-            is_publicly_traded: isPublic,
-            stock_ticker: isPublic ? 'AUTO' : null,
-            exact_address: '123 Automated Way, Toronto, ON M5V 2T6, Canada',
-            confidence_score: confidence,
-            needs_manual_review: false
-          })
-        });
+          // Actualizar estado en frontend
+          if (json.companyId) {
+            setCompanies(prev => prev.map(c => c.id === json.companyId ? {
+              ...c,
+              enrichmentStatus: json.source === 'db_matched' ? 'db_matched' : 'scraped',
+              industry: json.data?.industry ?? c.industry,
+              sector: json.data?.sector ?? c.sector,
+              size: json.data?.company_size ?? c.size,
+              hqCity: json.data?.hq_city ?? c.hqCity,
+              website: json.data?.website ?? c.website,
+              description: json.data?.description ?? c.description,
+              isPubliclyTraded: json.data?.is_publicly_traded ?? c.isPubliclyTraded,
+              confidenceScore: json.data?.confidence_score ?? c.confidenceScore,
+              needsManualReview: (json.data?.confidence_score ?? 100) < 60,
+              enrichedAt: new Date().toISOString(),
+            } : c));
+          }
 
-        // Update in frontend state
-        setCompanies(prev => prev.map(c => c.id === company.id ? {
-          ...c,
-          enrichmentStatus: 'scraped',
-          industry: 'Technology',
-          hqCity: 'Toronto',
-          hqProvince: 'ON',
-          size: randomSize,
-          isPubliclyTraded: isPublic,
-          stockTicker: isPublic ? 'AUTO' : undefined,
-          exactAddress: '123 Automated Way, Toronto, ON M5V 2T6, Canada',
-          confidenceScore: confidence,
-          techStack: ['Python', 'React', 'AWS'],
-          needsManualReview: false,
-          enrichedAt: new Date().toISOString()
-        } : c));
-      } catch (e) {
-        console.error("Failed to update company in DB", e);
+          if (json.done) break;
+
+          // Pausa entre llamadas para no saturar la API de Gemini (1.5s)
+          await new Promise(r => setTimeout(r, 1500));
+        } catch {
+          break;
+        }
       }
-      
-      setEnrichingIds(prev => {
-        const next = new Set(prev);
-        next.delete(company.id);
-        return next;
-      });
-    });
-  }, [companies, enrichingIds]);
+      enrichmentRunningRef.current = false;
+    };
+
+    runQueue();
+  }, [companies]);
 
   const handleUpdateCompany = (updatedCompany: Company) => {
     setCompanies(prev => prev.map(c => c.id === updatedCompany.id ? updatedCompany : c));
@@ -204,12 +198,14 @@ const AppContent: React.FC = () => {
     activeCandidates: candidates.filter(c => c.status !== 'Placed').length,
     totalApplications: applications.length,
     placements: candidates.filter(c => c.status === 'Placed').length,
+    enrichedCompanies: companies.filter(c => c.enrichmentStatus !== 'pending').length,
   };
 
   return (
     <>
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/setup" element={<Setup />} />
         
         <Route path="/" element={<ProtectedRoute><MainLayout><Dashboard stats={stats} recentJobs={jobs.slice(0, 4)} onSelectCompany={(name) => {
           const company = companies.find(c => c.name === name);

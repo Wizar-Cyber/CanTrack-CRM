@@ -1,38 +1,79 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
-import { Loader2, Plus, UserPlus, Shield, Mail, User as UserIcon, Users } from 'lucide-react';
+import { apiJson } from '../../services/apiClient';
+import { Loader2, Plus, UserPlus, Shield, Mail, User as UserIcon, Users, Trash2 } from 'lucide-react';
+
+interface TeamUser {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  role: 'admin' | 'editor' | 'viewer';
+  isActive: boolean;
+  createdAt: string;
+}
 
 export const UserManagement: React.FC = () => {
   const { userProfile } = useAuth();
-  const [users, setUsers] = useState<any[]>([
-    { id: '1', name: 'Admin User', email: 'admin@vsm.com', role: 'admin', requiresPasswordChange: false }
-  ]);
-  const [loading] = useState(false);
+  const [users, setUsers] = useState<TeamUser[]>([]);
+  const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
-  // New user form state
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [role, setRole] = useState<'admin' | 'editor' | 'viewer'>('viewer');
+
+  useEffect(() => {
+    apiJson<TeamUser[]>('/api/users')
+      .then(setUsers)
+      .catch(() => setError('Error al cargar usuarios.'))
+      .finally(() => setLoading(false));
+  }, []);
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setSuccess('');
     setCreating(true);
-
-    setTimeout(() => {
-      setUsers([...users, { id: Date.now().toString(), name, email, role, requiresPasswordChange: true }]);
-      setSuccess('User created successfully (Mock)!');
-      setEmail('');
-      setPassword('');
-      setName('');
-      setRole('viewer');
+    try {
+      const newUser = await apiJson<TeamUser>('/api/users', {
+        method: 'POST',
+        body: JSON.stringify({ email, password, firstName, lastName, role }),
+      });
+      setUsers(prev => [...prev, newUser]);
+      setSuccess(`Usuario ${email} creado correctamente.`);
+      setEmail(''); setPassword(''); setFirstName(''); setLastName(''); setRole('viewer');
+    } catch (err: any) {
+      setError(err.message || 'Error al crear usuario.');
+    } finally {
       setCreating(false);
-    }, 500);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('¿Desactivar este usuario?')) return;
+    try {
+      await apiJson(`/api/users/${id}`, { method: 'DELETE' });
+      setUsers(prev => prev.filter(u => u.id !== id));
+    } catch (err: any) {
+      setError(err.message || 'Error al eliminar usuario.');
+    }
+  };
+
+  const handleRoleChange = async (id: string, newRole: string) => {
+    try {
+      const updated = await apiJson<TeamUser>(`/api/users/${id}/role`, {
+        method: 'PATCH',
+        body: JSON.stringify({ role: newRole }),
+      });
+      setUsers(prev => prev.map(u => u.id === id ? updated : u));
+    } catch (err: any) {
+      setError(err.message || 'Error al cambiar rol.');
+    }
   };
 
   if (userProfile?.role !== 'admin') {
@@ -57,43 +98,29 @@ export const UserManagement: React.FC = () => {
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Full Name</label>
-              <input
-                type="text"
-                required
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm"
-              />
+              <label className="block text-sm font-medium text-slate-700 mb-1">Nombre</label>
+              <input type="text" required value={firstName} onChange={(e) => setFirstName(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Apellido</label>
+              <input type="text" required value={lastName} onChange={(e) => setLastName(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm" />
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm"
-              />
+              <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Temporary Password</label>
-              <input
-                type="password"
-                required
-                minLength={6}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm"
-              />
+              <label className="block text-sm font-medium text-slate-700 mb-1">Contraseña temporal</label>
+              <input type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Role</label>
-              <select
-                value={role}
-                onChange={(e) => setRole(e.target.value as any)}
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm"
-              >
+              <label className="block text-sm font-medium text-slate-700 mb-1">Rol</label>
+              <select value={role} onChange={(e) => setRole(e.target.value as any)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-lime-500 focus:border-lime-500 sm:text-sm">
                 <option value="viewer">Viewer</option>
                 <option value="editor">Editor</option>
                 <option value="admin">Admin</option>
@@ -135,25 +162,40 @@ export const UserManagement: React.FC = () => {
                     <UserIcon className="w-5 h-5 text-slate-500" />
                   </div>
                   <div>
-                    <p className="text-sm font-semibold text-slate-900">{user.name}</p>
+                    <p className="text-sm font-semibold text-slate-900">{user.firstName} {user.lastName}</p>
                     <div className="flex items-center gap-2 text-xs text-slate-500">
                       <Mail className="w-3 h-3" />
                       {user.email}
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3">
+                  {user.id !== userProfile?.id && (
+                    <select
+                      value={user.role}
+                      onChange={(e) => handleRoleChange(user.id, e.target.value)}
+                      className="text-xs border border-slate-200 rounded-lg px-2 py-1 bg-white"
+                    >
+                      <option value="viewer">Viewer</option>
+                      <option value="editor">Editor</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  )}
                   <span className={`px-2.5 py-1 rounded-full text-xs font-medium flex items-center gap-1
                     ${user.role === 'admin' ? 'bg-purple-50 text-purple-700' : 
                       user.role === 'editor' ? 'bg-blue-50 text-blue-700' : 
-                      'bg-slate-100 text-slate-700'}`}
-                  >
+                      'bg-slate-100 text-slate-700'}`}>
                     <Shield className="w-3 h-3" />
                     {user.role.charAt(0).toUpperCase() + user.role.slice(1)}
                   </span>
-                  <span className={`text-xs ${user.requiresPasswordChange ? 'text-amber-600 font-medium' : 'text-lime-600'}`}>
-                    {user.requiresPasswordChange ? 'Pending Setup' : 'Active'}
+                  <span className={`text-xs font-medium ${user.isActive ? 'text-lime-600' : 'text-slate-400'}`}>
+                    {user.isActive ? 'Activo' : 'Inactivo'}
                   </span>
+                  {user.id !== userProfile?.id && (
+                    <button onClick={() => handleDelete(user.id)} className="p-1.5 text-slate-400 hover:text-rose-500 transition-colors" title="Desactivar usuario">
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
               </div>
             ))}

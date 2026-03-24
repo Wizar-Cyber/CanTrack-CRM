@@ -1,73 +1,136 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 
-interface UserProfile {
-  uid: string;
+// ── Types ─────────────────────────────────────────────────────────────────────
+export interface UserProfile {
+  id: string;
   email: string;
-  name: string;
+  firstName: string;
+  lastName: string;
   role: 'admin' | 'editor' | 'viewer';
-  requiresPasswordChange: boolean;
+  isActive: boolean;
   createdAt: string;
+  // Computed convenience getter
+  name: string;
 }
 
 interface AuthContextType {
-  currentUser: any | null;
+  currentUser: UserProfile | null;
   userProfile: UserProfile | null;
+  token: string | null;
   loading: boolean;
-  login: (e: string, p: string) => Promise<void>;
-  logout: () => Promise<void>;
+  login: (email: string, password: string) => Promise<void>;
+  logout: () => void;
+  refreshUser: () => Promise<void>;
 }
 
+// ── Storage helpers ───────────────────────────────────────────────────────────
+const TOKEN_KEY = 'cantrack_token';
+
+export function getStoredToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+function storeToken(token: string) {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+function clearToken() {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
+function buildProfile(data: any): UserProfile {
+  return {
+    id: data.id,
+    email: data.email,
+    firstName: data.firstName,
+    lastName: data.lastName,
+    role: data.role,
+    isActive: data.isActive,
+    createdAt: data.createdAt,
+    name: `${data.firstName} ${data.lastName}`,
+  };
+}
+
+// ── Context ───────────────────────────────────────────────────────────────────
 const AuthContext = createContext<AuthContextType>({
   currentUser: null,
   userProfile: null,
+  token: null,
   loading: true,
   login: async () => {},
-  logout: async () => {},
+  logout: () => {},
+  refreshUser: async () => {},
 });
 
 export const useAuth = () => useContext(AuthContext);
 
+// ── Provider ──────────────────────────────────────────────────────────────────
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentUser, setCurrentUser] = useState<any | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
+  const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    const stored = localStorage.getItem('vsm_auth');
-    if (stored) {
-      const user = JSON.parse(stored);
-      setCurrentUser({ uid: user.uid, email: user.email });
-      setUserProfile(user);
-    }
-    setLoading(false);
+  const logout = useCallback(() => {
+    clearToken();
+    setToken(null);
+    setCurrentUser(null);
   }, []);
 
-  const login = async (email: string, pass: string) => {
-    if (email === 'admin@vsm.com' && pass === 'admin123') {
-      const user: UserProfile = {
-        uid: '123',
-        email: 'admin@vsm.com',
-        name: 'Admin User',
-        role: 'admin',
-        requiresPasswordChange: false,
-        createdAt: new Date().toISOString()
-      };
-      setCurrentUser({ uid: user.uid, email: user.email });
-      setUserProfile(user);
-      localStorage.setItem('vsm_auth', JSON.stringify(user));
-    } else {
-      throw new Error('Credenciales inválidas. Usa admin@vsm.com / admin123');
+  const refreshUser = useCallback(async () => {
+    const storedToken = getStoredToken();
+    if (!storedToken) return;
+    try {
+      const res = await fetch('/api/auth/me', {
+        headers: { Authorization: `Bearer ${storedToken}` },
+      });
+      if (!res.ok) {
+        logout();
+        return;
+      }
+      const data = await res.json();
+      setCurrentUser(buildProfile(data));
+    } catch {
+      logout();
     }
-  };
+  }, [logout]);
 
-  const logout = async () => {
-    setCurrentUser(null);
-    setUserProfile(null);
-    localStorage.removeItem('vsm_auth');
+  // On mount: try to restore session from stored token
+  useEffect(() => {
+    const storedToken = getStoredToken();
+    if (!storedToken) {
+      setLoading(false);
+      return;
+    }
+    setToken(storedToken);
+    fetch('/api/auth/me', { headers: { Authorization: `Bearer ${storedToken}` } })
+      .then(res => {
+        if (!res.ok) throw new Error('Token invalid');
+        return res.json();
+      })
+      .then(data => setCurrentUser(buildProfile(data)))
+      .catch(() => clearToken())
+      .finally(() => setLoading(false));
+  }, []);
+
+  const login = async (email: string, password: string) => {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }),
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.error || 'Error al iniciar sesión.');
+    }
+
+    storeToken(data.token);
+    setToken(data.token);
+    setCurrentUser(buildProfile(data.user));
   };
 
   return (
-    <AuthContext.Provider value={{ currentUser, userProfile, loading, login, logout }}>
+    <AuthContext.Provider value={{ currentUser, userProfile: currentUser, token, loading, login, logout, refreshUser }}>
       {!loading && children}
     </AuthContext.Provider>
   );
