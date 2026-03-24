@@ -348,7 +348,7 @@ export const JobsView: React.FC<JobsViewProps> = ({ onViewJob, onSelectCompany }
           {totalPages > 1 && (
             <div className="flex items-center justify-between px-4 py-3 bg-white border border-slate-200 rounded-xl shadow-sm">
               <p className="text-sm text-slate-500 hidden sm:block">
-                Mostrando {((page - 1) * LIMIT) + 1}–{Math.min(page * LIMIT, total)} de {total.toLocaleString('es')}
+                Showing {((page - 1) * LIMIT) + 1}–{Math.min(page * LIMIT, total)} of {total.toLocaleString('en')}
               </p>
               <div className="flex items-center gap-1">
                 <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
