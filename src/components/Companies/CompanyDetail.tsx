@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Globe, MapPin, Building, ExternalLink, Mail, Phone, Users, Briefcase, Sparkles, Loader2, AlertTriangle, ShieldAlert, Code, Send, Clock } from 'lucide-react';
+import { X, MapPin, Building, ExternalLink, Mail, Phone, Users, Briefcase, Sparkles, Loader2, Send, Clock } from 'lucide-react';
 import { Company, Job } from '../../types';
 import { SendOfferModal } from './SendOfferModal';
 import { api } from '../../services/apiClient';
@@ -107,18 +107,6 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
         {/* ── LEFT COLUMN ── */}
         <div className="p-6 space-y-5 border-b lg:border-b-0 lg:border-r border-slate-100">
 
-        {displayCompany.needsManualReview && (
-          <div className="bg-amber-50 border border-amber-200 p-3 rounded-xl flex items-start gap-3">
-            <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
-            <div>
-              <h4 className="text-sm font-bold text-amber-900">Manual Review Required</h4>
-              <p className="text-xs text-amber-700 mt-1">
-                Low confidence score ({displayCompany.confidenceScore}%). Please verify the data.
-              </p>
-            </div>
-          </div>
-        )}
-
         {/* Quick Info pills */}
         <div className="flex flex-wrap gap-2 items-center">
           {(displayCompany.hqCity || displayCompany.location) && (
@@ -131,11 +119,6 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
             <div className="flex items-center gap-1 px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-medium">
               <Users className="w-3 h-3" />
               {displayCompany.size}
-            </div>
-          )}
-          {displayCompany.isPubliclyTraded && (
-            <div className="flex items-center gap-1 px-3 py-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full text-xs font-bold">
-              {displayCompany.stockTicker}
             </div>
           )}
           {displayCompany.website && (
@@ -162,47 +145,44 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
                 <div className="h-4 bg-slate-200 rounded w-1/2 animate-pulse"></div>
               </div>
             ) : (
-              <>
-                <div className="grid grid-cols-2 gap-x-4 gap-y-4">
-                  <div className="space-y-0.5">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Sector</p>
-                    <p className="text-xs font-medium text-slate-900">{displayCompany.sector || '—'}</p>
-                  </div>
-                  <div className="space-y-0.5">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Industry</p>
-                    <p className="text-xs font-medium text-slate-900">{displayCompany.industry || '—'}</p>
-                  </div>
-                  <div className="space-y-0.5">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">ATS Portal</p>
-                    <p className="text-xs font-medium text-slate-900 capitalize">{displayCompany.knownATSPortal || '—'}</p>
-                  </div>
-                  <div className="space-y-0.5">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">Confidence</p>
-                    <p className={`text-xs font-bold ${displayCompany.confidenceScore && displayCompany.confidenceScore >= 80 ? 'text-emerald-600' : 'text-amber-600'}`}>
-                      {displayCompany.confidenceScore ? `${displayCompany.confidenceScore}%` : '—'}
-                    </p>
-                  </div>
-                  <div className="space-y-0.5">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase">HQ Canada</p>
-                    <p className="text-xs font-medium text-slate-900">{displayCompany.canadianHQ ? 'Yes' : 'No'}</p>
-                  </div>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-4">
+                <div className="space-y-0.5">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">Industry</p>
+                  <p className="text-xs font-medium text-slate-900">{displayCompany.industry || '—'}</p>
                 </div>
-                
-                {displayCompany.techStack && displayCompany.techStack.length > 0 && (
-                  <div className="space-y-2 pt-3 border-t border-slate-200">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1">
-                      <Code className="w-3 h-3" /> Tech Stack
-                    </p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {displayCompany.techStack.map(tech => (
-                        <span key={tech} className="px-2 py-0.5 bg-white border border-slate-200 text-slate-600 text-xs rounded-md font-medium">
-                          {tech}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </>
+                <div className="space-y-0.5">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">Size</p>
+                  <p className="text-xs font-medium text-slate-900">{displayCompany.size || '—'}</p>
+                </div>
+                <div className="space-y-0.5">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">Province</p>
+                  <p className="text-xs font-medium text-slate-900">{displayCompany.hqProvince || '—'}</p>
+                </div>
+                <div className="space-y-0.5">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">Country</p>
+                  <p className="text-xs font-medium text-slate-900">{displayCompany.hqCountry || '—'}</p>
+                </div>
+                <div className="col-span-2 space-y-0.5">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">Address</p>
+                  <p className="text-xs font-medium text-slate-900">{displayCompany.exactAddress || '—'}</p>
+                </div>
+                <div className="space-y-0.5">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1"><Phone className="w-3 h-3" />Phone</p>
+                  {displayCompany.phone
+                    ? <a href={`tel:${displayCompany.phone}`} className="text-xs font-medium text-blue-600 hover:underline">{displayCompany.phone}</a>
+                    : <p className="text-xs font-medium text-slate-900">—</p>}
+                </div>
+                <div className="space-y-0.5">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1"><Mail className="w-3 h-3" />Email</p>
+                  {displayCompany.contactEmail
+                    ? <a href={`mailto:${displayCompany.contactEmail}`} className="text-xs font-medium text-blue-600 hover:underline truncate block">{displayCompany.contactEmail}</a>
+                    : <p className="text-xs font-medium text-slate-900">—</p>}
+                </div>
+                <div className="space-y-0.5">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">ATS Portal</p>
+                  <p className="text-xs font-medium text-slate-900 capitalize">{displayCompany.knownATSPortal || '—'}</p>
+                </div>
+              </div>
             )}
           </div>
         </section>
@@ -235,8 +215,8 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
             </h3>
             <div className="space-y-2">
               {companyJobs.length > 0 ? (
-                companyJobs.map(job => (
-                  <div key={job.id} onClick={() => onViewJob(job)}
+                companyJobs.map((job, i) => (
+                  <div key={job.id ?? `job-${i}`} onClick={() => onViewJob(job)}
                     className="p-3 bg-white border border-slate-200 rounded-xl hover:border-blue-500 hover:shadow-sm transition-all cursor-pointer group flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <h4 className="text-xs font-semibold text-slate-900 group-hover:text-blue-600 transition-colors truncate">{job.title}</h4>
@@ -267,8 +247,8 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
               </div>
             ) : (
               <div className="space-y-2">
-                {emailLogs.map((log: any) => (
-                  <div key={log.id} className="flex items-start gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
+                {emailLogs.map((log: any, i: number) => (
+                  <div key={log.id ?? `log-${i}`} className="flex items-start gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100">
                     <div className="w-7 h-7 bg-blue-100 rounded-lg flex items-center justify-center shrink-0 mt-0.5">
                       <Mail className="w-3.5 h-3.5 text-blue-600" />
                     </div>

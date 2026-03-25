@@ -7,9 +7,7 @@ export interface Company {
   slug: string;
   legalName?: string;
   industry?: string;
-  sector?: string;
-  size?: string;
-  canadianHQ?: boolean;
+  size?: string;           // company_size
   hqCity?: string;
   hqProvince?: string;
   hqCountry?: string;
@@ -18,12 +16,7 @@ export interface Company {
   contactEmail?: string;
   website?: string;
   description?: string;
-  isPubliclyTraded?: boolean;
-  stockTicker?: string;
   knownATSPortal?: string;
-  techStack?: string[];
-  confidenceScore?: number;
-  needsManualReview?: boolean;
   enrichedAt?: string;
   location?: string; // Legacy fallback
   enrichmentStatus?: 'pending' | 'db_matched' | 'scraped' | 'verified' | 'failed' | 'processing';

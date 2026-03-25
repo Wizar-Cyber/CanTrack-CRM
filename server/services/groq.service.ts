@@ -14,25 +14,21 @@
  */
 
 export const GROQ_PROMPT = (companyName: string) => `Research the company "${companyName}" and return ONLY a valid JSON object with these exact keys:
-- "industry": string (e.g., "Technology", "Banking", "Retail", "Healthcare", "Manufacturing", "Staffing")
-- "sector": string (e.g., "Software", "Finance", "Consumer Goods", "IT Services")
+- "industry": string (e.g., "Manufacturing", "Retail", "Healthcare", "Hospitality", "Construction", "Staffing", "Technology", "Transport")
 - "company_size": string (one of: "1-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10001+")
 - "hq_city": string (city name)
-- "hq_province": string (province or state abbreviation, e.g. "QC", "ON", "BC", "CA", "NY")
-- "hq_country": string (country name in English)
-- "exact_address": string (full street address including number, street, city, province/state and postal/zip code — as precise as possible, empty string if unknown)
+- "hq_province": string (province or state abbreviation, e.g. "QC", "ON", "BC", "AB")
+- "hq_country": string (country name in English, e.g. "Canada", "United States")
+- "exact_address": string (full street address: number, street, city, province, postal code — as precise as possible, empty string if unknown)
 - "website": string (official URL with https://, or empty string if unknown)
 - "phone": string (main office phone number with country code, e.g. "+1 514 555-1234", empty string if unknown)
 - "contact_email": string (main company contact or HR email address, e.g. "info@company.com", empty string if unknown)
-- "description": string (2-3 sentences about what the company does)
-- "is_publicly_traded": boolean
-- "confidence_score": integer 0-100 (how confident you are in this data)
+- "description": string (2-3 sentences about what the company does and what type of workers they employ)
 
 Return ONLY the JSON object. No markdown, no extra text.`;
 
 export interface EnrichmentData {
   industry?: string;
-  sector?: string;
   company_size?: string;
   hq_city?: string;
   hq_province?: string;
@@ -42,8 +38,6 @@ export interface EnrichmentData {
   contact_email?: string;
   website?: string;
   description?: string;
-  is_publicly_traded?: boolean;
-  confidence_score?: number;
   _provider?: string;
 }
 
