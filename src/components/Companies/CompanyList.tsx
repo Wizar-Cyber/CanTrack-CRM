@@ -1,6 +1,8 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { Building2, LayoutGrid, List, MapPin, Briefcase, Database, Globe, Loader2, AlertCircle, Zap, Search, Filter } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { Building2, LayoutGrid, List, MapPin, Briefcase, Database, Loader2, Zap, Search, Filter, RotateCcw } from 'lucide-react';
 import { Company, Job } from '../../types';
+import { useAuth } from '../../contexts/AuthContext';
+import { apiJson } from '../../services/apiClient';
 
 interface CompanyListProps {
   companies: Company[];
@@ -8,6 +10,7 @@ interface CompanyListProps {
   onSelectCompany: (company: Company) => void;
   onUpdateCompany?: (company: Company) => void;
   enrichingIds?: Set<string>;
+  onEnrichmentReset?: () => void;
 }
 
 export const CompanyList: React.FC<CompanyListProps> = ({ 
@@ -15,14 +18,17 @@ export const CompanyList: React.FC<CompanyListProps> = ({
   jobs, 
   onSelectCompany, 
   onUpdateCompany,
-  enrichingIds = new Set()
+  enrichingIds = new Set(),
+  onEnrichmentReset,
 }) => {
+  const { user } = useAuth();
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
   const [filter, setFilter] = useState<'all' | 'with_vacancies' | 'pending'>('all');
   const [sizeFilter, setSizeFilter] = useState<'all' | 'Small' | 'Medium' | 'Large' | 'Enterprise'>('all');
-  const [ownershipFilter, setOwnershipFilter] = useState<'all' | 'Public' | 'Private'>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [showFilters, setShowFilters] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [enrichLimit, setEnrichLimit] = useState<string>('20');
 
   const filteredCompanies = useMemo(() => {
     let result = companies;
@@ -58,17 +64,28 @@ export const CompanyList: React.FC<CompanyListProps> = ({
       });
     }
 
-    // Ownership Filter
-    if (ownershipFilter !== 'all') {
-      result = result.filter(c => {
-        if (ownershipFilter === 'Public') return c.isPubliclyTraded === true;
-        if (ownershipFilter === 'Private') return c.isPubliclyTraded === false;
-        return true;
-      });
-    }
-
     return result;
-  }, [companies, jobs, filter, sizeFilter, ownershipFilter, searchTerm]);
+  }, [companies, jobs, filter, sizeFilter, searchTerm]);
+
+  async function handleResetEnrichment() {
+    const limit = parseInt(enrichLimit, 10);
+    const isLimited = !isNaN(limit) && limit > 0;
+    const msg = isLimited
+      ? `¿Resetear enrichment? Solo las primeras ${limit} empresas serán procesadas, el resto quedará como 'skipped'.`
+      : '¿Resetear TODOS los datos de enriquecimiento? Todas las empresas serán re-procesadas.';
+    if (!confirm(msg)) return;
+    setResetting(true);
+    try {
+      const url = isLimited ? `/api/companies/all?limit=${limit}` : '/api/companies/all';
+      await apiJson(url, { method: 'DELETE' });
+      onEnrichmentReset?.();
+    } catch (e) {
+      console.error('Error resetting enrichment:', e);
+      alert('Error al resetear. Verifica que tengas rol admin.');
+    } finally {
+      setResetting(false);
+    }
+  }
 
   const getCompanyJobs = (company: Company) => {
     return jobs.filter(job => job.companyId === company.id || job.companyName === company.name);
@@ -88,6 +105,23 @@ export const CompanyList: React.FC<CompanyListProps> = ({
         </div>
         
         <div className="flex items-center gap-4">
+          {/* Reset Enrichment — solo admin */}
+          {user?.role === 'admin' && (
+            <div className="flex items-center gap-1">
+              <input
+                type="number" min="0" placeholder="all"
+                value={enrichLimit}
+                onChange={e => setEnrichLimit(e.target.value)}
+                className="w-14 px-2 py-1.5 text-xs border border-slate-200 rounded-lg text-center focus:outline-none focus:ring-2 focus:ring-rose-300"
+                title="Número de empresas a enriquecer (dejar vacío = todas)"
+              />
+              <button onClick={handleResetEnrichment} disabled={resetting}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-rose-200 text-rose-600 bg-rose-50 hover:bg-rose-100 text-xs font-medium transition-colors disabled:opacity-50">
+                {resetting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+                Reset &amp; Enrich
+              </button>
+            </div>
+          )}
           {/* View Mode Toggle */}
           <div className="flex bg-slate-100 p-1 rounded-lg">
             <button
@@ -127,11 +161,11 @@ export const CompanyList: React.FC<CompanyListProps> = ({
             }`}>
             <Filter className="w-4 h-4" />
             Filters
-            {(filter !== 'all' || sizeFilter !== 'all' || ownershipFilter !== 'all') && (
+            {(filter !== 'all' || sizeFilter !== 'all') && (
               <span className={`text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center ${
                 showFilters ? 'bg-white text-lime-600' : 'bg-lime-600 text-white'
               }`}>
-                {(filter !== 'all' ? 1 : 0) + (sizeFilter !== 'all' ? 1 : 0) + (ownershipFilter !== 'all' ? 1 : 0)}
+                {(filter !== 'all' ? 1 : 0) + (sizeFilter !== 'all' ? 1 : 0)}
               </span>
             )}
           </button>
@@ -165,19 +199,7 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                 ))}
               </div>
             </div>
-            <div className="space-y-2">
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Type</p>
-              <div className="flex bg-slate-100 p-1 rounded-lg gap-1">
-                {(['all', 'Public', 'Private'] as const).map(o => (
-                  <button key={o} onClick={() => setOwnershipFilter(o)}
-                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                      ownershipFilter === o ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
-                    }`}>
-                    {o === 'all' ? 'All' : o === 'Public' ? 'Public' : 'Private'}
-                  </button>
-                ))}
-              </div>
-            </div>
+
           </div>
         )}
       </div>
@@ -204,23 +226,18 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                     </h3>
                     {!isPending && <p className="text-sm text-slate-500 mt-1">{company.industry}</p>}
                   </div>
-                  {!isPending && company.isPubliclyTraded && (
-                    <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-[10px] font-bold tracking-wider">
-                      {company.stockTicker}
-                    </span>
-                  )}
+
                 </div>
                 
                 <div className="space-y-3 flex-1">
                   {isPending ? (
-                    <div className="flex flex-col items-center justify-center h-full py-8 space-y-4">
+                    <div className="flex flex-col items-center justify-center py-6 space-y-3">
                       <div className="relative">
-                        <div className="w-12 h-12 border-4 border-lime-100 border-t-lime-600 rounded-full animate-spin"></div>
-                        <Database className="w-5 h-5 text-lime-600 absolute inset-0 m-auto" />
+                        <div className="w-10 h-10 border-4 border-lime-100 border-t-lime-600 rounded-full animate-spin"></div>
+                        <Database className="w-4 h-4 text-lime-600 absolute inset-0 m-auto" />
                       </div>
                       <div className="text-center">
-                        <p className="text-sm font-bold text-slate-900">Automatic Enrichment</p>
-                        <p className="text-xs text-slate-500 mt-1">Matching DB & Scraping Web...</p>
+                        <p className="text-xs font-bold text-slate-700">Enriching data…</p>
                       </div>
                     </div>
                   ) : (
@@ -231,46 +248,23 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                           {company.hqCity ? `${company.hqCity}, ${company.hqProvince}` : 'Location unknown'}
                         </span>
                       </div>
-                      
-                      {companyJobs.length > 0 && (
-                        <div className="flex items-center gap-2 text-sm text-slate-600">
-                          <Briefcase className="w-4 h-4 text-slate-400 shrink-0" />
-                          <span>{companyJobs.length} active {companyJobs.length === 1 ? 'vacancy' : 'vacancies'}</span>
-                        </div>
-                      )}
-                      
-                      {company.techStack && company.techStack.length > 0 && (
-                        <div className="flex flex-wrap gap-1 pt-2">
-                          {company.techStack.slice(0, 3).map(tech => (
-                            <span key={tech} className="px-2 py-0.5 bg-slate-50 border border-slate-100 text-slate-600 rounded text-[10px] font-medium">
-                              {tech}
-                            </span>
-                          ))}
-                          {company.techStack.length > 3 && (
-                            <span className="px-2 py-0.5 bg-slate-50 border border-slate-100 text-slate-400 rounded text-[10px] font-medium">
-                              +{company.techStack.length - 3}
-                            </span>
-                          )}
-                        </div>
-                      )}
                     </>
+                  )}
+
+                  {/* Job count — se muestra SIEMPRE, independientemente del estado de enriquecimiento */}
+                  {companyJobs.length > 0 && (
+                    <div className="flex items-center gap-2 text-sm text-slate-600">
+                      <Briefcase className="w-4 h-4 text-slate-400 shrink-0" />
+                      <span>{companyJobs.length} active {companyJobs.length === 1 ? 'vacancy' : 'vacancies'}</span>
+                    </div>
                   )}
                 </div>
 
-                {!isPending && (
-                  <div className="mt-4 pt-4 border-t border-slate-100 flex items-center justify-between text-sm">
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                      company.confidenceScore && company.confidenceScore >= 90 ? 'bg-emerald-50 text-emerald-700' :
-                      company.confidenceScore && company.confidenceScore >= 70 ? 'bg-amber-50 text-amber-700' :
-                      'bg-rose-50 text-rose-700'
-                    }`}>
-                      {company.confidenceScore}% Match
+{!isPending && company.enrichmentStatus === 'enriched' && (
+                  <div className="mt-4 pt-4 border-t border-slate-100">
+                    <span className="px-2 py-1 rounded-full text-xs font-medium bg-lime-50 text-lime-700">
+                      Enriched
                     </span>
-                    {company.needsManualReview && (
-                      <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">
-                        Review Needed
-                      </span>
-                    )}
                   </div>
                 )}
               </div>
@@ -329,7 +323,7 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                           <div className="flex items-start gap-2 max-w-xs">
                             <MapPin className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
                             <span className="text-sm text-slate-600">
-                              {company.exactAddress || 'Address not available'}
+                              {company.hqCity ? `${company.hqCity}, ${company.hqProvince || company.hqCountry}` : company.exactAddress || 'Address not available'}
                             </span>
                           </div>
                         )}
@@ -351,15 +345,11 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                         {isPending ? (
                           <div className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-tighter">
                             <Database className="w-3 h-3" />
-                            Matching DB
+                            Pending
                           </div>
                         ) : (
-                          <span className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
-                            company.confidenceScore && company.confidenceScore >= 90 ? 'bg-emerald-50 text-emerald-700' :
-                            company.confidenceScore && company.confidenceScore >= 70 ? 'bg-amber-50 text-amber-700' :
-                            'bg-rose-50 text-rose-700'
-                          }`}>
-                            {company.confidenceScore}%
+                          <span className="px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap bg-lime-50 text-lime-700">
+                            Enriched
                           </span>
                         )}
                       </td>

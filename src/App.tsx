@@ -65,6 +65,11 @@ const AppContent: React.FC = () => {
   const [selectedCompany, setSelectedCompany] = useState<Company | null>(null);
   const [enrichingIds, setEnrichingIds] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(true);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  const refreshCompanies = React.useCallback(() => {
+    setRefreshTick(t => t + 1);
+  }, []);
 
   // Fetch data from real DB
   React.useEffect(() => {
@@ -105,7 +110,6 @@ const AppContent: React.FC = () => {
             companyHqCity: j.company_hq_city,
             companyHqCountry: j.company_hq_country,
             companyWebsite: j.company_website,
-            companyConfidenceScore: j.company_confidence_score,
           }));
 
           const formattedCompanies: Company[] = companiesData.map((c: any) => ({
@@ -114,10 +118,7 @@ const AppContent: React.FC = () => {
             slug: c.slug,
             legalName: c.legal_name,
             industry: c.industry,
-            sector: c.sector,
             size: c.company_size,
-            isPubliclyTraded: c.is_publicly_traded,
-            stockTicker: c.stock_ticker,
             hqCity: c.hq_city,
             hqProvince: c.hq_province,
             hqCountry: c.hq_country,
@@ -127,8 +128,6 @@ const AppContent: React.FC = () => {
             website: c.website,
             description: c.description,
             knownATSPortal: c.known_ats_portal,
-            confidenceScore: c.confidence_score,
-            needsManualReview: c.needs_manual_review,
             enrichmentStatus: c.enrichment_status,
             enrichedAt: c.enriched_at
           }));
@@ -147,7 +146,7 @@ const AppContent: React.FC = () => {
     // Poll every 10 seconds to check for new scraped jobs
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
-  }, []);
+  }, [refreshTick]);
 
   // ── Enrichment Queue: procesa una empresa pending por vez desde el servidor ──
   const enrichmentRunningRef = React.useRef(false);
@@ -257,6 +256,7 @@ const AppContent: React.FC = () => {
             onSelectCompany={setSelectedCompany} 
             onUpdateCompany={handleUpdateCompany}
             enrichingIds={enrichingIds}
+            onEnrichmentReset={refreshCompanies}
           />
         </MainLayout></ProtectedRoute>} />
 

@@ -63,24 +63,32 @@ CREATE TABLE IF NOT EXISTS companies (
     slug VARCHAR(255) UNIQUE NOT NULL,
     legal_name VARCHAR(255),
     industry VARCHAR(100),
-    sector VARCHAR(100),
     company_size VARCHAR(50),
-    is_publicly_traded BOOLEAN DEFAULT false,
-    stock_ticker VARCHAR(50),
     hq_city VARCHAR(100),
     hq_province VARCHAR(100),
     hq_country VARCHAR(100),
     exact_address TEXT,
+    phone VARCHAR(60),
+    contact_email VARCHAR(255),
     website VARCHAR(255),
     description TEXT,
     known_ats_portal VARCHAR(100),
-    confidence_score INTEGER CHECK (confidence_score >= 0 AND confidence_score <= 100),
-    needs_manual_review BOOLEAN DEFAULT false,
     enrichment_status enrichment_status_enum DEFAULT 'pending',
     enriched_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- ── Migration: adjust companies table if already exists ───────────────────────
+-- Remove obsolete columns (safe: IF EXISTS)
+ALTER TABLE companies DROP COLUMN IF EXISTS sector;
+ALTER TABLE companies DROP COLUMN IF EXISTS is_publicly_traded;
+ALTER TABLE companies DROP COLUMN IF EXISTS stock_ticker;
+ALTER TABLE companies DROP COLUMN IF EXISTS confidence_score;
+ALTER TABLE companies DROP COLUMN IF EXISTS needs_manual_review;
+-- Add new columns if they don't exist yet
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS phone VARCHAR(60);
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS contact_email VARCHAR(255);
 
 CREATE TABLE IF NOT EXISTS company_tech_stack (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

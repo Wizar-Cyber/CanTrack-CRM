@@ -46,8 +46,30 @@ pool.connect((err) => {
     console.error("❌ Error conectando a PostgreSQL:", err.message);
   } else {
     console.log("✅ PostgreSQL conectado correctamente.");
+    runMigrations();
   }
 });
+
+// ── Migraciones automáticas ───────────────────────────────────────────────────
+async function runMigrations() {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      ALTER TABLE companies DROP COLUMN IF EXISTS sector;
+      ALTER TABLE companies DROP COLUMN IF EXISTS is_publicly_traded;
+      ALTER TABLE companies DROP COLUMN IF EXISTS stock_ticker;
+      ALTER TABLE companies DROP COLUMN IF EXISTS confidence_score;
+      ALTER TABLE companies DROP COLUMN IF EXISTS needs_manual_review;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS phone VARCHAR(60);
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS contact_email VARCHAR(255);
+    `);
+    console.log("✅ Migraciones aplicadas correctamente.");
+  } catch (err: any) {
+    console.error("⚠️ Error en migraciones (puede ignorarse si ya aplicadas):", err.message);
+  } finally {
+    client.release();
+  }
+}
 
 // ── Slug generator (handles accents + special chars) ─────────────────────────
 function slugify(name: string): string {
@@ -61,10 +83,10 @@ function slugify(name: string): string {
 
 // ── Column allowlist for safe dynamic updates ─────────────────────────────────
 const ALLOWED_COMPANY_COLUMNS = new Set([
-  'enrichment_status', 'industry', 'sector', 'hq_city', 'hq_province',
-  'hq_country', 'exact_address', 'phone', 'contact_email', 'website', 'description', 'known_ats_portal',
-  'confidence_score', 'needs_manual_review', 'company_size', 'is_publicly_traded',
-  'stock_ticker', 'legal_name', 'name',
+  'enrichment_status', 'industry', 'company_size',
+  'hq_city', 'hq_province', 'hq_country', 'exact_address',
+  'phone', 'contact_email', 'website', 'description',
+  'known_ats_portal', 'legal_name', 'name',
 ]);
 
 const ALLOWED_JOB_COLUMNS = new Set([
@@ -342,14 +364,12 @@ async function startServer() {
           j.*,
           COALESCE(c.name, j.raw_company_name) AS company_name,
           c.industry           AS company_industry,
-          c.sector             AS company_sector,
           c.company_size       AS company_size,
           c.hq_city            AS company_hq_city,
           c.hq_country         AS company_hq_country,
           c.website            AS company_website,
           c.description        AS company_description,
-          c.enrichment_status  AS company_enrichment_status,
-          c.confidence_score   AS company_confidence_score
+          c.enrichment_status  AS company_enrichment_status
         FROM jobs j
         LEFT JOIN companies c ON j.company_id = c.id
         WHERE j.is_active = true ${searchClause}
@@ -387,7 +407,6 @@ async function startServer() {
           (SELECT COUNT(*) FROM companies)::int AS total_companies,
           (SELECT COUNT(*) FROM companies WHERE enrichment_status != 'pending')::int AS enriched_companies,
           (SELECT COUNT(*) FROM companies WHERE enrichment_status = 'pending')::int AS pending_enrichment,
-          (SELECT COUNT(*) FROM companies WHERE needs_manual_review = true)::int AS needs_review,
           (SELECT COUNT(*) FROM applications)::int AS total_applications,
           (SELECT COUNT(*) FROM candidates)::int AS total_candidates,
           (SELECT COUNT(*) FROM candidates WHERE status = 'Available')::int AS active_candidates,
@@ -599,7 +618,6 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
       const newStatus = hasData ? 'scraped' : 'failed';
       const updatePayload: Record<string, any> = { enrichment_status: newStatus };
       if (data.industry) updatePayload.industry = data.industry;
-      if (data.sector) updatePayload.sector = data.sector;
       if (data.company_size) updatePayload.company_size = data.company_size;
       if (data.hq_city) updatePayload.hq_city = data.hq_city;
       if (data.hq_province) updatePayload.hq_province = data.hq_province;
@@ -609,11 +627,6 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
       if (data.contact_email) updatePayload.contact_email = data.contact_email;
       if (data.website) updatePayload.website = data.website;
       if (data.description) updatePayload.description = data.description;
-      if (data.is_publicly_traded !== undefined) updatePayload.is_publicly_traded = data.is_publicly_traded;
-      if (data.confidence_score !== undefined) {
-        updatePayload.confidence_score = data.confidence_score;
-        updatePayload.needs_manual_review = data.confidence_score < 60;
-      }
       const keys = Object.keys(updatePayload).filter(k => ALLOWED_COMPANY_COLUMNS.has(k));
       const setClause = keys.map((key, i) => `"${key}" = $${i + 2}`).join(', ');
       const values = keys.map(k => updatePayload[k]);
@@ -667,7 +680,6 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
 
       const updatePayload: Record<string, any> = { enrichment_status: newStatus };
       if (data.industry) updatePayload.industry = data.industry;
-      if (data.sector) updatePayload.sector = data.sector;
       if (data.company_size) updatePayload.company_size = data.company_size;
       if (data.hq_city) updatePayload.hq_city = data.hq_city;
       if (data.hq_province) updatePayload.hq_province = data.hq_province;
@@ -677,11 +689,6 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
       if (data.contact_email) updatePayload.contact_email = data.contact_email;
       if (data.website) updatePayload.website = data.website;
       if (data.description) updatePayload.description = data.description;
-      if (data.is_publicly_traded !== undefined) updatePayload.is_publicly_traded = data.is_publicly_traded;
-      if (data.confidence_score !== undefined) {
-        updatePayload.confidence_score = data.confidence_score;
-        updatePayload.needs_manual_review = data.confidence_score < 60;
-      }
       const keys = Object.keys(updatePayload).filter(k => ALLOWED_COMPANY_COLUMNS.has(k));
       const setClause = keys.map((key, i) => `"${key}" = $${i + 2}`).join(', ');
       const values = keys.map(k => updatePayload[k]);
@@ -704,6 +711,54 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
     }
   });
 
+  // DELETE /api/companies/all — borra datos de enriquecimiento de TODAS las empresas para re-scrapar
+  // Mantiene las empresas (nombre/slug) pero resetea todos los campos enriquecidos a NULL y status a 'pending'
+  // Opcional: ?limit=20  → solo las primeras N quedan como 'pending', el resto como 'skipped'
+  app.delete('/api/companies/all', requireAuth, requireRole('admin'), async (req: AuthRequest, res) => {
+    try {
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : null;
+
+      // 1. Resetear todo a NULL primero
+      await pool.query(`
+        UPDATE companies SET
+          industry       = NULL,
+          company_size   = NULL,
+          hq_city        = NULL,
+          hq_province    = NULL,
+          hq_country     = NULL,
+          exact_address  = NULL,
+          phone          = NULL,
+          contact_email  = NULL,
+          website        = NULL,
+          description    = NULL,
+          known_ats_portal = NULL,
+          legal_name     = NULL,
+          enrichment_status = 'skipped',
+          enriched_at    = NULL,
+          updated_at     = CURRENT_TIMESTAMP
+      `);
+
+      if (limit && limit > 0) {
+        // 2a. Solo las primeras N (por fecha de creación) quedan como 'pending'
+        await pool.query(
+          `UPDATE companies SET enrichment_status = 'pending'
+           WHERE id IN (
+             SELECT id FROM companies ORDER BY created_at ASC LIMIT $1
+           )`,
+          [limit]
+        );
+        return res.json({ success: true, message: `Reset done. First ${limit} companies queued for enrichment, rest skipped.` });
+      } else {
+        // 2b. Sin límite — todas como pending
+        await pool.query(`UPDATE companies SET enrichment_status = 'pending'`);
+        return res.json({ success: true, message: 'All company enrichment data cleared. Ready to re-scrape.' });
+      }
+    } catch (error) {
+      console.error('[Clear Companies Error]:', error);
+      return res.status(500).json({ error: 'Error clearing company data.' });
+    }
+  });
+
   // POST /api/companies/export — exporta empresas seleccionadas a Excel
   app.post('/api/companies/export', requireAuth, async (req, res) => {
     try {
@@ -722,15 +777,15 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
 
       const wb = new ExcelJS.Workbook();
       wb.creator = 'CanTrack CRM';
-      const ws = wb.addWorksheet('Empresas');
+      const ws = wb.addWorksheet('Companies');
 
       ws.columns = [
-        { header: 'Empresa',          key: 'name',          width: 32 },
-        { header: 'Dirección',        key: 'exact_address', width: 55 },
-        { header: 'Web',              key: 'website',       width: 38 },
+        { header: 'Company',  key: 'name',          width: 32 },
+        { header: 'Address',  key: 'exact_address', width: 50 },
+        { header: 'Industry', key: 'industry',      width: 22 },
       ];
 
-      // Cabecera con fondo azul oscuro
+      // Header styling
       ws.getRow(1).eachCell(cell => {
         cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A5F' } };
         cell.font   = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
@@ -741,9 +796,9 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
 
       for (const r of rows) {
         ws.addRow({
-          name:         r.name,
+          name:          r.name,
           exact_address: r.exact_address ?? '',
-          website:      r.website ?? '',
+          industry:      r.industry ?? '',
         });
       }
 

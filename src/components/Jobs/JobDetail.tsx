@@ -1,9 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Globe, MapPin, Users, Building, ExternalLink, MessageSquare, Sparkles, Loader2, CheckCircle, Mail, Phone, Building2, Calendar, Zap } from 'lucide-react';
+import { X, Globe, MapPin, Users, Building, ExternalLink, Loader2, Mail, Phone, Building2, Calendar, Zap } from 'lucide-react';
 import { Job, Company, Candidate } from '../../types';
 import { StatusBadge, SourceBadge } from '../UI/Badges';
-import { analyzeJobFit } from '../../services/geminiService';
 import { prepareMappingData } from '../../services/mappingService';
 
 interface JobDetailProps {
@@ -15,23 +14,12 @@ interface JobDetailProps {
 }
 
 export const JobDetail: React.FC<JobDetailProps> = ({ job, company, candidates = [], onClose, onSelectCompany }) => {
-  const [intelligence, setIntelligence] = useState<Partial<Company> | null>(null);
-  const [fitAnalysis, setFitAnalysis] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [analyzing, setAnalyzing] = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
   const [updatingStatus, setUpdatingStatus] = useState(false);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string>('');
   const [currentStatus, setCurrentStatus] = useState<string>(job.status || 'Saved');
   const [syncResult, setSyncResult] = useState<any>(null);
-  const [automationLogs, setAutomationLogs] = useState<any[]>([]);
-  const [verification, setVerification] = useState<any>(null);
-  const [applicationId, setApplicationId] = useState<string | null>(null);
-  const [requiresExtension, setRequiresExtension] = useState(false);
-  const [portalType, setPortalType] = useState<string | null>(null);
-  const [showLogs, setShowLogs] = useState(false);
-  const [submitFeedback, setSubmitFeedback] = useState<{ success: boolean; message: string } | null>(null);
+  const [statusFeedback, setStatusFeedback] = useState<string | null>(null);
   const [notes, setNotes] = useState(job.notes || '');
 
   // Use DB company data if enriched; otherwise null
@@ -39,157 +27,39 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, company, candidates =
   const displayCompany = isEnriched ? company : null;
 
   useEffect(() => {
-    async function fetchStatus() {
-      if (!selectedCandidateId) {
-        setCurrentStatus(job.status || 'Saved');
-        setAutomationLogs([]);
-        setVerification(null);
-        setApplicationId(null);
-        return;
-      }
-      try {
-        const response = await fetch(`/api/apply/status?jobId=${job.id}&candidateId=${selectedCandidateId}`);
-        const data = await response.json();
-        if (data.success) {
-          setCurrentStatus(data.status);
-          setAutomationLogs(data.logs || []);
-          setVerification(data.verification || null);
-          setApplicationId(data.applicationId || null);
-          setRequiresExtension(data.status === 'Needs Extension');
-          setPortalType(data.portal || null);
-          
-          // If we have logs, show them by default if they were successful
-          if (data.logs && data.logs.length > 0) {
-            setShowLogs(true);
-          }
-        }
-      } catch (error) {
-        console.error("Error fetching status:", error);
-      }
-    }
-    fetchStatus();
-  }, [selectedCandidateId, job.id, job.status]);
-
-  const handleAnalyzeFit = async () => {
-    setAnalyzing(true);
-    const analysis = await analyzeJobFit(job.title, job.companyName, job.notes || "");
-    setFitAnalysis(analysis);
-    setAnalyzing(false);
-  };
+    // Reset sync result when candidate changes
+    setSyncResult(null);
+    setStatusFeedback(null);
+    setCurrentStatus(job.status || 'Saved');
+  }, [selectedCandidateId, job.status]);
 
   const handleSyncWithExtension = async () => {
     if (!selectedCandidateId) return;
     setSyncing(true);
+    setSyncResult(null);
     const candidate = candidates.find(c => c.id === selectedCandidateId);
     if (candidate) {
       const data = await prepareMappingData(candidate, job);
       setSyncResult(data);
-      // In a real app, we would send this to a backend or use window.postMessage for the extension
-      console.log("Data prepared for extension:", data);
     }
     setSyncing(false);
   };
 
-  const handleSubmitApplication = async () => {
-    if (!selectedCandidateId) {
-      setSubmitFeedback({ success: false, message: "Please select a candidate first." });
-      return;
-    }
-
-    setSubmitting(true);
-    setSubmitFeedback(null);
-
-    try {
-      const candidate = candidates.find(c => c.id === selectedCandidateId);
-      setAutomationLogs([]);
-      setShowLogs(true);
-      
-      const response = await fetch('/api/apply/auto', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          job: job,
-          candidate: candidate
-        }),
-      });
-
-      const data = await response.json();
-
-      if (data.logs) {
-        setAutomationLogs(data.logs);
-      }
-
-      if (data.verification) {
-        setVerification(data.verification);
-      }
-
-      if (data.applicationId) {
-        setApplicationId(data.applicationId);
-      }
-
-      if (data.requiresExtension) {
-        setRequiresExtension(true);
-        setPortalType(data.portal);
-        setCurrentStatus('Needs Extension');
-        setSubmitFeedback({ 
-          success: true, 
-          message: `${data.portal.toUpperCase()} requires the AgencySync Chrome Extension.` 
-        });
-        return;
-      }
-
-      if (response.ok && data.success) {
-        setSubmitFeedback({ 
-          success: true, 
-          message: `Real application submitted to ${data.portal || 'portal'}. ID: ${data.applicationId}` 
-        });
-        setCurrentStatus('Applied');
-        setRequiresExtension(false);
-      } else {
-        setSubmitFeedback({ success: false, message: data.message || "Failed to execute automation." });
-      }
-    } catch (error) {
-      console.error("Error in backend automation:", error);
-      setSubmitFeedback({ success: false, message: "Network error. Please try again later." });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
   const handleUpdateStatus = async (newStatus: string) => {
-    if (!selectedCandidateId) {
-      setSubmitFeedback({ success: false, message: "Please select a candidate to update application status." });
-      return;
-    }
-
+    if (!selectedCandidateId) return;
     setUpdatingStatus(true);
     try {
       const response = await fetch('/api/apply/status', {
         method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          jobId: job.id,
-          candidateId: selectedCandidateId,
-          status: newStatus
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId: job.id, candidateId: selectedCandidateId, status: newStatus }),
       });
-
-      const data = await response.json();
-
       if (response.ok) {
         setCurrentStatus(newStatus);
-        setSubmitFeedback({ success: true, message: data.message });
-      } else {
-        setSubmitFeedback({ success: false, message: data.message || "Failed to update status." });
+        setStatusFeedback(`Status updated to ${newStatus}`);
+        setTimeout(() => setStatusFeedback(null), 2500);
       }
-    } catch (error) {
-      console.error("Error updating status:", error);
-      setSubmitFeedback({ success: false, message: "Network error. Please try again later." });
-    } finally {
+    } catch { /* silent */ } finally {
       setUpdatingStatus(false);
     }
   };
@@ -365,21 +235,6 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, company, candidates =
                   )}
                 </section>
 
-                {/* Análisis de compatibilidad IA */}
-                <section className="space-y-3">
-                  <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                    <MessageSquare className="w-3.5 h-3.5 text-lime-500" />AI Fit Analysis
-                  </h3>
-                  {fitAnalysis ? (
-                    <div className="bg-lime-50 border border-lime-100 rounded-xl p-4 text-lime-900 text-xs leading-relaxed whitespace-pre-wrap">{fitAnalysis}</div>
-                  ) : (
-                    <button onClick={handleAnalyzeFit} disabled={analyzing}
-                      className="w-full py-3 border-2 border-dashed border-slate-200 rounded-xl text-slate-500 text-sm font-medium hover:border-lime-500 hover:text-lime-600 transition-all flex items-center justify-center gap-2">
-                      {analyzing ? <><Loader2 className="w-4 h-4 animate-spin" />Analyzing...</> : <><Sparkles className="w-4 h-4" />Analyze Fit</>}
-                    </button>
-                  )}
-                </section>
-
                 {/* Notas */}
                 <section className="space-y-2">
                   <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">My Notes</h3>
@@ -392,14 +247,14 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, company, candidates =
               {/* ── COLUMNA DERECHA: candidato + auto-apply ── */}
               <div className="p-6 space-y-5">
 
-                {/* Selección de candidato */}
+                {/* Extension Sync */}
                 <section className="space-y-3">
                   <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                    <ExternalLink className="w-3.5 h-3.5 text-lime-500" />Extension Sync / Auto-Apply
+                    <ExternalLink className="w-3.5 h-3.5 text-lime-500" />Extension Sync
                   </h3>
                   <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 space-y-3">
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase">Candidate to Submit</label>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase">Candidate</label>
                       <select value={selectedCandidateId} onChange={e => setSelectedCandidateId(e.target.value)}
                         className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-lime-500/20 outline-none">
                         <option value="">-- Select Candidate --</option>
@@ -408,101 +263,35 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, company, candidates =
                     </div>
                     <button onClick={handleSyncWithExtension} disabled={!selectedCandidateId || syncing}
                       className="w-full py-2.5 bg-slate-900 text-white rounded-xl text-sm font-medium hover:bg-slate-800 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
-                      {syncing ? <><Loader2 className="w-4 h-4 animate-spin" />Preparing...</> : <><Globe className="w-4 h-4" />Sync with Extension</>}
+                      {syncing ? <><Loader2 className="w-4 h-4 animate-spin" />Preparing...</> : <><Globe className="w-4 h-4" />Prepare for Extension</>}
                     </button>
                     {syncResult && (
-                      <div className="p-3 bg-lime-50 border border-lime-100 rounded-lg">
-                        <p className="text-[10px] text-lime-700 font-bold uppercase mb-1">Ready</p>
-                        <p className="text-xs text-lime-600">Data mapped for {job.source}. Open the portal to auto-fill.</p>
+                      <div className="p-3 bg-lime-50 border border-lime-100 rounded-lg space-y-1">
+                        <p className="text-[10px] text-lime-700 font-bold uppercase">Ready to auto-fill</p>
+                        <p className="text-xs text-lime-600">Open the job portal — the extension will fill the form automatically.</p>
+                        <p className="text-[10px] text-lime-500 mt-1">Provider: {syncResult._provider || 'fallback'}</p>
                       </div>
                     )}
                   </div>
                 </section>
 
-                {/* Backend automation info */}
-                <div className="p-3 bg-blue-50 border-l-4 border-blue-500 rounded-r-xl flex items-start gap-3">
-                  <Sparkles className="w-4 h-4 text-blue-600 mt-0.5 shrink-0" />
-                  <div>
-                    <p className="text-xs font-bold text-blue-900">Backend Automation</p>
-                    <p className="text-[10px] text-blue-700">We detect the portal (Greenhouse, Lever, etc.) and apply via API when possible.</p>
-                  </div>
-                </div>
-
-                {/* Extensión requerida */}
-                {requiresExtension && (
-                  <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
-                    <div className="flex items-center gap-2 text-amber-800">
-                      <Globe className="w-4 h-4" />
-                      <p className="text-sm font-bold">Extension required: {portalType?.toUpperCase()}</p>
+                {/* Status update (solo cambia el tag en el CRM, no aplica en portal) */}
+                {selectedCandidateId && (
+                  <section className="space-y-2">
+                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Update Status in CRM</h3>
+                    <div className="flex flex-wrap gap-2">
+                      {['Saved', 'Applied', 'Interview', 'Offer', 'Rejected'].map(s => (
+                        <button key={s} onClick={() => handleUpdateStatus(s)} disabled={updatingStatus}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${currentStatus === s ? 'bg-lime-600 text-white border-lime-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
+                          {s}
+                        </button>
+                      ))}
                     </div>
-                    <a href={job.url} target="_blank" rel="noreferrer"
-                      className="inline-flex px-3 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-bold hover:bg-amber-700 items-center gap-1">
-                      Open Position <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </div>
-                )}
-
-                {/* Logs de automatización */}
-                {showLogs && (
-                  <div className="space-y-3">
-                    {verification && (
-                      <div className="grid grid-cols-3 gap-2">
-                        {[['layer1_submit', 'Layer 1', 'Submit'], ['layer2_email', 'Layer 2', 'Email'], ['layer3_portal', 'Layer 3', 'Portal']].map(([key, layer, label]) => (
-                          <div key={key} className={`p-2.5 rounded-xl border flex flex-col items-center gap-1 text-center text-xs ${
-                            (verification as any)[key] === 'success' ? 'bg-lime-50 border-lime-100 text-lime-700' :
-                            (verification as any)[key] === 'failed' ? 'bg-rose-50 border-rose-100 text-rose-700' : 'bg-slate-50 border-slate-100 text-slate-400'}`}>
-                            <CheckCircle className={`w-3.5 h-3.5 ${(verification as any)[key] === 'success' ? 'text-lime-500' : 'text-slate-300'}`} />
-                            <span className="font-bold text-[10px] uppercase">{layer}</span>
-                            <span className="text-[9px]">{label}</span>
-                          </div>
-                        ))}
-                      </div>
+                    {statusFeedback && (
+                      <p className="text-xs text-lime-600 font-medium">{statusFeedback}</p>
                     )}
-                    {applicationId && (
-                      <div className="flex items-center justify-between p-2.5 bg-slate-900 rounded-xl">
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Application ID</span>
-                        <span className="font-mono text-xs text-lime-400">{applicationId}</span>
-                      </div>
-                    )}
-                    <div className="bg-slate-900 rounded-xl overflow-hidden border border-slate-800">
-                      <div className="p-2.5 border-b border-slate-800 flex items-center justify-between">
-                        <p className="text-[10px] font-bold text-slate-400 uppercase">Automation Logs</p>
-                        <div className="flex gap-1">
-                          {['bg-rose-500', 'bg-amber-500', 'bg-lime-500'].map(c => <div key={c} className={`w-2 h-2 rounded-full ${c}`} />)}
-                        </div>
-                      </div>
-                      <div className="p-3 max-h-40 overflow-y-auto font-mono text-[11px] space-y-1.5">
-                        {automationLogs.length === 0 && submitting && (
-                          <div className="flex items-center gap-2 text-slate-500 italic"><Loader2 className="w-3 h-3 animate-spin" />Connecting...</div>
-                        )}
-                        {automationLogs.map((log, i) => (
-                          <motion.div key={i} initial={{ opacity: 0, x: -5 }} animate={{ opacity: 1, x: 0 }} className="flex gap-2">
-                            <span className="text-slate-600 shrink-0">[{new Date(log.timestamp).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}]</span>
-                            <span className={log.level === 'success' ? 'text-lime-400' : log.level === 'error' ? 'text-rose-400' : log.level === 'warning' ? 'text-amber-400' : 'text-slate-300'}>
-                              {log.level === 'success' && '✓ '}{log.level === 'error' && '✗ '}{log.message}
-                            </span>
-                          </motion.div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
+                  </section>
                 )}
-
-                {/* Trigger Auto-Apply */}
-                <button onClick={handleSubmitApplication} disabled={!selectedCandidateId || submitting}
-                  className="w-full py-3.5 bg-slate-900 text-white rounded-xl font-bold hover:bg-slate-800 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed text-sm">
-                  {submitting ? <><Loader2 className="w-5 h-5 animate-spin" />Running...</> : <><Sparkles className="w-5 h-5" />Trigger Smart Auto-Apply</>}
-                </button>
-
-                <AnimatePresence>
-                  {submitFeedback && (
-                    <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
-                      className={`p-3.5 rounded-xl text-sm font-medium flex items-center gap-3 ${submitFeedback.success ? 'bg-lime-50 text-lime-700 border border-lime-100' : 'bg-rose-50 text-rose-700 border border-rose-100'}`}>
-                      {submitFeedback.success ? <CheckCircle className="w-5 h-5" /> : <X className="w-5 h-5" />}
-                      {submitFeedback.message}
-                    </motion.div>
-                  )}
-                </AnimatePresence>
 
               </div>{/* end RIGHT */}
 
