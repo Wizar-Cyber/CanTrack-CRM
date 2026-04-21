@@ -1,68 +1,95 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Globe, MapPin, Users, Building, ExternalLink, Loader2, Mail, Phone, Building2, Calendar, Zap } from 'lucide-react';
-import { Job, Company, Candidate } from '../../types';
+import {
+  X, Globe, MapPin, Users, Building, ExternalLink, Loader2,
+  Mail, Phone, Building2, Calendar, Zap, Bot,
+  CheckCircle2, Clock, XCircle, AlertTriangle, AlertCircle, Play,
+  Linkedin,
+} from 'lucide-react';
+import { Job, Company } from '../../types';
 import { StatusBadge, SourceBadge } from '../UI/Badges';
-import { prepareMappingData } from '../../services/mappingService';
+import { api } from '../../services/apiClient';
 
 interface JobDetailProps {
   job: Job;
   company?: Company;
-  candidates?: Candidate[];
   onClose: () => void;
   onSelectCompany?: (name: string) => void;
 }
 
-export const JobDetail: React.FC<JobDetailProps> = ({ job, company, candidates = [], onClose, onSelectCompany }) => {
-  const [syncing, setSyncing] = useState(false);
-  const [updatingStatus, setUpdatingStatus] = useState(false);
-  const [selectedCandidateId, setSelectedCandidateId] = useState<string>('');
-  const [currentStatus, setCurrentStatus] = useState<string>(job.status || 'Saved');
-  const [syncResult, setSyncResult] = useState<any>(null);
-  const [statusFeedback, setStatusFeedback] = useState<string | null>(null);
-  const [notes, setNotes] = useState(job.notes || '');
+type QueueStatus = 'queued' | 'processing' | 'applied' | 'failed' | 'skipped' | 'captcha';
 
-  // Use DB company data if enriched; otherwise null
-  const isEnriched = company && company.enrichmentStatus !== 'pending' && company.enrichmentStatus !== undefined;
+interface QueueItem {
+  id: string;
+  status: QueueStatus;
+  priority: number;
+  queued_at: string;
+  applied_at: string | null;
+  failed_at: string | null;
+  notes: string | null;
+  error_message: string | null;
+}
+
+const QUEUE_STATUS_CFG: Record<QueueStatus, { label: string; icon: React.FC<any>; cls: string }> = {
+  queued:     { label: 'Queued',     icon: Clock,         cls: 'text-blue-600 bg-blue-50 ring-blue-200' },
+  processing: { label: 'Processing', icon: Loader2,       cls: 'text-amber-600 bg-amber-50 ring-amber-200' },
+  applied:    { label: 'Applied',    icon: CheckCircle2,  cls: 'text-emerald-600 bg-emerald-50 ring-emerald-200' },
+  failed:     { label: 'Failed',     icon: XCircle,       cls: 'text-red-600 bg-red-50 ring-red-200' },
+  skipped:    { label: 'Skipped',    icon: AlertTriangle, cls: 'text-slate-500 bg-slate-100 ring-slate-200' },
+  captcha:    { label: 'CAPTCHA',    icon: AlertCircle,   cls: 'text-orange-600 bg-orange-50 ring-orange-200' },
+};
+
+const SUPPORTED_PLATFORMS = new Set(['linkedin', 'indeed']);
+
+export const JobDetail: React.FC<JobDetailProps> = ({ job, company, onClose, onSelectCompany }) => {
+  const [queueItem, setQueueItem]   = useState<QueueItem | null | undefined>(undefined);
+  const [queueing, setQueueing]     = useState(false);
+  const [priority, setPriority]     = useState(5);
+  const [queueMsg, setQueueMsg]     = useState<string | null>(null);
+  const [notes, setNotes]           = useState(job.notes || '');
+
+  const isEnriched  = company && company.enrichmentStatus !== 'pending' && company.enrichmentStatus !== undefined;
   const displayCompany = isEnriched ? company : null;
+  const isSupported = SUPPORTED_PLATFORMS.has(job.source);
 
+  // Fetch current queue status for this job
   useEffect(() => {
-    // Reset sync result when candidate changes
-    setSyncResult(null);
-    setStatusFeedback(null);
-    setCurrentStatus(job.status || 'Saved');
-  }, [selectedCandidateId, job.status]);
+    api(`/api/application-queue/job/${job.id}`)
+      .then(r => r.json())
+      .then(d => setQueueItem(d))
+      .catch(() => setQueueItem(null));
+  }, [job.id]);
 
-  const handleSyncWithExtension = async () => {
-    if (!selectedCandidateId) return;
-    setSyncing(true);
-    setSyncResult(null);
-    const candidate = candidates.find(c => c.id === selectedCandidateId);
-    if (candidate) {
-      const data = await prepareMappingData(candidate, job);
-      setSyncResult(data);
-    }
-    setSyncing(false);
-  };
-
-  const handleUpdateStatus = async (newStatus: string) => {
-    if (!selectedCandidateId) return;
-    setUpdatingStatus(true);
+  const handleAddToQueue = async () => {
+    setQueueing(true);
+    setQueueMsg(null);
     try {
-      const response = await fetch('/api/apply/status', {
-        method: 'PATCH',
+      const r = await api('/api/application-queue', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jobId: job.id, candidateId: selectedCandidateId, status: newStatus }),
+        body: JSON.stringify({ jobId: job.id, priority }),
       });
-      if (response.ok) {
-        setCurrentStatus(newStatus);
-        setStatusFeedback(`Status updated to ${newStatus}`);
-        setTimeout(() => setStatusFeedback(null), 2500);
+      const json = await r.json();
+      if (r.ok && json.inserted > 0) {
+        setQueueMsg('Vacancy added to the agent queue!');
+        // Refresh queue status
+        const fresh = await api(`/api/application-queue/job/${job.id}`).then(x => x.json());
+        setQueueItem(fresh);
+      } else if (json.skippedDuplicates > 0) {
+        setQueueMsg('Already queued or being processed.');
+      } else {
+        setQueueMsg(json.error ?? 'Could not add to queue.');
       }
-    } catch { /* silent */ } finally {
-      setUpdatingStatus(false);
+    } catch {
+      setQueueMsg('Network error adding to queue.');
+    } finally {
+      setQueueing(false);
+      setTimeout(() => setQueueMsg(null), 4000);
     }
   };
+
+  const isQueued  = queueItem && ['queued', 'processing'].includes(queueItem.status);
+  const isApplied = queueItem?.status === 'applied';
 
   return (
     <>
@@ -75,7 +102,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, company, candidates =
         onClick={onClose}
       />
 
-      {/* Centered Modal — igual a CompanyDetail */}
+      {/* Modal */}
       <div className="fixed inset-0 z-50 flex items-start sm:items-center justify-center p-3 sm:p-6 overflow-y-auto pointer-events-none">
         <motion.div
           initial={{ opacity: 0, scale: 0.96, y: 20 }}
@@ -91,13 +118,24 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, company, candidates =
                 <Building className="text-lime-600 w-5 h-5" />
               </div>
               <div>
-                <h2 className="text-lg font-bold text-slate-900 leading-tight">{job.title}</h2>
+                <h2 className="text-lg font-bold text-slate-900 leading-tight">
+                  {job.titleDisplay || job.serviceName || job.title}
+                </h2>
+                {job.serviceName && job.title && job.title.toLowerCase() !== job.serviceName.toLowerCase() && (
+                  <p className="text-xs text-slate-400 mt-0.5" title="Título original de la vacante antes de la clasificación IA">
+                    Vacante original: {job.title}
+                  </p>
+                )}
                 <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                  <button onClick={() => onSelectCompany?.(job.companyName)}
-                    className="text-sm text-slate-500 hover:text-lime-600 transition-colors font-medium">
+                  <button
+                    onClick={() => onSelectCompany?.(job.companyName)}
+                    className="text-sm text-slate-500 hover:text-lime-600 transition-colors font-medium"
+                  >
                     {job.companyName}
                   </button>
-                  {displayCompany?.industry && <span className="text-xs text-slate-400">· {displayCompany.industry}</span>}
+                  {displayCompany?.industry && (
+                    <span className="text-xs text-slate-400">· {displayCompany.industry}</span>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                   <SourceBadge source={job.source} />
@@ -106,29 +144,21 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, company, candidates =
                       <Zap className="w-2.5 h-2.5" />Easy Apply
                     </span>
                   )}
-                  <div className="relative group">
-                    <div className="flex items-center gap-1 cursor-pointer">
-                      <StatusBadge status={currentStatus as any} />
-                      <svg viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3 text-slate-400">
-                        <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
-                      </svg>
-                    </div>
-                    <div className="absolute top-full left-0 mt-1.5 w-36 bg-white border border-slate-200 rounded-xl shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none group-hover:pointer-events-auto transition-all z-30 p-1.5 space-y-0.5">
-                      {['Saved', 'Applied', 'Interview', 'Offer', 'Rejected'].map(s => (
-                        <button key={s} onClick={() => handleUpdateStatus(s)} disabled={updatingStatus}
-                          className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${currentStatus === s ? 'bg-lime-50 text-lime-700' : 'hover:bg-slate-50 text-slate-600'}`}>
-                          {s}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+                  {/* Queue status pill in header */}
+                  {queueItem && (
+                    <QueueStatusPill status={queueItem.status} />
+                  )}
                 </div>
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <a href={job.url} target="_blank" rel="noreferrer"
-                className="flex items-center gap-1 px-3 py-1.5 bg-lime-600 text-white rounded-xl text-xs font-semibold hover:bg-lime-700 transition-colors">
-                Aplicar <ExternalLink className="w-3 h-3" />
+              <a
+                href={job.url}
+                target="_blank"
+                rel="noreferrer"
+                className="flex items-center gap-1 px-3 py-1.5 bg-slate-100 text-slate-700 rounded-xl text-xs font-semibold hover:bg-slate-200 transition-colors"
+              >
+                Ver vacante <ExternalLink className="w-3 h-3" />
               </a>
               <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-full transition-colors">
                 <X className="w-5 h-5 text-slate-400" />
@@ -140,7 +170,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, company, candidates =
           <div className="overflow-y-auto flex-1">
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-0">
 
-              {/* ── COLUMNA IZQUIERDA: info de la vacante + empresa ── */}
+              {/* ── LEFT: job + company info ── */}
               <div className="p-6 space-y-5 border-b lg:border-b-0 lg:border-r border-slate-100">
 
                 {/* Quick info pills */}
@@ -162,7 +192,7 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, company, candidates =
                   )}
                 </div>
 
-                {/* Información de la empresa */}
+                {/* Company info */}
                 <section className="space-y-3">
                   <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
                     <Building2 className="w-3.5 h-3.5 text-lime-500" />Company Information
@@ -235,76 +265,205 @@ export const JobDetail: React.FC<JobDetailProps> = ({ job, company, candidates =
                   )}
                 </section>
 
-                {/* Notas */}
+                {/* Notes */}
                 <section className="space-y-2">
                   <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">My Notes</h3>
-                  <textarea className="w-full h-24 p-3 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-lime-500/20 focus:border-lime-500 transition-all resize-none"
-                    placeholder="Add your notes about this position..." value={notes} onChange={e => setNotes(e.target.value)} />
+                  <textarea
+                    className="w-full h-24 p-3 bg-white border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-lime-500/20 focus:border-lime-500 transition-all resize-none"
+                    placeholder="Add your notes about this position..."
+                    value={notes}
+                    onChange={e => setNotes(e.target.value)}
+                  />
                 </section>
+              </div>
 
-              </div>{/* end LEFT */}
-
-              {/* ── COLUMNA DERECHA: candidato + auto-apply ── */}
+              {/* ── RIGHT: Agent queue panel ── */}
               <div className="p-6 space-y-5">
 
-                {/* Extension Sync */}
                 <section className="space-y-3">
                   <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                    <ExternalLink className="w-3.5 h-3.5 text-lime-500" />Extension Sync
+                    <Bot className="w-3.5 h-3.5 text-lime-500" />Application Agent
                   </h3>
-                  <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 space-y-3">
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-slate-400 uppercase">Candidate</label>
-                      <select value={selectedCandidateId} onChange={e => setSelectedCandidateId(e.target.value)}
-                        className="w-full p-2 bg-white border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-lime-500/20 outline-none">
-                        <option value="">-- Select Candidate --</option>
-                        {candidates.map(c => <option key={c.id} value={c.id}>{c.name} ({c.role})</option>)}
-                      </select>
+
+                  {!isSupported ? (
+                    /* Platform not supported */
+                    <div className="bg-slate-50 rounded-xl border border-slate-200 p-5 text-center">
+                      <Globe className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                      <p className="text-sm font-semibold text-slate-600">Plataforma no soportada</p>
+                      <p className="text-xs text-slate-400 mt-1">
+                        El agente solo funciona con vacantes de{' '}
+                        <strong>LinkedIn</strong> e <strong>Indeed</strong>.
+                        Esta vacante es de <em>{job.source}</em>.
+                      </p>
+                      <a
+                        href={job.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-3 inline-flex items-center gap-1 px-3 py-1.5 bg-lime-600 text-white text-xs font-semibold rounded-lg hover:bg-lime-700 transition-colors"
+                      >
+                        Aplicar manualmente <ExternalLink className="w-3 h-3" />
+                      </a>
                     </div>
-                    <button onClick={handleSyncWithExtension} disabled={!selectedCandidateId || syncing}
-                      className="w-full py-2.5 bg-slate-900 text-white rounded-xl text-sm font-medium hover:bg-slate-800 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
-                      {syncing ? <><Loader2 className="w-4 h-4 animate-spin" />Preparing...</> : <><Globe className="w-4 h-4" />Prepare for Extension</>}
-                    </button>
-                    {syncResult && (
-                      <div className="p-3 bg-lime-50 border border-lime-100 rounded-lg space-y-1">
-                        <p className="text-[10px] text-lime-700 font-bold uppercase">Ready to auto-fill</p>
-                        <p className="text-xs text-lime-600">Open the job portal — the extension will fill the form automatically.</p>
-                        <p className="text-[10px] text-lime-500 mt-1">Provider: {syncResult._provider || 'fallback'}</p>
+                  ) : isApplied ? (
+                    /* Already applied */
+                    <div className="bg-emerald-50 rounded-xl border border-emerald-200 p-5 text-center">
+                      <CheckCircle2 className="w-10 h-10 text-emerald-500 mx-auto mb-2" />
+                      <p className="text-sm font-bold text-emerald-700">Application submitted!</p>
+                      <p className="text-xs text-emerald-600 mt-1">
+                        The agent applied to this vacancy
+                        {queueItem?.applied_at && ` on ${new Date(queueItem.applied_at).toLocaleString('en', { dateStyle: 'medium', timeStyle: 'short' })}`}.
+                      </p>
+                    </div>
+                  ) : isQueued ? (
+                    /* In queue / processing */
+                    <div className="bg-blue-50 rounded-xl border border-blue-200 p-5 text-center">
+                      {queueItem?.status === 'processing' ? (
+                        <Loader2 className="w-10 h-10 text-blue-500 mx-auto mb-2 animate-spin" />
+                      ) : (
+                        <Clock className="w-10 h-10 text-blue-400 mx-auto mb-2" />
+                      )}
+                      <p className="text-sm font-bold text-blue-700">
+                        {queueItem?.status === 'processing' ? 'Processing now...' : 'In queue'}
+                      </p>
+                      <p className="text-xs text-blue-600 mt-1">
+                        Agregado {queueItem?.queued_at && new Date(queueItem.queued_at).toLocaleString('es', { dateStyle: 'medium', timeStyle: 'short' })}
+                      </p>
+                    </div>
+                  ) : (
+                    /* Ready to queue */
+                    <div className="bg-slate-50 rounded-xl border border-slate-200 p-4 space-y-4">
+                      {/* Platform indicator */}
+                      <div className="flex items-center gap-3">
+                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                          job.source === 'linkedin' ? 'bg-blue-600' : 'bg-indigo-600'
+                        }`}>
+                          {job.source === 'linkedin'
+                            ? <Linkedin className="w-5 h-5 text-white" />
+                            : <Globe className="w-5 h-5 text-white" />
+                          }
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold text-slate-900">
+                            {job.source === 'linkedin' ? 'LinkedIn Easy Apply' : 'Indeed Apply'}
+                          </p>
+                          <p className="text-xs text-slate-500">
+                            The agent will apply automatically with your active session
+                          </p>
+                        </div>
                       </div>
-                    )}
-                  </div>
+
+                      {/* Priority selector */}
+                      <div className="space-y-1.5">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase">Priority</label>
+                        <div className="flex gap-2">
+                          {[
+                            { label: 'Low',    value: 2 },
+                            { label: 'Normal', value: 5 },
+                            { label: 'High',   value: 9 },
+                          ].map(opt => (
+                            <button
+                              key={opt.value}
+                              onClick={() => setPriority(opt.value)}
+                              className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border transition-colors ${
+                                priority === opt.value
+                                  ? 'bg-lime-600 border-lime-600 text-white'
+                                  : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Queue button */}
+                      <button
+                        onClick={handleAddToQueue}
+                        disabled={queueing}
+                        className="w-full py-2.5 bg-lime-600 text-white rounded-xl text-sm font-semibold hover:bg-lime-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                      >
+                        {queueing ? (
+                          <><Loader2 className="w-4 h-4 animate-spin" />Adding...</>
+                        ) : (
+                          <><Play className="w-4 h-4" />Add to agent queue</>
+                        )}
+                      </button>
+
+                      {/* Failed/skipped state — show retry option */}
+                      {queueItem && ['failed', 'captcha', 'skipped'].includes(queueItem.status) && (
+                        <div className="p-3 bg-red-50 border border-red-100 rounded-lg">
+                          <p className="text-[10px] font-bold text-red-700 uppercase mb-0.5">
+                            {QUEUE_STATUS_CFG[queueItem.status]?.label}
+                          </p>
+                          {queueItem.error_message && (
+                            <p className="text-xs text-red-600">{queueItem.error_message}</p>
+                          )}
+                          <p className="text-[10px] text-red-500 mt-1">
+                            Use the button above to try again.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Feedback message */}
+                      <AnimatePresence>
+                        {queueMsg && (
+                          <motion.p
+                            initial={{ opacity: 0, y: -4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0 }}
+                            className={`text-xs font-medium text-center ${
+                              queueMsg.includes('!') ? 'text-emerald-600' : 'text-slate-500'
+                            }`}
+                          >
+                            {queueMsg}
+                          </motion.p>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  )}
                 </section>
 
-                {/* Status update (solo cambia el tag en el CRM, no aplica en portal) */}
-                {selectedCandidateId && (
-                  <section className="space-y-2">
-                    <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider">Update Status in CRM</h3>
-                    <div className="flex flex-wrap gap-2">
-                      {['Saved', 'Applied', 'Interview', 'Offer', 'Rejected'].map(s => (
-                        <button key={s} onClick={() => handleUpdateStatus(s)} disabled={updatingStatus}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border ${currentStatus === s ? 'bg-lime-600 text-white border-lime-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
-                          {s}
-                        </button>
-                      ))}
-                    </div>
-                    {statusFeedback && (
-                      <p className="text-xs text-lime-600 font-medium">{statusFeedback}</p>
-                    )}
-                  </section>
-                )}
-
-              </div>{/* end RIGHT */}
-
-            </div>{/* end 2-col grid */}
-          </div>{/* end scrollable body */}
-
+                {/* Info box */}
+                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">How it works</p>
+                  <ul className="space-y-1 text-[11px] text-slate-500">
+                    <li className="flex items-start gap-1.5">
+                      <span className="w-3.5 h-3.5 bg-lime-100 text-lime-600 rounded-full text-[9px] flex items-center justify-center shrink-0 mt-0.5 font-bold">1</span>
+                      Add the vacancy to the queue using the button above.
+                    </li>
+                    <li className="flex items-start gap-1.5">
+                      <span className="w-3.5 h-3.5 bg-lime-100 text-lime-600 rounded-full text-[9px] flex items-center justify-center shrink-0 mt-0.5 font-bold">2</span>
+                      The agent will process it during business hours (9am–5pm), respecting the 8/hr limit.
+                    </li>
+                    <li className="flex items-start gap-1.5">
+                      <span className="w-3.5 h-3.5 bg-lime-100 text-lime-600 rounded-full text-[9px] flex items-center justify-center shrink-0 mt-0.5 font-bold">3</span>
+                      Make sure you have an active session on LinkedIn / Indeed in Chrome.
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </div>
         </motion.div>
       </div>
     </>
   );
 };
 
-// Helper sub-component
+// ── Queue status pill ─────────────────────────────────────────────────────────
+const QueueStatusPill: React.FC<{ status: QueueStatus }> = ({ status }) => {
+  const cfg = QUEUE_STATUS_CFG[status];
+  if (!cfg) return null;
+  const Icon = cfg.icon;
+  return (
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-bold ring-1 ${cfg.cls}`}>
+      <Icon className={`w-2.5 h-2.5 ${status === 'processing' ? 'animate-spin' : ''}`} />
+      {cfg.label}
+    </span>
+  );
+};
+
+// ── Helper sub-component ──────────────────────────────────────────────────────
 const InfoField: React.FC<{ label: string; value?: string | null; icon?: React.ReactNode }> = ({ label, value, icon }) => {
   if (!value) return null;
   return (

@@ -15,9 +15,10 @@ import { Settings } from './components/Settings/Settings';
 import { Job, DashboardStats, Candidate, Company } from './types';
 import { AnimatePresence } from 'framer-motion';
 import { Loader2 } from 'lucide-react';
-import { CandidatesList } from './components/Candidates/CandidatesList';
+import { ServicesList } from './components/Services/ServicesList';
 import { JobsView } from './components/Jobs/JobsView';
 import { VisitPlanner } from './components/Visits/VisitPlanner';
+import { ApplicationQueue } from './components/Jobs/ApplicationQueue';
 import { ToastContainer, useToasts } from './components/UI/Toast';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -110,6 +111,13 @@ const AppContent: React.FC = () => {
             companyHqCity: j.company_hq_city,
             companyHqCountry: j.company_hq_country,
             companyWebsite: j.company_website,
+            // Mapeo de servicio CanTrack (52 servicios)
+            serviceTypeId: j.service_type_id ?? null,
+            serviceName:   j.service_name   ?? null,
+            serviceNumber: j.service_number ?? null,
+            serviceCategory: j.service_category ?? null,
+            titleDisplay:  j.title_display  ?? j.title,
+            hasDirectServiceMatch: j.has_direct_service_match ?? false,
           }));
 
           const formattedCompanies: Company[] = companiesData.map((c: any) => ({
@@ -245,8 +253,8 @@ const AppContent: React.FC = () => {
           />
         </MainLayout></ProtectedRoute>} />
 
-        <Route path="/candidates" element={<ProtectedRoute><MainLayout>
-          <CandidatesList onCandidatesChange={setCandidates} />
+        <Route path="/services" element={<ProtectedRoute><MainLayout>
+          <ServicesList />
         </MainLayout></ProtectedRoute>} />
 
         <Route path="/companies" element={<ProtectedRoute><MainLayout>
@@ -264,6 +272,10 @@ const AppContent: React.FC = () => {
           <VisitPlanner companies={companies} onSelectCompany={setSelectedCompany} />
         </MainLayout></ProtectedRoute>} />
 
+        <Route path="/agent" element={<ProtectedRoute><MainLayout>
+          <ApplicationQueue />
+        </MainLayout></ProtectedRoute>} />
+
         <Route path="/settings" element={<ProtectedRoute><MainLayout><Settings /></MainLayout></ProtectedRoute>} />
         
         <Route path="*" element={<ProtectedRoute><MainLayout>
@@ -276,11 +288,10 @@ const AppContent: React.FC = () => {
 
       <AnimatePresence>
         {selectedJob && (
-          <JobDetail 
+          <JobDetail
             job={selectedJob}
             company={companies.find(c => c.name === selectedJob.companyName || c.id === selectedJob.companyId)}
-            candidates={candidates}
-            onClose={() => setSelectedJob(null)} 
+            onClose={() => setSelectedJob(null)}
             onSelectCompany={(name) => {
               const company = companies.find(c => c.name === name);
               if (company) setSelectedCompany(company);

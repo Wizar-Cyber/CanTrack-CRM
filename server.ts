@@ -1,12 +1,26 @@
+// ⚠️ dotenv DEBE cargarse antes que cualquier otro import que lea process.env
+// (ej: server/utils/region-filter.ts evalúa REGION_FILTER al ser importado).
+import 'dotenv/config';
+
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import ExcelJS from 'exceljs';
-import { AutomationService, AutomationLogEntry, VerificationStatus } from "./server/services/automation.service.js";
+import { ApplicationAgentService } from "./server/services/application-agent.service.js";
 import { EnrichmentService } from "./server/services/enrichment.service.js";
 import { GeminiService } from "./server/services/gemini.service.js";  // coverLetter directo
+import { JobClassifierService } from "./server/services/job-classifier.service.js";
+import { SERVICE_TYPES, SERVICE_TYPES_COMPACT, SERVICE_TYPE_BY_ID } from "./server/data/serviceTypes.js";
+import {
+  REGION_FILTER,
+  isRegionFilterActive,
+  companyRegionClause,
+  jobRegionClause,
+  isRegionMatch,
+} from "./server/utils/region-filter.js";
 import { MDirectorService } from "./server/services/mdirector.service.js";
+import { spawn } from 'child_process';
 import pkg from 'pg';
 const { Pool } = pkg;
 import dotenv from 'dotenv';
@@ -50,6 +64,61 @@ pool.connect((err) => {
   }
 });
 
+// ── Auto-export al Excel cuando se enriche una empresa ───────────────────────
+// Debounced: acumula IDs por 10s y los vuelca todos de una sola vez al Excel.
+let _exportDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let _exportRunning = false;
+
+async function _flushToExcel() {
+  if (_exportRunning) {
+    _exportDebounceTimer = setTimeout(_flushToExcel, 5000);
+    return;
+  }
+  _exportRunning = true;
+  const target = (process.env.EXPORT_TARGET || 'excel').toLowerCase();
+
+  try {
+    // ── Exportar a Excel (local / OneDrive / Google Drive for Desktop) ──────
+    if (target === 'excel' || target === 'both') {
+      const { runExport } = await import('./scripts/export-to-excel.js')
+        .catch(() => ({ runExport: null })) as any;
+      if (runExport) {
+        const r = await runExport({ limit: 2000, dryRun: false, pool });
+        if (r.added > 0)
+          console.log(`[AutoExport/Excel] ✅ +${r.added} nuevas · ${r.skipped} duplicadas · ${r.totalRowsInExcel} total`);
+      }
+    }
+
+    // ── Exportar a Google Sheets ────────────────────────────────────────────
+    if (target === 'sheets' || target === 'both') {
+      const sheetsId = process.env.GOOGLE_SHEETS_ID;
+      const keyPath  = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH;
+      if (!sheetsId || !keyPath) {
+        console.warn('[AutoExport/Sheets] GOOGLE_SHEETS_ID o GOOGLE_SERVICE_ACCOUNT_KEY_PATH no configurados — omitiendo.');
+      } else {
+        const { runSheetsExport } = await import('./scripts/export-to-sheets.js')
+          .catch(() => ({ runSheetsExport: null })) as any;
+        if (runSheetsExport) {
+          const r = await runSheetsExport({ limit: 2000, dryRun: false, pool });
+          if (r.added > 0)
+            console.log(`[AutoExport/Sheets] ✅ +${r.added} nuevas · ${r.skipped} duplicadas · ${r.totalRowsInSheet} total`);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.error('[AutoExport] Error:', err.message);
+  } finally {
+    _exportRunning = false;
+  }
+}
+
+/** Llamar esto después de enriquecer una empresa. El export real ocurre 10s después,
+ *  agrupando todas las empresas que lleguen en ese ventana. */
+function scheduleExcelExport() {
+  if (_exportDebounceTimer) clearTimeout(_exportDebounceTimer);
+  _exportDebounceTimer = setTimeout(_flushToExcel, 10_000);
+}
+
 // ── Migraciones automáticas ───────────────────────────────────────────────────
 async function runMigrations() {
   const client = await pool.connect();
@@ -62,6 +131,57 @@ async function runMigrations() {
       ALTER TABLE companies DROP COLUMN IF EXISTS needs_manual_review;
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS phone VARCHAR(60);
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS contact_email VARCHAR(255);
+    `);
+    // Migración: columnas de clasificación en jobs
+    await client.query(`
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS service_type_id VARCHAR(30);
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS service_match_confidence DECIMAL(3,2);
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS service_match_reasoning TEXT;
+      ALTER TABLE jobs ADD COLUMN IF NOT EXISTS service_match_provider VARCHAR(30);
+    `);
+    // Migración: sugerencias de servicios en companies
+    await client.query(`
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS suggested_services JSONB;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS suggested_services_summary TEXT;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS suggested_services_at TIMESTAMP WITH TIME ZONE;
+    `);
+    // Migración: exportación a Excel/Sheets + estado Google Maps
+    await client.query(`
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS google_maps_status VARCHAR(20) DEFAULT 'unknown';
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS excel_exported_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS sheets_exported_at TIMESTAMP WITH TIME ZONE;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS hq_region VARCHAR(100);
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS hq_town VARCHAR(100);
+    `);
+    // Migración: cola de aplicaciones automáticas
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS application_queue (
+        id            UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        job_id        UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+        status        VARCHAR(20) NOT NULL DEFAULT 'queued',
+        priority      INTEGER NOT NULL DEFAULT 5,
+        queued_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        started_at    TIMESTAMPTZ,
+        applied_at    TIMESTAMPTZ,
+        failed_at     TIMESTAMPTZ,
+        error_message TEXT,
+        notes         TEXT,
+        created_by    UUID REFERENCES users(id) ON DELETE SET NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_app_queue_status   ON application_queue(status);
+      CREATE INDEX IF NOT EXISTS idx_app_queue_job_id   ON application_queue(job_id);
+    `);
+    // Migración: plantillas de servicios
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS service_templates (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        service_type_id VARCHAR(100) NOT NULL UNIQUE,
+        name VARCHAR(255) NOT NULL DEFAULT '',
+        content TEXT NOT NULL DEFAULT '',
+        variables JSONB DEFAULT '[]',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
     `);
     console.log("✅ Migraciones aplicadas correctamente.");
   } catch (err: any) {
@@ -94,20 +214,10 @@ const ALLOWED_JOB_COLUMNS = new Set([
   'application_type', 'is_easy_apply', 'is_active', 'raw_company_name',
 ]);
 
-interface ApplicationData {
-  jobId: string;
-  candidateId: string;
-  status: string;
-  logs?: AutomationLogEntry[];
-  verification?: VerificationStatus;
-  applicationId?: string;
-  strategy?: string;
-  updatedAt: string;
-}
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = parseInt(process.env.PORT || '3000', 10);
 
   app.use(express.json({ limit: '1mb' }));
 
@@ -333,12 +443,34 @@ async function startServer() {
 
   app.get('/api/companies', requireAuth, async (req, res) => {
     try {
-      const result = await pool.query('SELECT * FROM companies ORDER BY created_at DESC');
+      const regionSQL = companyRegionClause('c');
+      // Por defecto solo mostramos empresas con dirección real (enriquecidas).
+      // ?includeUnenriched=1 permite verlas todas (para panel admin / enrichment queue).
+      const includeUnenriched = req.query.includeUnenriched === '1' || req.query.includeUnenriched === 'true';
+      const addressClause = includeUnenriched
+        ? 'TRUE'
+        : `(
+            c.exact_address IS NOT NULL AND TRIM(c.exact_address) <> ''
+            AND c.enrichment_status IN ('enriched','db_matched','scraped')
+          )`;
+      const result = await pool.query(
+        `SELECT c.* FROM companies c
+         WHERE ${regionSQL} AND ${addressClause}
+         ORDER BY c.created_at DESC`
+      );
       res.json(result.rows);
     } catch (error) {
       console.error('[DB Error] Fetching companies:', error);
       res.status(500).json({ error: 'Error al obtener empresas.' });
     }
+  });
+
+  /** Devuelve el estado del filtro regional para que el front lo muestre en UI */
+  app.get('/api/region-filter', requireAuth, async (_req, res) => {
+    res.json({
+      active:   isRegionFilterActive(),
+      province: REGION_FILTER || null,
+    });
   });
 
   app.get('/api/jobs', requireAuth, async (req, res) => {
@@ -359,6 +491,7 @@ async function startServer() {
         params.push(`%${search}%`);
       }
 
+      const regionSQL = jobRegionClause('j', 'c');
       const baseSelect = `
         SELECT
           j.*,
@@ -372,7 +505,7 @@ async function startServer() {
           c.enrichment_status  AS company_enrichment_status
         FROM jobs j
         LEFT JOIN companies c ON j.company_id = c.id
-        WHERE j.is_active = true ${searchClause}
+        WHERE j.is_active = true AND ${regionSQL} ${searchClause}
       `;
 
       const [rowsResult, countResult] = await Promise.all([
@@ -380,13 +513,29 @@ async function startServer() {
         pool.query(
           `SELECT COUNT(*)::int AS total FROM jobs j
            LEFT JOIN companies c ON j.company_id = c.id
-           WHERE j.is_active = true ${searchClause}`,
+           WHERE j.is_active = true AND ${regionSQL} ${searchClause}`,
           search ? [`%${search}%`] : [],
         ),
       ]);
 
+      // Enriquecer cada vacante con el nombre legible del servicio CanTrack
+      // y un title_display que prioriza el servicio sobre el título crudo.
+      const enriched = rowsResult.rows.map((j: any) => {
+        const svc = j.service_type_id ? SERVICE_TYPE_BY_ID[j.service_type_id] : null;
+        return {
+          ...j,
+          service_name:    svc?.name    ?? null,
+          service_number:  svc?.number  ?? null,
+          service_category: svc?.category ?? null,
+          // title_display: servicio mapeado si existe, si no el título original
+          title_display:   svc?.name    ?? j.title,
+          // has_direct_service_match: false si el clasificador no encontró ningún servicio
+          has_direct_service_match: !!svc,
+        };
+      });
+
       res.json({
-        data:       rowsResult.rows,
+        data:       enriched,
         total:      countResult.rows[0].total,
         page,
         limit,
@@ -401,12 +550,17 @@ async function startServer() {
   // GET /api/stats — real DB counts
   app.get('/api/stats', requireAuth, async (_req, res) => {
     try {
+      // Filtro regional: jobs se cuentan solo si su company (o su location para no vinculadas)
+      // cumple la región. Companies se cuentan solo si caen en la región.
+      const cRegion = companyRegionClause('c');
+      const jRegion = jobRegionClause('j', 'c');
       const result = await pool.query(`
         SELECT
-          (SELECT COUNT(*) FROM jobs WHERE is_active = true)::int AS total_jobs,
-          (SELECT COUNT(*) FROM companies)::int AS total_companies,
-          (SELECT COUNT(*) FROM companies WHERE enrichment_status != 'pending')::int AS enriched_companies,
-          (SELECT COUNT(*) FROM companies WHERE enrichment_status = 'pending')::int AS pending_enrichment,
+          (SELECT COUNT(*) FROM jobs j LEFT JOIN companies c ON j.company_id=c.id
+            WHERE j.is_active = true AND ${jRegion})::int AS total_jobs,
+          (SELECT COUNT(*) FROM companies c WHERE ${cRegion})::int AS total_companies,
+          (SELECT COUNT(*) FROM companies c WHERE enrichment_status != 'pending' AND ${cRegion})::int AS enriched_companies,
+          (SELECT COUNT(*) FROM companies c WHERE enrichment_status = 'pending' AND ${cRegion})::int AS pending_enrichment,
           (SELECT COUNT(*) FROM applications)::int AS total_applications,
           (SELECT COUNT(*) FROM candidates)::int AS total_candidates,
           (SELECT COUNT(*) FROM candidates WHERE status = 'Available')::int AS active_candidates,
@@ -463,7 +617,16 @@ async function startServer() {
         [id]
       );
       if (result.rows.length === 0) return res.status(404).json({ error: 'Vacante no encontrada.' });
-      return res.json(result.rows[0]);
+      const j: any = result.rows[0];
+      const svc = j.service_type_id ? SERVICE_TYPE_BY_ID[j.service_type_id] : null;
+      return res.json({
+        ...j,
+        service_name:    svc?.name    ?? null,
+        service_number:  svc?.number  ?? null,
+        service_category: svc?.category ?? null,
+        title_display:   svc?.name    ?? j.title,
+        has_direct_service_match: !!svc,
+      });
     } catch (error) {
       console.error('[Job GET Error]:', error);
       return res.status(500).json({ error: 'Error al obtener vacante.' });
@@ -535,62 +698,6 @@ async function startServer() {
     }
   });
 
-  // POST /api/mapping/prepare — genera payload estructurado para auto-fill de extensión (LLM en servidor)
-  app.post('/api/mapping/prepare', requireAuth, async (req: AuthRequest, res) => {
-    const { candidate, job } = req.body;
-    if (!candidate || !job) return res.status(400).json({ error: 'candidate y job son requeridos.' });
-
-    // Si hay proveedor LLM disponible, generar respuesta enriquecida
-    if (process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY) {
-      try {
-        const prompt = `You are a recruitment assistant. Return ONLY a valid JSON object (no markdown) with this exact structure:
-{
-  "personal_info": { "first_name": "...", "last_name": "...", "email": "...", "phone": "...", "location": "..." },
-  "links": { "linkedin": "...", "portfolio": "..." },
-  "experience_summary": "2-sentence summary tailored for this role",
-  "common_questions": [
-    { "question": "Years of experience with ${(job.requiredSkills?.[0] || 'relevant tech')}", "answer": "..." },
-    { "question": "Why are you a good fit for ${job.companyName}?", "answer": "..." }
-  ]
-}
-Candidate: ${candidate.name}, ${candidate.yearsOfExperience} years exp, skills: ${candidate.skills?.join(', ')}.
-Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(', ')}.`;
-
-        const model = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
-        const apiKey = process.env.GROQ_API_KEY!;
-        const aiRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model,
-            messages: [{ role: 'user', content: prompt }],
-            response_format: { type: 'json_object' },
-            max_tokens: 512,
-            temperature: 0.2,
-          }),
-          signal: AbortSignal.timeout(15_000),
-        });
-        if (aiRes.ok) {
-          const json: any = await aiRes.json();
-          const parsed = JSON.parse(json.choices?.[0]?.message?.content ?? '{}');
-          return res.json({ ...parsed, _provider: 'groq' });
-        }
-      } catch { /* caer al fallback */ }
-    }
-
-    // Fallback básico sin LLM
-    return res.json({
-      personal_info: {
-        first_name: candidate.name?.split(' ')[0] ?? '',
-        last_name: candidate.name?.split(' ').slice(1).join(' ') ?? '',
-        email: candidate.email ?? '',
-        phone: candidate.phone ?? '',
-        location: candidate.location ?? '',
-      },
-      links: { linkedin: candidate.linkedinUrl ?? '', portfolio: candidate.portfolioUrl ?? '' },
-      _provider: 'fallback',
-    });
-  });
 
   // POST /api/gemini/enrich — enriquece una empresa específica (comprueba datos antes de llamar a Gemini)
   app.post('/api/gemini/enrich', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
@@ -634,6 +741,8 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
         `UPDATE companies SET ${setClause}, updated_at = CURRENT_TIMESTAMP, enriched_at = CURRENT_TIMESTAMP WHERE id = $1`,
         [companyId, ...values]
       );
+      // Disparar export al Excel en background (debounced 10s)
+      if (hasData) scheduleExcelExport();
       return res.json({ success: true, source: data._provider ?? 'unknown', data });
     } catch (error) {
       console.error('[Gemini Enrich Error]:', error);
@@ -668,6 +777,7 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
           `UPDATE companies SET enrichment_status = 'db_matched', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
           [companyId]
         );
+        scheduleExcelExport(); // también exportar empresas db_matched
         return res.json({ done: false, source: 'db_matched', companyId, companyName });
       }
 
@@ -696,6 +806,24 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
         `UPDATE companies SET ${setClause}, updated_at = CURRENT_TIMESTAMP, enriched_at = CURRENT_TIMESTAMP WHERE id = $1`,
         [companyId, ...values]
       );
+
+      // Disparar export al Excel en background (debounced 10s)
+      if (hasData) scheduleExcelExport();
+
+      // Auto-sugerir servicios si la empresa tiene datos suficientes (background)
+      if (hasData) {
+        JobClassifierService.suggestForCompany({
+          name: companyName,
+          industry: data.industry,
+          description: data.description,
+          company_size: data.company_size,
+          hq_city: data.hq_city,
+          hq_country: data.hq_country,
+        }).then(suggestions => pool.query(
+          `UPDATE companies SET suggested_services=$1, suggested_services_summary=$2, suggested_services_at=NOW() WHERE id=$3`,
+          [JSON.stringify(suggestions.suggestions), suggestions.company_summary, companyId]
+        )).catch(err => console.warn('[Auto-suggest]', err.message));
+      }
 
       // Cuántas quedan
       const countResult = await pool.query(`SELECT COUNT(*) FROM companies WHERE enrichment_status = 'pending'`);
@@ -760,62 +888,107 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
   });
 
   // POST /api/companies/export — exporta empresas seleccionadas a Excel
+  /**
+   * POST /api/companies/export
+   * Descarga un Excel en el formato Acton Vale: 3 columnas → Empresa | DIRECCION | WORK
+   *
+   * WORK = nombre del servicio CanTrack al que la empresa fue clasificada por la IA,
+   *        priorizando:
+   *          1. service_type_id de la primera vacante clasificada
+   *          2. Primer suggested_services[0]
+   *          3. El nombre legible del servicio si el filtro fija uno
+   *          4. 'GENERAL' como último fallback
+   *
+   * Body: { ids?: string[], serviceId?: string }
+   *   - ids:       array de UUIDs de companies (opcional)
+   *   - serviceId: si se pasa, filtra empresas que tienen ese servicio ya sea
+   *                por job.service_type_id o por suggested_services.
+   */
   app.post('/api/companies/export', requireAuth, async (req, res) => {
     try {
-      const { ids } = req.body; // array de UUIDs; si vacío exporta todas
-      let query: string;
-      let params: any[];
+      const { ids, serviceId } = req.body as { ids?: string[]; serviceId?: string };
+
+      const where: string[] = [];
+      const params: any[] = [];
       if (Array.isArray(ids) && ids.length > 0) {
-        query = `SELECT * FROM companies WHERE id = ANY($1::uuid[]) ORDER BY name`;
-        params = [ids];
-      } else {
-        query = `SELECT * FROM companies ORDER BY name`;
-        params = [];
+        params.push(ids);
+        where.push(`c.id = ANY($${params.length}::uuid[])`);
       }
-      const result = await pool.query(query, params);
-      const rows = result.rows;
+      if (serviceId) {
+        params.push(serviceId);
+        where.push(`(
+          EXISTS (SELECT 1 FROM jobs j WHERE j.company_id = c.id AND j.service_type_id = $${params.length})
+          OR c.suggested_services::jsonb @> jsonb_build_array(jsonb_build_object('service_id', $${params.length}::text))
+        )`);
+      }
+      // Inyectar filtro regional (no-op si REGION_FILTER vacío)
+      where.push(companyRegionClause('c'));
+      const whereSQL = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+      const q = `
+        SELECT
+          c.id, c.name, c.exact_address, c.hq_city, c.hq_province, c.hq_country,
+          c.suggested_services,
+          (SELECT j.service_type_id FROM jobs j
+            WHERE j.company_id = c.id AND j.service_type_id IS NOT NULL
+            ORDER BY j.created_at DESC LIMIT 1) AS job_service_type_id
+        FROM companies c
+        ${whereSQL}
+        ORDER BY c.name
+      `;
+      const { rows } = await pool.query(q, params);
 
       const wb = new ExcelJS.Workbook();
       wb.creator = 'CanTrack CRM';
-      const ws = wb.addWorksheet('Companies');
+      const ws = wb.addWorksheet('Hoja1');
 
+      // Formato exacto Acton Vale: 3 columnas sin estilo extra.
       ws.columns = [
-        { header: 'Company',  key: 'name',          width: 32 },
-        { header: 'Address',  key: 'exact_address', width: 50 },
-        { header: 'Industry', key: 'industry',      width: 22 },
+        { header: 'Empresa',    key: 'empresa',   width: 38 },
+        { header: 'DIRECCION',  key: 'direccion', width: 55 },
+        { header: 'WORK',       key: 'work',      width: 24 },
       ];
 
-      // Header styling
-      ws.getRow(1).eachCell(cell => {
-        cell.fill   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A5F' } };
-        cell.font   = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
-        cell.border = { bottom: { style: 'thin', color: { argb: 'FF000000' } } };
-        cell.alignment = { vertical: 'middle', horizontal: 'center' };
-      });
-      ws.getRow(1).height = 22;
+      // Solo negrita en encabezado — el archivo de referencia es muy simple.
+      ws.getRow(1).font = { bold: true };
+
+      // Resolver el WORK para cada empresa
+      const resolveWork = (r: any): string => {
+        // 1. Servicio derivado de la vacante clasificada
+        const jobSvc = r.job_service_type_id;
+        if (jobSvc && SERVICE_TYPE_BY_ID[jobSvc]) return SERVICE_TYPE_BY_ID[jobSvc].name;
+        // 2. Filtro explícito por servicio
+        if (serviceId && SERVICE_TYPE_BY_ID[serviceId]) return SERVICE_TYPE_BY_ID[serviceId].name;
+        // 3. Primera sugerencia AI sobre la empresa
+        const ss = Array.isArray(r.suggested_services) ? r.suggested_services : null;
+        if (ss && ss.length && ss[0]?.service_id && SERVICE_TYPE_BY_ID[ss[0].service_id]) {
+          return SERVICE_TYPE_BY_ID[ss[0].service_id].name;
+        }
+        // 4. Fallback
+        return 'General';
+      };
+
+      // Componer dirección Acton Vale-style si exact_address está vacío
+      const resolveAddress = (r: any): string => {
+        if (r.exact_address) return r.exact_address;
+        const parts = [r.hq_city, r.hq_province, r.hq_country].filter(Boolean);
+        return parts.join(', ');
+      };
 
       for (const r of rows) {
         ws.addRow({
-          name:          r.name,
-          exact_address: r.exact_address ?? '',
-          industry:      r.industry ?? '',
+          empresa:   r.name ?? '',
+          direccion: resolveAddress(r),
+          work:      resolveWork(r),
         });
       }
 
-      // Zebra striping
-      ws.eachRow((row, rowNum) => {
-        if (rowNum === 1) return;
-        const bg = rowNum % 2 === 0 ? 'FFF0F4FA' : 'FFFFFFFF';
-        row.eachCell(cell => {
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
-          cell.alignment = { vertical: 'middle', wrapText: false };
-        });
-      });
-
-      ws.autoFilter = { from: 'A1', to: 'C1' };
+      const filename = serviceId && SERVICE_TYPE_BY_ID[serviceId]
+        ? `cantrack-${SERVICE_TYPE_BY_ID[serviceId].id}-${new Date().toISOString().slice(0,10)}.xlsx`
+        : `cantrack-empresas-${new Date().toISOString().slice(0,10)}.xlsx`;
 
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-      res.setHeader('Content-Disposition', `attachment; filename="empresas-${new Date().toISOString().slice(0,10)}.xlsx"`);
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
       await wb.xlsx.write(res);
       res.end();
     } catch (error) {
@@ -859,7 +1032,7 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
     try {
       // ── Paso 1: jobs directos del scraper (company_id IS NULL, tienen raw_company_name) ──
       const unlinkedResult = await pool.query(`
-        SELECT id, raw_company_name, source, url, created_at
+        SELECT id, raw_company_name, title, source, url, location, country, created_at, service_type_id
         FROM jobs
         WHERE company_id IS NULL
           AND raw_company_name IS NOT NULL
@@ -868,9 +1041,29 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
         LIMIT 200
       `);
 
+      let skippedRegion = 0;
       for (const job of unlinkedResult.rows) {
         const name = job.raw_company_name as string;
+        // Filtro regional: si la vacante tiene location/country y NO coincide con la región → skip.
+        // Si no tiene location, lo dejamos pasar (la región se filtrará tras enriquecimiento).
+        if (isRegionFilterActive() && (job.location || job.country)) {
+          if (!isRegionMatch(job.location, job.country, job.title, name)) {
+            skippedRegion++;
+            // Marcar como is_active=false para no re-procesar
+            await pool.query(`UPDATE jobs SET is_active=false, updated_at=NOW() WHERE id=$1`, [job.id]);
+            continue;
+          }
+        }
         const slug = slugify(name);
+        // Clasificar la vacante si aún no lo está
+        if (!job.service_type_id && job.title) {
+          JobClassifierService.classifyJob(job.title, '', name, '')
+            .then(r => pool.query(
+              `UPDATE jobs SET service_type_id=$1, service_match_confidence=$2, service_match_reasoning=$3, service_match_provider=$4 WHERE id=$5`,
+              [r.service_id, r.confidence, r.reasoning, r._provider, job.id]
+            ))
+            .catch(err => console.warn('[Sync Classify unlinked]', err.message));
+        }
 
         // Buscar o crear la empresa
         const insertComp = await pool.query(
@@ -912,6 +1105,13 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
 
       const VALID_SOURCES = new Set(['linkedin', 'indeed', 'glassdoor', 'company_website']);
       for (const sj of legacyResult.rows) {
+        // Filtro regional: scraped_jobs legacy no tiene location, así que solo
+        // podemos inspeccionar título + empresa. Si el filtro está activo y no
+        // hay coincidencia, skip — no se crea ni la vacante ni la empresa.
+        if (isRegionFilterActive() && !isRegionMatch(sj.titulo, sj.empresa)) {
+          skippedRegion++;
+          continue;
+        }
         const slug = slugify(sj.empresa);
         const insertComp = await pool.query(
           `INSERT INTO companies (name, slug, enrichment_status)
@@ -930,23 +1130,37 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
         }
         const source = VALID_SOURCES.has(sj.fuente?.toLowerCase()) ? sj.fuente.toLowerCase() : 'other';
         try {
-          await pool.query(
+          const ins = await pool.query(
             `INSERT INTO jobs (company_id, title, source, url, raw_company_name, created_at)
-             VALUES ($1, $2, $3::job_source_enum, $4, $5, $6)`,
+             VALUES ($1, $2, $3::job_source_enum, $4, $5, $6)
+             RETURNING id`,
             [companyId, sj.titulo, source, sj.url_postulacion, sj.empresa, sj.fecha_creacion ?? new Date()]
           );
           linkedJobs++;
+          // Clasificar la vacante en background — mapea a uno de los 52 servicios
+          if (ins.rowCount) {
+            const newJobId = ins.rows[0].id;
+            JobClassifierService.classifyJob(sj.titulo, '', sj.empresa, '')
+              .then(r => pool.query(
+                `UPDATE jobs SET service_type_id=$1, service_match_confidence=$2, service_match_reasoning=$3, service_match_provider=$4 WHERE id=$5`,
+                [r.service_id, r.confidence, r.reasoning, r._provider, newJobId]
+              ))
+              .catch(err => console.warn('[Sync Classify]', err.message));
+          }
         } catch { /* duplicado — ignorar */ }
       }
 
       const total = linkedJobs;
-      console.log(`[Sync] ${total} vacantes vinculadas, ${newCompanies} empresas nuevas.`);
+      console.log(`[Sync] ${total} vacantes vinculadas, ${newCompanies} empresas nuevas${skippedRegion ? `, ${skippedRegion} descartadas por región (${REGION_FILTER})` : ''}.`);
+      const regionNote = skippedRegion ? ` · ${skippedRegion} descartadas fuera de ${REGION_FILTER}` : '';
       return res.json({
         synced: total,
         newCompanies,
+        skippedRegion,
+        regionFilter: isRegionFilterActive() ? REGION_FILTER : null,
         message: total === 0
-          ? 'Todo al día — no hay vacantes sin empresa.'
-          : `${total} vacantes sincronizadas, ${newCompanies} empresas nuevas para enriquecer.`,
+          ? `Todo al día — no hay vacantes sin empresa${regionNote}.`
+          : `${total} vacantes sincronizadas, ${newCompanies} empresas nuevas para enriquecer${regionNote}.`,
       });
     } catch (error) {
       console.error('[Sync Error]:', error);
@@ -960,25 +1174,114 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
     if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET)
       return res.status(401).json({ error: 'Webhook secret inválido.' });
 
-    const { fuente, titulo, empresa, url_postulacion } = req.body;
+    const { fuente, titulo, empresa, url_postulacion, location, country } = req.body;
     if (!empresa || !titulo || !url_postulacion)
       return res.status(400).json({ error: 'Campos requeridos: empresa, titulo, url_postulacion.' });
+
+    // Filtro regional: descartamos vacantes fuera de la provincia configurada.
+    // Respondemos 200 para que el scraper no reintente (no es un error real).
+    if (isRegionFilterActive() && !isRegionMatch(location, country, titulo, empresa, url_postulacion)) {
+      return res.json({ success: true, skipped: true, reason: `Fuera de región ${REGION_FILTER}` });
+    }
 
     try {
       // Insertar la vacante con raw_company_name; sync la vinculará con la empresa
       const validSources = new Set(['linkedin', 'indeed', 'glassdoor', 'company_website']);
       const source = validSources.has((fuente || '').toLowerCase()) ? fuente.toLowerCase() : 'other';
-      await pool.query(
+      const insertResult = await pool.query(
         `INSERT INTO jobs (raw_company_name, title, source, url)
          VALUES ($1, $2, $3::job_source_enum, $4)
-         ON CONFLICT DO NOTHING`,
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
         [empresa, titulo, source, url_postulacion]
       );
+      // Clasificar la vacante en background (no bloquea la respuesta)
+      if (insertResult.rowCount && insertResult.rowCount > 0) {
+        const newJobId = insertResult.rows[0].id;
+        JobClassifierService.classifyJob(titulo, '', empresa, '')
+          .then(result => pool.query(
+            `UPDATE jobs SET service_type_id=$1, service_match_confidence=$2, service_match_reasoning=$3, service_match_provider=$4 WHERE id=$5`,
+            [result.service_id, result.confidence, result.reasoning, result._provider, newJobId]
+          ))
+          .catch(err => console.warn('[Webhook Classify]', err.message));
+      }
       return res.json({ success: true });
     } catch (error) {
       console.error('[Webhook Error]:', error);
       return res.status(500).json({ error: 'Error interno del servidor.' });
     }
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Webhook — dispara un batch de enriquecimiento sobre empresas pending.
+  // Pensado para ser invocado por un cron externo (Task Scheduler / cron / n8n).
+  //
+  // Uso:
+  //   POST /api/webhook/enrich
+  //   Header: x-webhook-secret: <WEBHOOK_SECRET>
+  //   Body (opcional): { "limit": 20, "delay": 1200, "sync": true }
+  //
+  // Si `sync:true`, primero corre /api/sync/scraped-jobs para absorber lo nuevo.
+  // El proceso corre en background y el webhook responde inmediatamente.
+  // ──────────────────────────────────────────────────────────────────────────
+  let enrichRunning = false;
+  let enrichLastRun: { startedAt: string; finishedAt?: string; exitCode?: number | null; pid?: number } | null = null;
+
+  app.post('/api/webhook/enrich', async (req, res) => {
+    const secret = req.headers['x-webhook-secret'];
+    if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET)
+      return res.status(401).json({ error: 'Webhook secret inválido.' });
+
+    if (enrichRunning) {
+      return res.status(409).json({
+        error: 'Ya hay un batch de enriquecimiento en curso.',
+        lastRun: enrichLastRun,
+      });
+    }
+
+    const limit = Math.max(1, Math.min(200, parseInt(req.body?.limit, 10) || 20));
+    const delay = Math.max(200, Math.min(10_000, parseInt(req.body?.delay, 10) || 1200));
+    const runSync = req.body?.sync === true || req.body?.sync === 'true';
+
+    // Lanzamos el script como child process (npx tsx) para no bloquear el servidor.
+    const scriptArgs = ['tsx', 'scripts/enrich-companies.ts', '--limit', String(limit), '--delay', String(delay)];
+    const child = spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', scriptArgs, {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false,
+    });
+
+    enrichRunning = true;
+    enrichLastRun = { startedAt: new Date().toISOString(), pid: child.pid };
+
+    child.stdout?.on('data', d => process.stdout.write(`[Enrich] ${d}`));
+    child.stderr?.on('data', d => process.stderr.write(`[Enrich err] ${d}`));
+    child.on('close', code => {
+      enrichRunning = false;
+      enrichLastRun = { ...enrichLastRun!, finishedAt: new Date().toISOString(), exitCode: code };
+      console.log(`[Webhook Enrich] terminó con código ${code}`);
+    });
+
+    // Si además piden sincronizar, lanzamos en paralelo una llamada interna al sync.
+    if (runSync) {
+      pool.query(`
+        SELECT COUNT(*)::int AS n FROM jobs WHERE company_id IS NULL AND raw_company_name IS NOT NULL
+      `).then(r => console.log(`[Webhook Enrich] jobs pendientes de sync: ${r.rows[0].n}`))
+        .catch(() => {});
+    }
+
+    return res.json({
+      success: true,
+      message: `Batch de enriquecimiento lanzado (limit=${limit}, delay=${delay}ms).`,
+      pid: child.pid,
+      startedAt: enrichLastRun.startedAt,
+    });
+  });
+
+  /** Estado del último batch de enriquecimiento disparado vía webhook */
+  app.get('/api/webhook/enrich/status', requireAuth, async (_req, res) => {
+    res.json({ running: enrichRunning, lastRun: enrichLastRun });
   });
 
   // PATCH /api/companies/:id — Enrich (editor+ only, column allowlist prevents SQL injection)
@@ -1238,56 +1541,588 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
     }
   });
 
-  // ── Applications (in-memory, protected) ────────────────────────────────────
-  const applications: ApplicationData[] = [];
+  // ── Application Agent ─────────────────────────────────────────────────────
 
-  app.post('/api/apply/auto', requireAuth, async (req: AuthRequest, res) => {
-    const { job, candidate } = req.body;
-    if (!job || !candidate) return res.status(400).json({ success: false, message: 'Faltan datos.' });
+  // GET /api/agent/status
+  app.get('/api/agent/status', requireAuth, (_req, res) => {
+    res.json(ApplicationAgentService.getState());
+  });
+
+  // POST /api/agent/start
+  app.post('/api/agent/start', requireAuth, requireRole('admin', 'editor'), async (_req, res) => {
     try {
-      const result = await AutomationService.executeApplication(job, candidate);
-      const status = result.success ? 'Applied' : result.requiresExtension ? 'Needs Extension' : 'Failed';
-      const appData: ApplicationData = {
-        jobId: job.id, candidateId: candidate.id, status,
-        logs: result.logs, verification: result.verification,
-        applicationId: result.applicationId, strategy: result.strategy,
-        updatedAt: new Date().toISOString(),
-      };
-      const idx = applications.findIndex(a => a.jobId === job.id && a.candidateId === candidate.id);
-      idx !== -1 ? (applications[idx] = appData) : applications.push(appData);
-      return res.json(result);
-    } catch (error) {
-      console.error('[Automation Error]', error);
-      return res.status(500).json({ success: false, message: 'Error en automatización.' });
+      await ApplicationAgentService.start(pool);
+      res.json({ success: true, state: ApplicationAgentService.getState() });
+    } catch (err: any) {
+      res.status(400).json({ success: false, message: err.message });
     }
   });
 
-  app.post('/api/apply', requireAuth, (req: AuthRequest, res) => {
-    const { jobId, candidateId } = req.body;
-    if (!jobId || !candidateId) return res.status(400).json({ success: false, message: 'jobId y candidateId requeridos.' });
-    const idx = applications.findIndex(a => a.jobId === jobId && a.candidateId === candidateId);
-    if (idx !== -1 && applications[idx].status === 'Applied')
-      return res.status(400).json({ success: false, message: 'Candidato ya aplicado.' });
-    const appData: ApplicationData = { jobId, candidateId, status: 'Applied', updatedAt: new Date().toISOString() };
-    idx !== -1 ? (applications[idx] = appData) : applications.push(appData);
-    setTimeout(() => res.json({ success: true, message: 'Aplicación enviada.' }), 500);
+  // POST /api/agent/stop
+  app.post('/api/agent/stop', requireAuth, requireRole('admin', 'editor'), (_req, res) => {
+    ApplicationAgentService.stop();
+    res.json({ success: true, state: ApplicationAgentService.getState() });
   });
 
-  app.patch('/api/apply/status', requireAuth, (req: AuthRequest, res) => {
-    const { jobId, candidateId, status } = req.body;
-    if (!jobId || !candidateId || !status) return res.status(400).json({ success: false, message: 'Faltan campos.' });
-    const idx = applications.findIndex(a => a.jobId === jobId && a.candidateId === candidateId);
-    if (idx === -1) return res.status(404).json({ success: false, message: 'Aplicación no encontrada.' });
-    applications[idx].status = status;
-    applications[idx].updatedAt = new Date().toISOString();
+  // ── Application Queue ─────────────────────────────────────────────────────
+
+  // GET /api/application-queue — lista completa con info de job
+  app.get('/api/application-queue', requireAuth, async (_req, res) => {
+    try {
+      const { rows } = await pool.query(`
+        SELECT
+          aq.id, aq.job_id, aq.status, aq.priority,
+          aq.queued_at, aq.started_at, aq.applied_at, aq.failed_at,
+          aq.error_message, aq.notes,
+          j.title  AS job_title,
+          j.source,
+          COALESCE(c.name, j.raw_company_name, '') AS company_name
+        FROM application_queue aq
+        JOIN jobs j ON j.id = aq.job_id
+        LEFT JOIN companies c ON c.id = j.company_id
+        ORDER BY
+          CASE aq.status WHEN 'queued' THEN 0 WHEN 'processing' THEN 1 ELSE 2 END,
+          aq.priority DESC,
+          aq.queued_at ASC
+      `);
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/application-queue/stats
+  app.get('/api/application-queue/stats', requireAuth, async (_req, res) => {
+    try {
+      const stats = await ApplicationAgentService.getStats(pool);
+      res.json(stats);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/application-queue — añadir vacante(s) a la cola
+  app.post('/api/application-queue', requireAuth, async (req: AuthRequest, res) => {
+    const { jobId, jobIds, priority = 5 } = req.body ?? {};
+    const ids: string[] = jobIds ?? (jobId ? [jobId] : []);
+    if (ids.length === 0) return res.status(400).json({ error: 'jobId o jobIds requerido.' });
+
+    try {
+      // Verificar que los jobs existen y son de LinkedIn/Indeed
+      const { rows: jobs } = await pool.query(
+        `SELECT id, source FROM jobs WHERE id = ANY($1::uuid[]) AND source IN ('linkedin','indeed')`,
+        [ids]
+      );
+      if (jobs.length === 0) {
+        return res.status(400).json({ error: 'Ningún job válido (debe ser LinkedIn o Indeed).' });
+      }
+
+      const inserted: string[] = [];
+      for (const job of jobs) {
+        // Evitar duplicados en estado queued/processing
+        const { rows: dup } = await pool.query(
+          `SELECT id FROM application_queue WHERE job_id=$1 AND status IN ('queued','processing')`,
+          [job.id]
+        );
+        if (dup.length > 0) continue;
+
+        await pool.query(
+          `INSERT INTO application_queue (job_id, priority, created_by)
+           VALUES ($1, $2, $3)`,
+          [job.id, Math.min(10, Math.max(1, priority)), req.user?.id ?? null]
+        );
+        inserted.push(job.id);
+      }
+
+      res.json({ success: true, inserted: inserted.length, skippedDuplicates: jobs.length - inserted.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // DELETE /api/application-queue/clear — limpiar completados/fallidos (antes que /:id)
+  app.delete('/api/application-queue/clear', requireAuth, requireRole('admin', 'editor'), async (_req, res) => {
+    try {
+      const { rowCount } = await pool.query(
+        `DELETE FROM application_queue WHERE status IN ('applied','skipped','failed','captcha')`
+      );
+      res.json({ success: true, deleted: rowCount });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // DELETE /api/application-queue/:id — eliminar item
+  app.delete('/api/application-queue/:id', requireAuth, async (req, res) => {
+    try {
+      await pool.query(`DELETE FROM application_queue WHERE id=$1`, [req.params.id]);
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PATCH /api/application-queue/:id/retry — reintentar fallido
+  app.patch('/api/application-queue/:id/retry', requireAuth, async (req, res) => {
+    try {
+      const { rowCount } = await pool.query(
+        `UPDATE application_queue
+         SET status='queued', error_message=NULL, failed_at=NULL, notes=NULL, started_at=NULL
+         WHERE id=$1 AND status IN ('failed','captcha','skipped')`,
+        [req.params.id]
+      );
+      if (rowCount === 0) return res.status(400).json({ error: 'Item no encontrado o no se puede reintentar.' });
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/application-queue/job/:jobId — estado de un job específico en la cola
+  app.get('/api/application-queue/job/:jobId', requireAuth, async (req, res) => {
+    try {
+      const { rows } = await pool.query(
+        `SELECT id, status, priority, queued_at, applied_at, failed_at, notes, error_message
+         FROM application_queue WHERE job_id=$1
+         ORDER BY queued_at DESC LIMIT 1`,
+        [req.params.jobId]
+      );
+      res.json(rows[0] ?? null);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── Exportación a Excel ──────────────────────────────────────────────────────
+
+  /**
+   * POST /api/export/companies-to-excel
+   * Lanza el script de exportación en background y devuelve respuesta inmediata.
+   * Body opcional: { limit?: number, dryRun?: boolean, excelPath?: string }
+   */
+  app.post('/api/export/companies-to-excel', requireAuth, requireRole('admin'), async (req: AuthRequest, res) => {
+    const { limit = 1000, dryRun = false, excelPath } = req.body ?? {};
+
+    const excelFilePath = excelPath || process.env.EXCEL_PATH ||
+      'C:\\Users\\ripre\\OneDrive\\SmartFlow\\Proyecto Canada\\MUESTRA  LISTA QUEBEC.xlsx';
+
+    try {
+      // Contar cuántas empresas hay listas para exportar
+      const countRes = await pool.query(`
+        SELECT COUNT(*) FROM companies
+        WHERE excel_exported_at IS NULL
+          AND enrichment_status IN ('scraped', 'db_matched', 'verified')
+          AND name IS NOT NULL
+      `);
+      const pending = parseInt(countRes.rows[0].count, 10);
+
+      if (pending === 0) {
+        return res.json({ success: true, message: 'No hay empresas nuevas para exportar.', pending: 0 });
+      }
+
+      // Importar el script dinámicamente y ejecutarlo en el mismo proceso
+      const { runExport } = await import('./scripts/export-to-excel.js').catch(() => ({ runExport: null })) as any;
+      if (!runExport) {
+        return res.status(500).json({ success: false, message: 'Script de exportación no disponible.' });
+      }
+
+      // Ejecutar de forma asíncrona sin bloquear
+      const exportPromise = runExport({ limit, dryRun, excelFilePath, pool });
+      exportPromise
+        .then((result: any) => console.log('[Export] Completado:', result))
+        .catch((err: Error) => console.error('[Export] Error:', err.message));
+
+      return res.json({
+        success: true,
+        message: `Exportación iniciada. ${pending} empresas candidatas.`,
+        pending,
+        excelPath: excelFilePath,
+        dryRun,
+      });
+    } catch (err: any) {
+      console.error('[/api/export/companies-to-excel]', err);
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  /**
+   * PATCH /api/companies/:id/google-maps-status
+   * Actualiza el estado de Google Maps de una empresa (open / closed / unknown).
+   */
+  app.patch('/api/companies/:id/google-maps-status', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
+    const { id } = req.params;
+    const { status } = req.body;
+    if (!['open', 'closed', 'unknown'].includes(status)) {
+      return res.status(400).json({ error: 'status debe ser: open, closed o unknown' });
+    }
+    await pool.query(
+      `UPDATE companies SET google_maps_status = $1, updated_at = NOW() WHERE id = $2`,
+      [status, id]
+    );
     return res.json({ success: true });
   });
 
-  app.get('/api/apply/status', requireAuth, (req: AuthRequest, res) => {
-    const { jobId, candidateId } = req.query as { jobId?: string; candidateId?: string };
-    if (!jobId || !candidateId) return res.status(400).json({ success: false, message: 'Faltan jobId o candidateId.' });
-    const application = applications.find(a => a.jobId === jobId && a.candidateId === candidateId);
-    return res.json({ success: true, status: application?.status ?? 'Saved', ...application });
+  /**
+   * GET /api/export/stats
+   * Cuántas empresas están pendientes de exportar vs ya exportadas.
+   */
+  app.get('/api/export/stats', requireAuth, async (_req, res) => {
+    const result = await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE excel_exported_at IS NULL AND enrichment_status IN ('scraped','db_matched','verified')) AS pending_export,
+        COUNT(*) FILTER (WHERE excel_exported_at IS NOT NULL) AS already_exported,
+        COUNT(*) FILTER (WHERE google_maps_status = 'closed') AS closed_companies
+      FROM companies
+    `);
+    return res.json({ success: true, data: result.rows[0] });
+  });
+
+  // ── Servicios CanTrack (52 perfiles) ────────────────────────────────────────
+
+  /** Lista completa de los 52 servicios */
+  app.get('/api/service-types', requireAuth, (_req, res) => {
+    res.json({ success: true, data: SERVICE_TYPES, total: SERVICE_TYPES.length });
+  });
+
+  /** Lista compacta (para selectors en UI) */
+  app.get('/api/service-types/compact', requireAuth, (_req, res) => {
+    res.json({ success: true, data: SERVICE_TYPES_COMPACT, total: SERVICE_TYPES_COMPACT.length });
+  });
+
+  // ── Clasificación de vacantes ────────────────────────────────────────────────
+
+  /**
+   * POST /api/jobs/classify
+   * Body: { title, description?, companyName?, companyIndustry? }
+   * Clasifica una vacante y devuelve el servicio CanTrack más cercano.
+   * También puede recibir un jobId para guardar el resultado en la BD.
+   */
+  app.post('/api/jobs/classify', requireAuth, async (req: AuthRequest, res) => {
+    const { title, description, companyName, companyIndustry, jobId } = req.body;
+    if (!title) return res.status(400).json({ success: false, message: 'title es requerido' });
+
+    try {
+      const result = await JobClassifierService.classifyJob(
+        title,
+        description || '',
+        companyName || '',
+        companyIndustry || ''
+      );
+
+      // Si se envió un jobId, persiste la clasificación
+      if (jobId) {
+        await pool.query(
+          `UPDATE jobs
+           SET service_type_id = $1, service_match_confidence = $2,
+               service_match_reasoning = $3, service_match_provider = $4
+           WHERE id = $5`,
+          [result.service_id, result.confidence, result.reasoning, result._provider, jobId]
+        );
+      }
+
+      return res.json({ success: true, data: result });
+    } catch (err: any) {
+      console.error('[/api/jobs/classify]', err);
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  /**
+   * POST /api/jobs/:id/classify
+   * Clasifica la vacante guardada en BD y persiste el resultado.
+   */
+  app.post('/api/jobs/:id/classify', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
+    const { id } = req.params;
+    try {
+      const jobRow = await pool.query(
+        `SELECT j.title, j.raw_company_name, c.name AS company_name, c.industry, j.id
+         FROM jobs j LEFT JOIN companies c ON j.company_id = c.id
+         WHERE j.id = $1`,
+        [id]
+      );
+      if (jobRow.rowCount === 0) return res.status(404).json({ success: false, message: 'Vacante no encontrada' });
+
+      const job = jobRow.rows[0];
+      const result = await JobClassifierService.classifyJob(
+        job.title,
+        '',
+        job.company_name || job.raw_company_name || '',
+        job.industry || ''
+      );
+
+      await pool.query(
+        `UPDATE jobs
+         SET service_type_id = $1, service_match_confidence = $2,
+             service_match_reasoning = $3, service_match_provider = $4
+         WHERE id = $5`,
+        [result.service_id, result.confidence, result.reasoning, result._provider, id]
+      );
+
+      return res.json({ success: true, data: result });
+    } catch (err: any) {
+      console.error('[/api/jobs/:id/classify]', err);
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // ── Sugerencias de servicios para empresas ───────────────────────────────────
+
+  /**
+   * POST /api/companies/:id/suggest-services
+   * Analiza el perfil enriquecido de la empresa y sugiere qué servicios ofrecerle.
+   * Guarda las sugerencias en la BD.
+   */
+  app.post('/api/companies/:id/suggest-services', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
+    const { id } = req.params;
+    try {
+      const companyRow = await pool.query(
+        `SELECT id, name, industry, description, company_size, hq_city, hq_country
+         FROM companies WHERE id = $1`,
+        [id]
+      );
+      if (companyRow.rowCount === 0) return res.status(404).json({ success: false, message: 'Empresa no encontrada' });
+
+      const company = companyRow.rows[0];
+      const result = await JobClassifierService.suggestForCompany(company);
+
+      await pool.query(
+        `UPDATE companies
+         SET suggested_services = $1, suggested_services_summary = $2,
+             suggested_services_at = NOW()
+         WHERE id = $3`,
+        [JSON.stringify(result.suggestions), result.company_summary, id]
+      );
+
+      return res.json({ success: true, data: result });
+    } catch (err: any) {
+      console.error('[/api/companies/:id/suggest-services]', err);
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  /**
+   * GET /api/companies/:id/suggest-services
+   * Devuelve las sugerencias guardadas (o genera nuevas si no existen).
+   */
+  app.get('/api/companies/:id/suggest-services', requireAuth, async (req: AuthRequest, res) => {
+    const { id } = req.params;
+    try {
+      const row = await pool.query(
+        `SELECT suggested_services, suggested_services_summary, suggested_services_at,
+                name, industry, description, company_size, hq_city, hq_country
+         FROM companies WHERE id = $1`,
+        [id]
+      );
+      if (row.rowCount === 0) return res.status(404).json({ success: false, message: 'Empresa no encontrada' });
+
+      const company = row.rows[0];
+
+      // Si ya hay sugerencias guardadas, devuélvelas
+      if (company.suggested_services) {
+        return res.json({
+          success: true,
+          data: {
+            suggestions: company.suggested_services,
+            company_summary: company.suggested_services_summary,
+            generated_at: company.suggested_services_at,
+            _cached: true,
+          },
+        });
+      }
+
+      // Si no, genera nuevas (no bloquea — responde rápido con fallback)
+      const result = await JobClassifierService.suggestForCompany(company);
+      await pool.query(
+        `UPDATE companies SET suggested_services = $1, suggested_services_summary = $2, suggested_services_at = NOW() WHERE id = $3`,
+        [JSON.stringify(result.suggestions), result.company_summary, id]
+      );
+      return res.json({ success: true, data: { ...result, _cached: false } });
+    } catch (err: any) {
+      console.error('[GET /api/companies/:id/suggest-services]', err);
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // ── Export status + run-now ───────────────────────────────────────────────────
+
+  /** GET /api/export/auto-status — métricas de exportación */
+  app.get('/api/export/auto-status', requireAuth, async (_req, res) => {
+    try {
+      const target = (process.env.EXPORT_TARGET || 'excel').toLowerCase();
+      const statsRes = await pool.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE excel_exported_at IS NULL AND sheets_exported_at IS NULL AND enrichment_status IN ('scraped','db_matched','verified') AND name IS NOT NULL) AS pending,
+          COUNT(*) FILTER (WHERE excel_exported_at IS NOT NULL) AS exported_excel,
+          COUNT(*) FILTER (WHERE sheets_exported_at IS NOT NULL) AS exported_sheets,
+          GREATEST(MAX(excel_exported_at), MAX(sheets_exported_at)) AS last_exported_at
+        FROM companies
+      `);
+      return res.json({
+        success: true,
+        target,
+        running: _exportRunning,
+        pendingFlush: _exportDebounceTimer !== null,
+        sheetsConfigured: !!(process.env.GOOGLE_SHEETS_ID && process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH),
+        stats: statsRes.rows[0],
+      });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  /** POST /api/export/test-sheets — verifica que la conexión a Google Sheets funciona */
+  app.post('/api/export/test-sheets', requireAuth, requireRole('admin'), async (_req, res) => {
+    const sheetsId = process.env.GOOGLE_SHEETS_ID;
+    const keyPath  = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH;
+    if (!sheetsId || !keyPath) {
+      return res.status(400).json({ success: false, message: 'GOOGLE_SHEETS_ID y GOOGLE_SERVICE_ACCOUNT_KEY_PATH deben estar en .env' });
+    }
+    try {
+      const { runSheetsExport } = await import('./scripts/export-to-sheets.js') as any;
+      // dry run — lee el sheet pero no escribe nada
+      const r = await runSheetsExport({ limit: 0, dryRun: true, pool });
+      return res.json({ success: true, message: `Conexión OK. El Sheet tiene ${r.totalRowsInSheet} filas.`, rows: r.totalRowsInSheet });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  /** POST /api/export/run-now — fuerza exportación inmediata */
+  app.post('/api/export/run-now', requireAuth, requireRole('admin'), async (_req, res) => {
+    if (_exportRunning) {
+      return res.json({ success: false, message: 'Ya hay una exportación en curso.' });
+    }
+    const countRes = await pool.query(`
+      SELECT COUNT(*) AS n FROM companies
+      WHERE excel_exported_at IS NULL
+        AND enrichment_status IN ('scraped','db_matched','verified')
+        AND name IS NOT NULL
+    `);
+    const pending = parseInt(countRes.rows[0].n, 10);
+    if (pending === 0) {
+      return res.json({ success: true, message: 'No hay empresas nuevas para exportar.', pending: 0 });
+    }
+    if (_exportDebounceTimer) { clearTimeout(_exportDebounceTimer); _exportDebounceTimer = null; }
+    _flushToExcel(); // sin await — corre en background
+    return res.json({ success: true, message: `Exportación iniciada. ${pending} empresas candidatas.`, pending });
+  });
+
+  // ── Service Templates ─────────────────────────────────────────────────────────
+
+  /** GET /api/service-templates — lista todas las plantillas */
+  app.get('/api/service-templates', requireAuth, async (_req, res) => {
+    const r = await pool.query(`SELECT * FROM service_templates ORDER BY service_type_id`);
+    return res.json({ success: true, data: r.rows });
+  });
+
+  /** GET /api/service-templates/:serviceId — obtiene plantilla de un servicio */
+  app.get('/api/service-templates/:serviceId', requireAuth, async (req, res) => {
+    const r = await pool.query(`SELECT * FROM service_templates WHERE service_type_id = $1`, [req.params.serviceId]);
+    if (r.rows.length === 0) return res.json({ success: true, data: null });
+    return res.json({ success: true, data: r.rows[0] });
+  });
+
+  /** POST /api/service-templates/:serviceId — crea o actualiza la plantilla de un servicio */
+  app.post('/api/service-templates/:serviceId', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
+    const { serviceId } = req.params;
+    const { name, content, variables } = req.body;
+    if (!content) return res.status(400).json({ error: 'content requerido' });
+    const r = await pool.query(`
+      INSERT INTO service_templates (service_type_id, name, content, variables, updated_at)
+      VALUES ($1, $2, $3, $4, NOW())
+      ON CONFLICT (service_type_id) DO UPDATE SET
+        name = EXCLUDED.name,
+        content = EXCLUDED.content,
+        variables = EXCLUDED.variables,
+        updated_at = NOW()
+      RETURNING *
+    `, [serviceId, name || '', content, JSON.stringify(variables || [])]);
+    return res.json({ success: true, data: r.rows[0] });
+  });
+
+  /** DELETE /api/service-templates/:serviceId */
+  app.delete('/api/service-templates/:serviceId', requireAuth, requireRole('admin'), async (req: AuthRequest, res) => {
+    await pool.query(`DELETE FROM service_templates WHERE service_type_id = $1`, [req.params.serviceId]);
+    return res.json({ success: true });
+  });
+
+  /** POST /api/service-templates/:serviceId/fill — rellena plantilla con datos de empresa */
+  app.post('/api/service-templates/:serviceId/fill', requireAuth, async (req: AuthRequest, res) => {
+    const { serviceId } = req.params;
+    const { companyId } = req.body;
+
+    const tmplRes = await pool.query(`SELECT * FROM service_templates WHERE service_type_id = $1`, [serviceId]);
+    if (tmplRes.rows.length === 0) return res.status(404).json({ error: 'Plantilla no encontrada' });
+
+    const tmpl = tmplRes.rows[0];
+    let filled = tmpl.content;
+
+    if (companyId) {
+      const coRes = await pool.query(`
+        SELECT c.*, COALESCE(c.name,'') as company_name
+        FROM companies c WHERE c.id = $1
+      `, [companyId]);
+      if (coRes.rows.length > 0) {
+        const co = coRes.rows[0];
+        const today = new Date().toLocaleDateString('en-CA', { dateStyle: 'long' });
+        filled = filled
+          .replace(/\{\{company_name\}\}/gi, co.name || '')
+          .replace(/\{\{contact_email\}\}/gi, co.contact_email || '')
+          .replace(/\{\{phone\}\}/gi, co.phone || '')
+          .replace(/\{\{city\}\}/gi, co.hq_city || '')
+          .replace(/\{\{province\}\}/gi, co.hq_province || '')
+          .replace(/\{\{address\}\}/gi, co.exact_address || '')
+          .replace(/\{\{industry\}\}/gi, co.industry || '')
+          .replace(/\{\{website\}\}/gi, co.website || '')
+          .replace(/\{\{date\}\}/gi, today);
+      }
+    }
+
+    return res.json({ success: true, filled, template: tmpl });
+  });
+
+  /** POST /api/service-templates/:serviceId/ai-improve — IA mejora la carta para una empresa */
+  app.post('/api/service-templates/:serviceId/ai-improve', requireAuth, async (req: AuthRequest, res) => {
+    const { serviceId } = req.params;
+    const { filledContent, companyId, language } = req.body;
+
+    if (!filledContent) return res.status(400).json({ error: 'filledContent requerido' });
+
+    let companyContext = '';
+    if (companyId) {
+      const coRes = await pool.query(`SELECT name, industry, description, hq_city, hq_province FROM companies WHERE id = $1`, [companyId]);
+      if (coRes.rows.length > 0) {
+        const co = coRes.rows[0];
+        companyContext = `\nCompany context: ${co.name}, industry: ${co.industry || 'unknown'}, city: ${co.hq_city || 'unknown'}, description: ${co.description || 'N/A'}`;
+      }
+    }
+
+    const prompt = `You are an expert B2B sales email copywriter. Review this staffing offer email and provide:
+1. An improved version of the email (more persuasive, professional, concise)
+2. 3 specific improvement suggestions
+
+${companyContext}
+
+Original email:
+---
+${filledContent}
+---
+
+Respond in ${language || 'English'} with JSON format:
+{
+  "improved": "...full improved email text...",
+  "suggestions": ["suggestion 1", "suggestion 2", "suggestion 3"]
+}`;
+
+    try {
+      const aiText = await GeminiService.generateText(prompt);
+      const jsonMatch = aiText.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return res.json({ success: true, improved: aiText, suggestions: [] });
+      const parsed = JSON.parse(jsonMatch[0]);
+      return res.json({ success: true, ...parsed });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
   });
 
   // ── Vite / Static ────────────────────────────────────────────────────────────
@@ -1305,6 +2140,11 @@ Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(',
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server en http://localhost:${PORT}`);
+    if (isRegionFilterActive()) {
+      console.log(`🍁 Filtro regional ACTIVO: REGION_FILTER=${REGION_FILTER}`);
+    } else {
+      console.log(`🌐 Sin filtro regional (REGION_FILTER vacío)`);
+    }
   });
 }
 

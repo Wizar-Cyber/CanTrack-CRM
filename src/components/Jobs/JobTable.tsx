@@ -32,8 +32,26 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onViewJob, onSelectCom
             >
               <td className="px-6 py-4">
                 <div>
-                  <div className="flex items-center gap-2">
-                    <p className="text-sm font-semibold text-slate-900 group-hover:text-lime-700 transition-colors">{job.title}</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="text-sm font-semibold text-slate-900 group-hover:text-lime-700 transition-colors">
+                      {job.titleDisplay || job.serviceName || job.title}
+                    </p>
+                    {job.serviceName && job.hasDirectServiceMatch && (
+                      <span
+                        className="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-bold rounded uppercase tracking-wider"
+                        title={`Vacante original: ${job.title}`}
+                      >
+                        {job.serviceName}
+                      </span>
+                    )}
+                    {!job.hasDirectServiceMatch && job.serviceTypeId == null && job.title && (
+                      <span
+                        className="px-1.5 py-0.5 bg-amber-50 text-amber-700 text-[10px] font-bold rounded uppercase tracking-wider"
+                        title="La IA no encontró un servicio CanTrack que coincida con esta vacante"
+                      >
+                        Sin servicio directo
+                      </span>
+                    )}
                     {job.isEasyApply && (
                       <span className="flex items-center gap-1 px-1.5 py-0.5 bg-blue-50 text-blue-700 text-[10px] font-bold rounded uppercase tracking-wider">
                         <Zap className="w-3 h-3" /> Easy Apply
