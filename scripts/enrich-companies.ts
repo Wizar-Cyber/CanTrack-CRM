@@ -12,6 +12,11 @@
 import 'dotenv/config';
 import pg from 'pg';
 import { EnrichmentService } from '../server/services/enrichment.service.js';
+import {
+  REGION_FILTER,
+  isRegionFilterActive,
+  companyRegionClause,
+} from '../server/utils/region-filter.js';
 
 const { Pool } = pg;
 
@@ -36,7 +41,7 @@ if (!process.env.DATABASE_URL) {
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 const ALLOWED_COLUMNS = new Set([
-  'industry', 'company_size', 'hq_city', 'hq_province', 'hq_country',
+  'industry', 'company_size', 'hq_city', 'hq_province', 'hq_region', 'hq_town', 'hq_country',
   'exact_address', 'phone', 'contact_email', 'website', 'description',
   'known_ats_portal', 'enrichment_status',
 ]);
@@ -84,8 +89,19 @@ async function run() {
     console.log(`\n🔁 Re-encoladas ${requeue.rowCount} empresas 'failed' como 'pending'.\n`);
   }
 
+  // Filtro regional: si está activo, solo procesamos empresas cuyos campos
+  // regionales coincidan O aún no estén enriquecidas (hq_province IS NULL).
+  // Así las empresas ya enriquecidas y fuera de región quedan excluidas,
+  // pero las recién creadas por sync sí pueden ser enriquecidas.
+  const regionPredicate = isRegionFilterActive()
+    ? `AND (c.hq_province IS NULL OR ${companyRegionClause('c')})`
+    : '';
+  if (isRegionFilterActive()) {
+    console.log(`🍁 Filtro regional activo: REGION_FILTER=${REGION_FILTER}\n`);
+  }
+
   // Contar pendientes
-  const pendingQ  = await pool.query(`SELECT COUNT(*)::int AS n FROM companies WHERE enrichment_status = 'pending'`);
+  const pendingQ  = await pool.query(`SELECT COUNT(*)::int AS n FROM companies c WHERE c.enrichment_status = 'pending' ${regionPredicate}`);
   const total     = pendingQ.rows[0].n as number;
   const toProcess = LIMIT > 0 && !RETRY_FAILED && RESET_ALL < 0 ? Math.min(LIMIT, total) : total;
 
@@ -105,8 +121,8 @@ async function run() {
     const lockRes = await pool.query(`
       UPDATE companies SET enrichment_status = 'processing'
       WHERE id = (
-        SELECT id FROM companies WHERE enrichment_status = 'pending'
-        ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED
+        SELECT c.id FROM companies c WHERE c.enrichment_status = 'pending' ${regionPredicate}
+        ORDER BY c.created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED
       ) RETURNING id, name
     `);
 
@@ -141,6 +157,8 @@ async function run() {
       if (data.company_size)   payload.company_size   = data.company_size;
       if (data.hq_city)        payload.hq_city        = data.hq_city;
       if (data.hq_province)    payload.hq_province    = data.hq_province;
+      if (data.hq_region)      payload.hq_region      = data.hq_region;
+      if (data.hq_town)        payload.hq_town        = data.hq_town;
       if (data.hq_country)     payload.hq_country     = data.hq_country;
       if (data.exact_address)  payload.exact_address  = data.exact_address;
       if (data.phone)          payload.phone          = data.phone;

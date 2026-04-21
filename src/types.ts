@@ -74,6 +74,13 @@ export interface Job {
   companyHqCountry?: string;
   companyWebsite?: string;
   companyConfidenceScore?: number;
+  // Mapeo al catálogo de 52 servicios CanTrack (IA clasificador)
+  serviceTypeId?: string | null;
+  serviceName?: string | null;
+  serviceNumber?: number | null;
+  serviceCategory?: string | null;
+  titleDisplay?: string;           // título limpio: servicio mapeado > título crudo
+  hasDirectServiceMatch?: boolean; // false = el clasificador no encontró match
 }
 
 export interface DashboardStats {

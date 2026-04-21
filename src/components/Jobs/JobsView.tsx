@@ -212,7 +212,9 @@ export const JobsView: React.FC<JobsViewProps> = ({ onViewJob, onSelectCompany }
                 className="bg-white p-5 rounded-xl border border-slate-200 hover:shadow-md hover:border-lime-500 cursor-pointer group transition-all flex flex-col">
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold text-slate-900 group-hover:text-lime-700 transition-colors leading-snug line-clamp-2">{job.title}</p>
+                    <p className="text-sm font-bold text-slate-900 group-hover:text-lime-700 transition-colors leading-snug line-clamp-2" title={job.title}>
+                      {job.titleDisplay || job.serviceName || job.title}
+                    </p>
                     <button onClick={e => { e.stopPropagation(); onSelectCompany?.(job.companyName); }}
                       className="text-xs text-slate-500 hover:text-lime-600 transition-colors mt-0.5 font-medium">{job.companyName}</button>
                   </div>
@@ -301,7 +303,14 @@ export const JobsView: React.FC<JobsViewProps> = ({ onViewJob, onSelectCompany }
                     <div className="flex items-start justify-between gap-3">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <p className="text-sm font-semibold text-slate-900 group-hover:text-lime-700 transition-colors">{job.title}</p>
+                          <p className="text-sm font-semibold text-slate-900 group-hover:text-lime-700 transition-colors" title={job.title}>
+                            {job.titleDisplay || job.serviceName || job.title}
+                          </p>
+                          {job.serviceName && job.hasDirectServiceMatch && (
+                            <span className="inline-flex px-1.5 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-bold rounded uppercase tracking-wide shrink-0" title={`Vacante original: ${job.title}`}>
+                              {job.serviceName}
+                            </span>
+                          )}
                           {job.isEasyApply && (
                             <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-blue-50 text-blue-700 text-[10px] font-bold rounded uppercase tracking-wide shrink-0">
                               <Zap className="w-2.5 h-2.5" />Easy Apply

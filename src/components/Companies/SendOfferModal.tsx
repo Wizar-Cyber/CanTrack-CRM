@@ -2,24 +2,25 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   X, Search, Send, Mail, ChevronDown, Check,
-  Loader2, AlertCircle, CheckCircle2, User, FileText, MessageSquare
+  Loader2, AlertCircle, CheckCircle2, User, FileText, MessageSquare,
+  Sparkles, Eye, ArrowLeft, FileCheck,
 } from 'lucide-react';
 import { Company } from '../../types';
 import { EMPLOYEE_TYPES, EMPLOYEE_CATEGORIES, EmployeeType } from '../../data/employeeTypes';
-import { api } from '../../services/apiClient';
+import { api, apiJson } from '../../services/apiClient';
 
 interface SendOfferModalProps {
   company: Company;
   onClose: () => void;
 }
 
-type Step = 'compose' | 'sending' | 'success' | 'error';
+type Step = 'compose' | 'template' | 'sending' | 'success' | 'error';
 
 export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose }) => {
   const [step, setStep] = useState<Step>('compose');
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Formulario
+  // Form fields
   const [toEmail, setToEmail] = useState(company.contactEmail || '');
   const [toName, setToName] = useState('');
   const [selectedType, setSelectedType] = useState<EmployeeType | null>(null);
@@ -29,14 +30,20 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
   const [typeDropdownOpen, setTypeDropdownOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
-  // Auto-generar subject cuando cambia el tipo o empresa
+  // Template state
+  const [templateContent, setTemplateContent] = useState<string | null>(null);
+  const [loadingTemplate, setLoadingTemplate] = useState(false);
+  const [improvingTemplate, setImprovingTemplate] = useState(false);
+  const [hasTemplate, setHasTemplate] = useState(false);
+
+  // Auto-generate subject when type or company changes
   useEffect(() => {
     if (selectedType) {
-      setSubject(`Oferta de Personal: ${selectedType.name} para ${company.name}`);
+      setSubject(`Staffing Offer: ${selectedType.name} for ${company.name}`);
     }
   }, [selectedType, company.name]);
 
-  // Cerrar dropdown al click fuera
+  // Close dropdown on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
@@ -66,6 +73,61 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
 
   const isValid = toEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(toEmail) && selectedType && subject.trim();
 
+  // ── Load and fill service template ──────────────────────────────────────────
+  async function loadTemplate(serviceId: string) {
+    setLoadingTemplate(true);
+    setTemplateContent(null);
+    setHasTemplate(false);
+    try {
+      // Fill template with company data
+      const data = await apiJson(`/api/service-templates/${serviceId}/fill`, {
+        method: 'POST',
+        body: JSON.stringify({ companyId: company.id }),
+      });
+      if (data?.content) {
+        setTemplateContent(data.content);
+        setHasTemplate(true);
+      }
+    } catch {
+      // No template found — that's fine, we'll use custom message
+      setHasTemplate(false);
+    } finally {
+      setLoadingTemplate(false);
+    }
+  }
+
+  // ── When "Next" is clicked — check for template ──────────────────────────────
+  async function handleNext() {
+    if (!isValid || !selectedType) return;
+    setStep('template');
+    await loadTemplate(selectedType.id);
+  }
+
+  // ── AI improve the template ──────────────────────────────────────────────────
+  async function handleAiImprove() {
+    if (!selectedType || !templateContent) return;
+    setImprovingTemplate(true);
+    try {
+      const data = await apiJson(`/api/service-templates/${selectedType.id}/ai-improve`, {
+        method: 'POST',
+        body: JSON.stringify({
+          content: templateContent,
+          companyName: company.name,
+          city: company.hqCity,
+          industry: company.industry,
+        }),
+      });
+      if (data?.improved) {
+        setTemplateContent(data.improved);
+      }
+    } catch (e) {
+      console.error('AI improve error:', e);
+    } finally {
+      setImprovingTemplate(false);
+    }
+  }
+
+  // ── Send the email ───────────────────────────────────────────────────────────
   const handleSend = async () => {
     if (!isValid || !selectedType) return;
     setStep('sending');
@@ -81,7 +143,7 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
           employeeTypeName: selectedType.name,
           employeeTypeDescription: selectedType.description,
           subject,
-          customMessage: customMessage || undefined,
+          customMessage: templateContent || customMessage || undefined,
         }),
       });
 
@@ -100,7 +162,6 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
 
   return (
     <AnimatePresence>
-      {/* Backdrop */}
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
@@ -127,18 +188,34 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
                 <p className="text-xs text-slate-500">{company.name}</p>
               </div>
             </div>
-            <button
-              onClick={onClose}
-              className="p-1.5 hover:bg-slate-100 rounded-lg transition-colors"
-              aria-label="Close"
-            >
+            <button onClick={onClose} className="p-1.5 hover:bg-slate-100 rounded-lg transition-colors">
               <X className="w-4 h-4 text-slate-400" />
             </button>
           </div>
 
+          {/* Step indicator */}
+          {(step === 'compose' || step === 'template') && (
+            <div className="flex px-6 pt-4 gap-2">
+              {(['compose', 'template'] as const).map((s, i) => (
+                <div key={s} className="flex items-center gap-2">
+                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold transition-colors ${
+                    step === s ? 'bg-blue-600 text-white' : i === 0 && step === 'template' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-400'
+                  }`}>
+                    {i === 0 && step === 'template' ? '✓' : i + 1}
+                  </div>
+                  <span className={`text-xs font-medium ${step === s ? 'text-slate-800' : 'text-slate-400'}`}>
+                    {s === 'compose' ? 'Compose' : 'Preview & Send'}
+                  </span>
+                  {i < 1 && <div className="w-6 h-px bg-slate-200 mx-1" />}
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Content */}
           <div className="p-6">
-            {/* ── Estados de resultado ── */}
+
+            {/* ── Sending ── */}
             {step === 'sending' && (
               <div className="flex flex-col items-center gap-4 py-12">
                 <Loader2 className="w-10 h-10 text-blue-500 animate-spin" />
@@ -146,6 +223,7 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
               </div>
             )}
 
+            {/* ── Success ── */}
             {step === 'success' && (
               <div className="flex flex-col items-center gap-4 py-12">
                 <div className="w-16 h-16 bg-emerald-50 rounded-full flex items-center justify-center">
@@ -158,15 +236,14 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
                     <strong>{toEmail}</strong>
                   </p>
                 </div>
-                <button
-                  onClick={onClose}
-                  className="mt-2 px-6 py-2.5 bg-emerald-600 text-white text-sm font-semibold rounded-lg hover:bg-emerald-700 transition-colors"
-                >
+                <button onClick={onClose}
+                  className="mt-2 px-6 py-2.5 bg-emerald-600 text-white text-sm font-semibold rounded-lg hover:bg-emerald-700 transition-colors">
                   Close
                 </button>
               </div>
             )}
 
+            {/* ── Error ── */}
             {step === 'error' && (
               <div className="flex flex-col items-center gap-4 py-10">
                 <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center">
@@ -176,20 +253,17 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
                   <p className="text-base font-bold text-slate-900">Send Error</p>
                   <p className="text-sm text-red-600 mt-1">{errorMsg}</p>
                 </div>
-                <button
-                  onClick={() => setStep('compose')}
-                  className="px-6 py-2.5 bg-slate-800 text-white text-sm font-semibold rounded-lg hover:bg-slate-900 transition-colors"
-                >
+                <button onClick={() => setStep('compose')}
+                  className="px-6 py-2.5 bg-slate-800 text-white text-sm font-semibold rounded-lg hover:bg-slate-900 transition-colors">
                   Retry
                 </button>
               </div>
             )}
 
-            {/* ── Formulario ── */}
+            {/* ── Compose form ── */}
             {step === 'compose' && (
               <div className="space-y-5">
-
-                {/* Destinatario */}
+                {/* Recipient */}
                 <div className="space-y-3">
                   <p className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
                     <User className="w-3.5 h-3.5" /> Recipient
@@ -206,16 +280,14 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
                         type="email"
                         value={toEmail}
                         onChange={e => setToEmail(e.target.value)}
-                        placeholder="contacto@empresa.com"
+                        placeholder="contact@company.com"
                         className={`w-full text-sm px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-slate-400 ${
                           company.contactEmail ? 'bg-emerald-50 border-emerald-200' : 'bg-slate-50 border-slate-200'
                         }`}
                       />
                     </div>
                     <div>
-                      <label className="block text-xs text-slate-600 mb-1 font-medium">
-                        Name (optional)
-                      </label>
+                      <label className="block text-xs text-slate-600 mb-1 font-medium">Name (optional)</label>
                       <input
                         type="text"
                         value={toName}
@@ -227,7 +299,7 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
                   </div>
                 </div>
 
-                {/* Tipo de empleado */}
+                {/* Employee type */}
                 <div className="space-y-2">
                   <p className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
                     <FileText className="w-3.5 h-3.5" /> Profile to Offer <span className="text-red-500">*</span>
@@ -259,7 +331,6 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
                           transition={{ duration: 0.15 }}
                           className="absolute z-10 mt-1 w-full bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden"
                         >
-                          {/* Search dentro del dropdown */}
                           <div className="p-2 border-b border-slate-100">
                             <div className="relative">
                               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
@@ -274,7 +345,6 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
                             </div>
                           </div>
 
-                          {/* Lista agrupada */}
                           <div className="max-h-60 overflow-y-auto">
                             {(Object.entries(groupedTypes) as [string, EmployeeType[]][]).map(([category, types]) => (
                               <div key={category}>
@@ -314,7 +384,6 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
                     </AnimatePresence>
                   </div>
 
-                  {/* Preview del perfil seleccionado */}
                   {selectedType && (
                     <p className="text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2 leading-relaxed">
                       {selectedType.description}
@@ -322,7 +391,7 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
                   )}
                 </div>
 
-                {/* Asunto */}
+                {/* Subject */}
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5">
                     Subject <span className="text-red-500">*</span>
@@ -335,7 +404,7 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
                   />
                 </div>
 
-                {/* Mensaje personalizado */}
+                {/* Additional message */}
                 <div>
                   <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
                     <MessageSquare className="w-3.5 h-3.5" /> Additional message (optional)
@@ -349,27 +418,108 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
                   />
                 </div>
 
-                {/* Footer botones */}
+                {/* Footer */}
                 <div className="flex items-center justify-between pt-2 border-t border-slate-100">
                   <p className="text-xs text-slate-400">
                     Sent via <span className="font-semibold text-slate-600">mDirector</span>
                   </p>
                   <div className="flex gap-2">
-                    <button
-                      onClick={onClose}
-                      className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
-                    >
+                    <button onClick={onClose}
+                      className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors">
                       Cancel
                     </button>
                     <button
-                      onClick={handleSend}
+                      onClick={handleNext}
                       disabled={!isValid}
                       className="flex items-center gap-2 px-5 py-2 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                     >
-                      <Send className="w-4 h-4" />
-                      Send Email
+                      <Eye className="w-4 h-4" />
+                      Preview &amp; Send
                     </button>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* ── Template preview ── */}
+            {step === 'template' && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <FileCheck className="w-4 h-4 text-blue-600" />
+                    <p className="text-sm font-bold text-slate-800">Email Content</p>
+                  </div>
+                  {hasTemplate && (
+                    <button
+                      onClick={handleAiImprove}
+                      disabled={improvingTemplate}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-purple-50 text-purple-700 border border-purple-200 rounded-lg hover:bg-purple-100 disabled:opacity-50 transition-colors"
+                    >
+                      {improvingTemplate
+                        ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Improving…</>
+                        : <><Sparkles className="w-3.5 h-3.5" /> Improve with AI</>
+                      }
+                    </button>
+                  )}
+                </div>
+
+                {loadingTemplate ? (
+                  <div className="flex items-center justify-center gap-3 py-10 bg-slate-50 rounded-xl border border-slate-200">
+                    <Loader2 className="w-5 h-5 text-blue-500 animate-spin" />
+                    <span className="text-sm text-slate-500">Loading template…</span>
+                  </div>
+                ) : hasTemplate && templateContent ? (
+                  <>
+                    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 max-h-64 overflow-y-auto">
+                      <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans leading-relaxed">
+                        {templateContent}
+                      </pre>
+                    </div>
+                    <p className="text-[10px] text-slate-400 flex items-center gap-1">
+                      <FileCheck className="w-3 h-3 text-emerald-500" />
+                      Template filled with {company.name}'s data. You can edit it below.
+                    </p>
+                    {/* Editable version */}
+                    <textarea
+                      value={templateContent}
+                      onChange={e => setTemplateContent(e.target.value)}
+                      rows={6}
+                      className="w-full text-xs px-3 py-2 bg-white border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none font-mono"
+                    />
+                  </>
+                ) : (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
+                    <p className="text-sm text-amber-700 font-medium">No template configured for this service</p>
+                    <p className="text-xs text-amber-600 mt-1">
+                      Go to <strong>Services → {selectedType?.name}</strong> and create a letter template.
+                      <br />The email will be sent using the additional message you entered.
+                    </p>
+                  </div>
+                )}
+
+                {/* Recipient summary */}
+                <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-xs text-blue-800 space-y-1">
+                  <div><span className="font-semibold">To:</span> {toEmail}{toName ? ` (${toName})` : ''}</div>
+                  <div><span className="font-semibold">Subject:</span> {subject}</div>
+                  <div><span className="font-semibold">Profile:</span> {selectedType?.name}</div>
+                </div>
+
+                {/* Footer */}
+                <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                  <button
+                    onClick={() => setStep('compose')}
+                    className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                  >
+                    <ArrowLeft className="w-4 h-4" />
+                    Back
+                  </button>
+                  <button
+                    onClick={handleSend}
+                    className="flex items-center gap-2 px-5 py-2 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 transition-colors"
+                  >
+                    <Send className="w-4 h-4" />
+                    Send Email
+                  </button>
                 </div>
               </div>
             )}
