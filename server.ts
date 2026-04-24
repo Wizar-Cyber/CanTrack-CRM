@@ -19,7 +19,9 @@ import {
   jobRegionClause,
   isRegionMatch,
 } from "./server/utils/region-filter.js";
+import { GoogleSheetsService } from "./server/services/google-sheets.service.js";
 import { MDirectorService } from "./server/services/mdirector.service.js";
+import { EmailCampaignService } from "./server/services/email-campaign.service.js";
 import { spawn } from 'child_process';
 import pkg from 'pg';
 const { Pool } = pkg;
@@ -171,6 +173,55 @@ async function runMigrations() {
       CREATE INDEX IF NOT EXISTS idx_app_queue_status   ON application_queue(status);
       CREATE INDEX IF NOT EXISTS idx_app_queue_job_id   ON application_queue(job_id);
     `);
+    // Migración: historial de envíos de campañas de email
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS email_campaign_log (
+        id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        company_id      UUID REFERENCES companies(id) ON DELETE SET NULL,
+        company_name    VARCHAR(255) NOT NULL,
+        company_email   VARCHAR(255) NOT NULL,
+        service_type_id VARCHAR(30),
+        work_label      VARCHAR(100),
+        mdirector_campaign_id VARCHAR(100),
+        mdirector_list_id     VARCHAR(100),
+        status          VARCHAR(20) NOT NULL DEFAULT 'sent',
+        sent_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        sent_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        notes           TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_ecl_company_id  ON email_campaign_log(company_id);
+      CREATE INDEX IF NOT EXISTS idx_ecl_sent_at     ON email_campaign_log(sent_at);
+      CREATE INDEX IF NOT EXISTS idx_ecl_service     ON email_campaign_log(service_type_id);
+
+      -- Configuración global de campañas (una fila por workspace)
+      CREATE TABLE IF NOT EXISTS campaign_config (
+        id                    UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        new_company_days      INTEGER NOT NULL DEFAULT 15,
+        resend_interval_days  INTEGER NOT NULL DEFAULT 90,
+        mdirector_api_key     TEXT,
+        mdirector_api_secret  TEXT,
+        mdirector_from_email  VARCHAR(255),
+        mdirector_from_name   VARCHAR(255) DEFAULT 'CanTrack Staffing',
+        -- Mapeo service_type_id → mdirector_template_id (JSON object)
+        service_template_map  JSONB NOT NULL DEFAULT '{}',
+        updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      INSERT INTO campaign_config (id) VALUES ('00000000-0000-0000-0000-000000000001')
+        ON CONFLICT (id) DO NOTHING;
+
+      -- Columna en companies para fecha último envío de campaña
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS last_campaign_sent_at TIMESTAMPTZ;
+
+      -- Clasificación comercial TIPO
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'company_tipo') THEN
+          CREATE TYPE company_tipo AS ENUM ('verde','naranja','morado','rojo');
+        END IF;
+      END $$;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS tipo company_tipo;
+      ALTER TABLE companies ADD COLUMN IF NOT EXISTS tipo_updated_at TIMESTAMPTZ;
+    `);
+
     // Migración: plantillas de servicios
     await client.query(`
       CREATE TABLE IF NOT EXISTS service_templates (
@@ -204,9 +255,9 @@ function slugify(name: string): string {
 // ── Column allowlist for safe dynamic updates ─────────────────────────────────
 const ALLOWED_COMPANY_COLUMNS = new Set([
   'enrichment_status', 'industry', 'company_size',
-  'hq_city', 'hq_province', 'hq_country', 'exact_address',
+  'hq_city', 'hq_province', 'hq_country', 'hq_region', 'hq_town', 'exact_address',
   'phone', 'contact_email', 'website', 'description',
-  'known_ats_portal', 'legal_name', 'name',
+  'known_ats_portal', 'legal_name', 'name', 'tipo', 'tipo_updated_at',
 ]);
 
 const ALLOWED_JOB_COLUMNS = new Set([
@@ -788,7 +839,15 @@ async function startServer() {
       const hasData = data.industry || data.description || data.website;
       const newStatus = hasData ? 'scraped' : 'failed';
 
+      // Auto-rojo: si el modelo detecta que la empresa está cerrada, marcarla como rojo
+      const autoRojo = data.is_closed === true;
+
       const updatePayload: Record<string, any> = { enrichment_status: newStatus };
+      if (autoRojo) {
+        updatePayload.tipo = 'rojo';
+        updatePayload.tipo_updated_at = new Date().toISOString();
+        console.info(`[Auto-rojo] "${companyName}" detectada como cerrada por el modelo de IA`);
+      }
       if (data.industry) updatePayload.industry = data.industry;
       if (data.company_size) updatePayload.company_size = data.company_size;
       if (data.hq_city) updatePayload.hq_city = data.hq_city;
@@ -1282,6 +1341,183 @@ async function startServer() {
   /** Estado del último batch de enriquecimiento disparado vía webhook */
   app.get('/api/webhook/enrich/status', requireAuth, async (_req, res) => {
     res.json({ running: enrichRunning, lastRun: enrichLastRun });
+  });
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // MÓDULO CAMPAÑAS DE EMAIL
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** GET /api/campaigns/config — lee la configuración actual */
+  app.get('/api/campaigns/config', requireAuth, requireRole('admin', 'editor'), async (_req, res) => {
+    try {
+      const cfg = await EmailCampaignService.getConfig(pool);
+      // No exponer las credenciales completas al frontend — solo indicar si están configuradas
+      res.json({
+        newCompanyDays:      cfg.newCompanyDays,
+        resendIntervalDays:  cfg.resendIntervalDays,
+        mdirectorConfigured: !!(cfg.mdirectorApiKey && cfg.mdirectorFromEmail),
+        mdirectorFromEmail:  cfg.mdirectorFromEmail,
+        mdirectorFromName:   cfg.mdirectorFromName,
+        serviceTemplateMap:  cfg.serviceTemplateMap,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /** PATCH /api/campaigns/config — actualiza la configuración */
+  app.patch('/api/campaigns/config', requireAuth, requireRole('admin'), async (req, res) => {
+    try {
+      const {
+        newCompanyDays, resendIntervalDays,
+        mdirectorApiKey, mdirectorApiSecret, mdirectorFromEmail, mdirectorFromName,
+        serviceTemplateMap,
+      } = req.body;
+      await EmailCampaignService.saveConfig(pool, {
+        newCompanyDays, resendIntervalDays,
+        mdirectorApiKey, mdirectorApiSecret, mdirectorFromEmail, mdirectorFromName,
+        serviceTemplateMap,
+      });
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /** GET /api/campaigns/preview — vista previa sin enviar */
+  app.get('/api/campaigns/preview', requireAuth, requireRole('admin', 'editor'), async (_req, res) => {
+    try {
+      const preview = await EmailCampaignService.buildPreview(pool);
+      res.json(preview);
+    } catch (err: any) {
+      console.error('[Campaign Preview]', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /** POST /api/campaigns/send — lanza la campaña con los contactos del preview */
+  app.post('/api/campaigns/send', requireAuth, requireRole('admin'), async (req: AuthRequest, res) => {
+    try {
+      const { contacts } = req.body;
+      if (!Array.isArray(contacts) || contacts.length === 0) {
+        return res.status(400).json({ error: 'Envía contacts[] del preview antes de disparar.' });
+      }
+      const result = await EmailCampaignService.sendCampaign(pool, contacts, req.user!.id);
+      res.json(result);
+    } catch (err: any) {
+      console.error('[Campaign Send]', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /** GET /api/campaigns/history — historial de envíos */
+  app.get('/api/campaigns/history', requireAuth, requireRole('admin', 'editor'), async (req, res) => {
+    try {
+      const limit = Math.min(500, parseInt(req.query.limit as string) || 100);
+      const history = await EmailCampaignService.getHistory(pool, limit);
+      res.json(history);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /** Normaliza el campo TIPO del Sheet a enum del CRM */
+  function sheetTipo(raw: string): 'verde'|'naranja'|'morado'|'rojo'|null {
+    const v = (raw || '').toLowerCase().trim().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    if (v.includes('verde')  || v === 'v') return 'verde';
+    if (v.includes('naranja')|| v === 'n') return 'naranja';
+    if (v.includes('morado') || v.includes('lila') || v === 'm') return 'morado';
+    if (v.includes('rojo')   || v.includes('red')  || v === 'r') return 'rojo';
+    return null;
+  }
+
+  /** GET /api/campaigns/sheet-companies — empresas del Google Sheet con estado de campaña */
+  app.get('/api/campaigns/sheet-companies', requireAuth, async (_req, res) => {
+    try {
+      // Si Google Sheets no está configurado o falla, devolvemos array vacío
+      // en lugar de 500 para no romper la carga inicial del CRM.
+      let rows: Awaited<ReturnType<typeof GoogleSheetsService.readRows>> = [];
+      try {
+        await GoogleSheetsService.init();
+        rows = await GoogleSheetsService.readRows();
+      } catch (sheetsErr: any) {
+        console.warn('[sheet-companies] Google Sheets no disponible:', sheetsErr.message);
+        return res.json({ total: 0, companies: [], sheetsError: sheetsErr.message });
+      }
+      // Cruzar con DB para obtener email y fechas
+      const names = rows.map(r => r.empresa);
+      const dbRes = await pool.query(`
+        SELECT id, name, contact_email, phone, website, industry, company_size,
+               hq_city, hq_province, hq_region, hq_town, hq_country, exact_address,
+               description, known_ats_portal,
+               sheets_exported_at, last_campaign_sent_at, enrichment_status,
+               tipo, tipo_updated_at
+        FROM companies WHERE name = ANY($1::text[])
+      `, [names]);
+      const dbMap = new Map(dbRes.rows.map(r => [r.name, r]));
+
+      const result = rows.map(row => {
+        const db = dbMap.get(row.empresa);
+        return {
+          companyId:        db?.id                  || null,
+          empresa:          row.empresa,
+          // Contacto — Sheet tiene datos directos
+          email:            row.correo              || db?.contact_email || null,
+          hasEmail:         !!(row.correo || db?.contact_email),
+          phone:            row.telefono            || db?.phone         || null,
+          // Dirección — Sheet tiene columnas separadas
+          direccion:        row.direccion,
+          exactAddress:     row.direccion           || db?.exact_address || null,
+          provincia:        row.provincia,
+          region:           row.region,
+          ciudad:           row.ciudad,
+          pueblo:           row.pueblo,
+          hqCity:           row.ciudad              || db?.hq_city       || null,
+          hqProvince:       row.provincia           || db?.hq_province   || null,
+          hqRegion:         row.region              || db?.hq_region     || null,
+          hqTown:           row.pueblo              || db?.hq_town       || null,
+          hqCountry:        'Canada',
+          // Servicio y descripción
+          work:             row.work,
+          descripcion:      row.descripcion         || db?.description   || null,
+          dominio:          row.dominio             || db?.website       || null,
+          // Enriquecimiento adicional de DB
+          industry:         db?.industry            || null,
+          companySize:      db?.company_size        || null,
+          website:          row.dominio             || db?.website       || null,
+          description:      row.descripcion         || db?.description   || null,
+          knownAtsPortal:   row.work                || db?.known_ats_portal || null,
+          // Fechas
+          addedToSheetAt:   row.fecha               || db?.sheets_exported_at  || null,
+          lastCampaignAt:   db?.last_campaign_sent_at || null,
+          enrichmentStatus: db?.enrichment_status   || 'unknown',
+          // Tipo: DB tiene prioridad; si no hay, usar el color detectado del Sheet
+          tipo:             db?.tipo                || row.tipo          || null,
+          tipoUpdatedAt:    db?.tipo_updated_at     || null,
+        };
+      });
+      res.json({ total: result.length, companies: result });
+    } catch (err: any) {
+      console.error('[Sheet Companies]', err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /** PATCH /api/companies/:id/tipo — actualiza clasificación comercial */
+  app.patch('/api/companies/:id/tipo', requireAuth, async (req: AuthRequest, res) => {
+    const { id } = req.params;
+    const { tipo } = req.body;
+    const valid = ['verde','naranja','morado','rojo',null];
+    if (!valid.includes(tipo)) return res.status(400).json({ error: 'tipo inválido' });
+    try {
+      await pool.query(
+        `UPDATE companies SET tipo=$1, tipo_updated_at=NOW(), updated_at=NOW() WHERE id=$2`,
+        [tipo, id]
+      );
+      return res.json({ success: true, tipo });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
   });
 
   // PATCH /api/companies/:id — Enrich (editor+ only, column allowlist prevents SQL injection)

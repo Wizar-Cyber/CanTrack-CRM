@@ -4,10 +4,12 @@ import {
   Loader2, Zap, Search, Filter, RotateCcw, CheckSquare, Square,
   Navigation, X, Route, FileDown,
 } from 'lucide-react';
-import { Company, Job } from '../../types';
+import { Company, Job, CompanyTipo } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
 import { api, apiJson } from '../../services/apiClient';
 import { EMPLOYEE_TYPES } from '../../data/employeeTypes';
+import { TipoSelector } from '../UI/TipoSelector';
+import { TIPO_CONFIG, tipoBadgeClass } from '../../utils/tipo';
 
 interface CompanyListProps {
   companies: Company[];
@@ -29,6 +31,7 @@ export const CompanyList: React.FC<CompanyListProps> = ({
   const { user } = useAuth();
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid');
   const [filter, setFilter] = useState<'all' | 'with_vacancies' | 'pending'>('all');
+  const [tipoFilter, setTipoFilter] = useState<CompanyTipo | 'all'>('all');
   const [sizeFilter, setSizeFilter] = useState<'all' | 'Small' | 'Medium' | 'Large' | 'Enterprise'>('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [showFilters, setShowFilters] = useState(false);
@@ -72,8 +75,12 @@ export const CompanyList: React.FC<CompanyListProps> = ({
       });
     }
 
+    if (tipoFilter !== 'all') {
+      result = result.filter(c => c.tipo === tipoFilter);
+    }
+
     return result;
-  }, [companies, jobs, filter, sizeFilter, searchTerm]);
+  }, [companies, jobs, filter, sizeFilter, searchTerm, tipoFilter]);
 
   // ── Route planning helpers ──────────────────────────────────────────────────
   function toggleSelect(e: React.MouseEvent, id: string) {
@@ -267,11 +274,11 @@ export const CompanyList: React.FC<CompanyListProps> = ({
             }`}>
             <Filter className="w-4 h-4" />
             Filters
-            {(filter !== 'all' || sizeFilter !== 'all') && (
+            {(filter !== 'all' || sizeFilter !== 'all' || tipoFilter !== 'all') && (
               <span className={`text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center ${
                 showFilters ? 'bg-white text-lime-600' : 'bg-lime-600 text-white'
               }`}>
-                {(filter !== 'all' ? 1 : 0) + (sizeFilter !== 'all' ? 1 : 0)}
+                {(filter !== 'all' ? 1 : 0) + (sizeFilter !== 'all' ? 1 : 0) + (tipoFilter !== 'all' ? 1 : 0)}
               </span>
             )}
           </button>
@@ -303,6 +310,29 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                     {s === 'all' ? 'All' : s}
                   </button>
                 ))}
+              </div>
+            </div>
+
+            {/* Filtro TIPO — clasificación comercial */}
+            <div className="space-y-2">
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Tipo</p>
+              <div className="flex flex-wrap gap-1">
+                <button onClick={() => setTipoFilter('all')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors border ${
+                    tipoFilter === 'all' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}>Todos</button>
+                {(Object.entries(TIPO_CONFIG) as [NonNullable<CompanyTipo>, typeof TIPO_CONFIG[NonNullable<CompanyTipo>]][]).map(([key, cfg]) => (
+                  <button key={key} onClick={() => setTipoFilter(key)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors border ${
+                      tipoFilter === key ? cfg.badge + ' font-bold' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                    }`}>
+                    {cfg.emoji} {cfg.label}
+                  </button>
+                ))}
+                <button onClick={() => setTipoFilter(null)}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors border ${
+                    tipoFilter === null ? 'bg-slate-800 text-white border-slate-800' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
+                  }`}>○ Sin tipo</button>
               </div>
             </div>
 
@@ -406,16 +436,27 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                   </div>
                 )}
 
-                <div className="flex items-start justify-between mb-4">
-                  <div>
-                    <h3 className={`text-lg font-bold transition-colors ${isPending ? 'text-slate-700' : 'text-slate-900 group-hover:text-lime-700'}`}>
+                <div className="flex items-start justify-between mb-3">
+                  <div className="flex-1 min-w-0">
+                    <h3 className={`text-base font-bold transition-colors truncate ${isPending ? 'text-slate-700' : 'text-slate-900 group-hover:text-lime-700'}`}>
                       {company.name}
                     </h3>
-                    {!isPending && <p className="text-sm text-slate-500 mt-1">{company.industry}</p>}
+                    {!isPending && <p className="text-xs text-slate-500 mt-0.5 truncate">{company.industry || company.knownATSPortal || ''}</p>}
                   </div>
+                  {/* TipoSelector inline — click sin abrir detalle */}
+                  {!isPending && company.id && !company.id.startsWith('temp') && (
+                    <div onClick={e => e.stopPropagation()} className="ml-2 shrink-0">
+                      <TipoSelector
+                        companyId={company.id}
+                        current={company.tipo ?? null}
+                        compact
+                        onUpdate={tipo => onUpdateCompany?.({ ...company, tipo })}
+                      />
+                    </div>
+                  )}
                 </div>
 
-                <div className="space-y-3 flex-1">
+                <div className="space-y-2 flex-1">
                   {isPending ? (
                     <div className="flex flex-col items-center justify-center py-6 space-y-3">
                       <div className="relative">
@@ -427,26 +468,57 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                       </div>
                     </div>
                   ) : (
-                    <div className="flex items-center gap-2 text-sm text-slate-600">
-                      <MapPin className="w-4 h-4 text-slate-400 shrink-0" />
-                      <span className="truncate" title={company.exactAddress || (company.hqCity ? `${company.hqCity}, ${company.hqProvince}` : 'Location unknown')}>
-                        {company.hqCity ? `${company.hqCity}, ${company.hqProvince}` : 'Location unknown'}
-                      </span>
-                    </div>
-                  )}
+                    <>
+                      {/* Dirección — exactAddress del Sheet o hqCity del enriquecimiento */}
+                      <div className="flex items-start gap-2 text-sm text-slate-600">
+                        <MapPin className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                        <span className="truncate text-xs" title={company.exactAddress || ''}>
+                          {company.exactAddress
+                            ? company.exactAddress
+                            : company.hqCity
+                              ? `${company.hqCity}, ${company.hqProvince || 'QC'}`
+                              : <span className="text-slate-300 italic">Sin dirección</span>}
+                        </span>
+                      </div>
 
-                  {companyJobs.length > 0 && (
-                    <div className="flex items-center gap-2 text-sm text-slate-600">
-                      <Briefcase className="w-4 h-4 text-slate-400 shrink-0" />
-                      <span>{companyJobs.length} active {companyJobs.length === 1 ? 'vacancy' : 'vacancies'}</span>
-                    </div>
+                      {/* Servicio WORK del Sheet */}
+                      {company.knownATSPortal && (
+                        <div className="flex items-center gap-2">
+                          <Briefcase className="w-4 h-4 text-slate-400 shrink-0" />
+                          <span className="px-2 py-0.5 bg-lime-50 text-lime-700 border border-lime-100 rounded text-xs font-medium truncate">
+                            {company.knownATSPortal}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Email si está disponible */}
+                      {company.contactEmail && (
+                        <p className="text-xs text-slate-400 truncate pl-6" title={company.contactEmail}>
+                          {company.contactEmail}
+                        </p>
+                      )}
+
+                      {/* Vacantes activas */}
+                      {companyJobs.length > 0 && (
+                        <div className="flex items-center gap-2 text-xs text-slate-500">
+                          <span className="w-4 h-4 shrink-0" />
+                          {companyJobs.length} vacante{companyJobs.length > 1 ? 's' : ''}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
 
-                {!isPending && company.enrichmentStatus === 'enriched' && (
-                  <div className="mt-4 pt-4 border-t border-slate-100">
-                    <span className="px-2 py-1 rounded-full text-xs font-medium bg-lime-50 text-lime-700">
-                      Enriched
+                {!isPending && (
+                  <div className="mt-3 pt-3 border-t border-slate-100">
+                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${
+                      company.enrichmentStatus === 'scraped' || company.enrichmentStatus === 'db_matched' || company.enrichmentStatus === 'verified'
+                        ? 'bg-lime-50 text-lime-700'
+                        : company.enrichmentStatus === 'failed'
+                          ? 'bg-red-50 text-red-600'
+                          : 'bg-slate-50 text-slate-400'
+                    }`}>
+                      {company.enrichmentStatus ?? 'en sheet'}
                     </span>
                   </div>
                 )}
@@ -475,10 +547,12 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                       </button>
                     </th>
                   )}
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Company</th>
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Exact Address</th>
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Requested Roles</th>
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Status / Match</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Empresa</th>
+                  <th className="px-4 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Tipo</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Dirección</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Servicio</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Email</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Estado</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -535,34 +609,51 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                           </div>
                         </div>
                       </td>
+                      {/* Tipo */}
+                      <td className="px-4 py-4" onClick={e => e.stopPropagation()}>
+                        {!isPending && company.id && !company.id.startsWith('temp') ? (
+                          <TipoSelector
+                            companyId={company.id}
+                            current={company.tipo ?? null}
+                            onUpdate={tipo => onUpdateCompany?.({ ...company, tipo })}
+                          />
+                        ) : <span className="text-slate-300 text-xs">—</span>}
+                      </td>
+                      {/* Dirección */}
                       <td className="px-6 py-4">
                         {isPending ? (
                           <div className="flex items-center gap-2 text-xs text-lime-600 font-medium">
                             <Loader2 className="w-3 h-3 animate-spin" />
-                            <span>Auto-Enriching...</span>
+                            <span>Enriqueciendo...</span>
                           </div>
                         ) : (
                           <div className="flex items-start gap-2 max-w-xs">
                             <MapPin className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
-                            <span className="text-sm text-slate-600">
-                              {company.hqCity ? `${company.hqCity}, ${company.hqProvince || company.hqCountry}` : company.exactAddress || 'Address not available'}
+                            <span className="text-xs text-slate-600">
+                              {company.exactAddress
+                                ? company.exactAddress
+                                : company.hqCity
+                                  ? `${company.hqCity}, ${company.hqProvince || 'QC'}`
+                                  : <span className="italic text-slate-300">Sin dirección</span>}
                             </span>
                           </div>
                         )}
                       </td>
+                      {/* Servicio WORK */}
                       <td className="px-6 py-4">
-                        {companyJobs.length > 0 ? (
-                          <div className="flex flex-wrap gap-1 max-w-xs">
-                            {companyJobs.map(job => (
-                              <span key={job.id} className="px-2 py-1 bg-blue-50 text-blue-700 border border-blue-100 rounded text-[10px] font-medium whitespace-nowrap">
-                                {job.title}
-                              </span>
-                            ))}
-                          </div>
+                        {company.knownATSPortal ? (
+                          <span className="px-2 py-1 bg-lime-50 text-lime-700 border border-lime-100 rounded text-xs font-medium whitespace-nowrap">
+                            {company.knownATSPortal}
+                          </span>
                         ) : (
-                          <span className="text-sm text-slate-400 italic">No active vacancies</span>
+                          <span className="text-slate-300 text-xs italic">—</span>
                         )}
                       </td>
+                      {/* Email */}
+                      <td className="px-6 py-4 text-xs text-slate-500">
+                        {company.contactEmail || <span className="text-slate-300 italic">—</span>}
+                      </td>
+                      {/* Estado */}
                       <td className="px-6 py-4">
                         {isPending ? (
                           <div className="flex items-center gap-1 text-[10px] font-bold text-slate-400 uppercase tracking-tighter">
@@ -570,8 +661,14 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                             Pending
                           </div>
                         ) : (
-                          <span className="px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap bg-lime-50 text-lime-700">
-                            Enriched
+                          <span className={`px-2 py-1 rounded-full text-xs font-medium whitespace-nowrap ${
+                            company.enrichmentStatus === 'scraped' || company.enrichmentStatus === 'db_matched' || company.enrichmentStatus === 'verified'
+                              ? 'bg-lime-50 text-lime-700'
+                              : company.enrichmentStatus === 'failed'
+                                ? 'bg-red-50 text-red-600'
+                                : 'bg-slate-50 text-slate-400'
+                          }`}>
+                            {company.enrichmentStatus ?? 'en sheet'}
                           </span>
                         )}
                       </td>
@@ -580,7 +677,7 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                 })}
                 {filteredCompanies.length === 0 && (
                   <tr>
-                    <td colSpan={selectMode ? 5 : 4} className="px-6 py-12 text-center text-slate-500">
+                    <td colSpan={selectMode ? 7 : 6} className="px-6 py-12 text-center text-slate-500">
                       No companies found matching the current filters.
                     </td>
                   </tr>

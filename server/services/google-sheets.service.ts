@@ -1,368 +1,348 @@
 /**
- * Google Sheets Service
- * 
- * Integración con Google Sheets API v4 para:
- * - Leer datos existentes
- * - Validar duplicados en memoria
- * - Insertar nuevos registros en batch
- * - Mantener estructura intacta
+ * Google Sheets Service — formato Acton Vale (3 columnas: Empresa | DIRECCION | WORK)
+ *
+ * Config vía .env:
+ *   GOOGLE_SHEETS_ID              → ID del spreadsheet
+ *   GOOGLE_SERVICE_ACCOUNT_KEY_PATH → ruta al JSON de la service account
+ *   SHEETS_TAB_NAME               → nombre de la pestaña (default: "Hoja1")
  */
 
+import fs from 'fs';
 import { google, sheets_v4 } from 'googleapis';
 import { JWT } from 'google-auth-library';
-import { normalizeString, createCompanyKey, assessDuplication, extractTokens } from '../utils/normalization.js';
+import { normalizeString, assessDuplication } from '../utils/normalization.js';
 
-const SHEET_ID = '1641BkXjvd7yBSnYFuHuGZnJ5OfJ-A7xq';
-const SHEET_NAME = 'Companies'; // Cambiar según sea necesario
-
-interface CompanyRecord {
-  [key: string]: any;
-  name?: string;
-  city?: string;
-  address?: string;
+// ── Config desde env ──────────────────────────────────────────────────────────
+function getSheetId(): string {
+  const id = process.env.GOOGLE_SHEETS_ID || '';
+  if (!id) throw new Error('GOOGLE_SHEETS_ID no configurado en .env');
+  return id;
+}
+function getTabName(): string {
+  return (process.env.SHEETS_TAB_NAME || 'Hoja1').trim();
 }
 
-interface ImportResult {
-  total: number;
-  inserted: number;
-  duplicates: Array<{ name: string; reason: string; matchedRow?: number }>;
-  possibleDuplicates: Array<{ name: string; confidence: string; matchedRow?: number }>;
-  errors: Array<{ name: string; error: string }>;
-  stats: {
-    processedTime: number;
-    deduplicationTime: number;
-    insertionTime: number;
+// ── Tipos ─────────────────────────────────────────────────────────────────────
+export interface ActonValeRow {
+  empresa:     string;   // A — EMPRESA
+  telefono:    string;   // B — TELEFONO
+  tipo:        string;   // C — TIPO
+  correo:      string;   // D — CORREO
+  fecha:       string;   // E — Fecha
+  direccion:   string;   // F — DIRECCION
+  provincia:   string;   // G — PROVINCIA
+  region:      string;   // H — REGIÓN
+  ciudad:      string;   // I — CIUDAD
+  pueblo:      string;   // J — PUEBLO
+  work:        string;   // K — WORK
+  descripcion: string;   // L — DESCRIPCION DEL TRABAJO
+  dominio:     string;   // M — DOMINIO DE PAGINA
+}
+
+export interface ExportResult {
+  total:              number;
+  inserted:           number;
+  duplicates:         number;
+  possibleDuplicates: number;
+  details: {
+    duplicateNames:         string[];
+    possibleDuplicateNames: string[];
   };
+  durationMs: number;
 }
 
+// ── Servicio ──────────────────────────────────────────────────────────────────
 export class GoogleSheetsService {
-  private static sheets: sheets_v4.Sheets | null = null;
-  private static authClient: JWT | null = null;
+  private static sheetsClient: sheets_v4.Sheets | null = null;
+  private static resolvedTabName: string | null = null; // caché del nombre real de la hoja
 
   /**
-   * Inicializa el cliente de Google Sheets con credenciales de service account
+   * Resuelve el nombre real de la primera pestaña del spreadsheet.
+   * Prioridad: env SHEETS_TAB_NAME → nombre real leído de la API → fallback 'Sheet1'
    */
-  static async initialize(serviceAccountKey: Record<string, any>): Promise<void> {
+  private static async resolveTabName(): Promise<string> {
+    if (this.resolvedTabName) return this.resolvedTabName;
+    // Si el usuario lo configuró explícitamente, usarlo
+    const envTab = (process.env.SHEETS_TAB_NAME || '').trim();
+    if (envTab) { this.resolvedTabName = envTab; return envTab; }
+    // Leer el nombre real de la primera hoja
     try {
-      this.authClient = new JWT({
-        email: serviceAccountKey.client_email,
-        key: serviceAccountKey.private_key,
-        scopes: [
-          'https://www.googleapis.com/auth/spreadsheets',
-          'https://www.googleapis.com/auth/drive',
-        ],
-      });
-
-      this.sheets = google.sheets({
-        version: 'v4',
-        auth: this.authClient,
-      });
-
-      console.log('[GoogleSheets] ✅ Autenticación exitosa');
-    } catch (error) {
-      console.error('[GoogleSheets] ❌ Error de autenticación:', error);
-      throw error;
+      const meta = await this.api.spreadsheets.get({ spreadsheetId: getSheetId() });
+      const realName = meta.data.sheets?.[0]?.properties?.title ?? 'Sheet1';
+      this.resolvedTabName = realName;
+      console.log(`[Sheets] Pestaña detectada: "${realName}"`);
+      return realName;
+    } catch {
+      this.resolvedTabName = 'Sheet1';
+      return 'Sheet1';
     }
   }
 
-  /**
-   * Lee todos los registros de la hoja
-   * Retorna array de objetos con headers como keys
-   */
-  static async getAllRecords(): Promise<CompanyRecord[]> {
-    if (!this.sheets) throw new Error('GoogleSheets no inicializado');
+  /** Inicializa la autenticación. Debe llamarse antes de cualquier operación. */
+  static async init(): Promise<void> {
+    if (this.sheetsClient) return; // ya inicializado
 
+    const keyPath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH || '';
+    if (!keyPath) throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY_PATH no configurado en .env');
+
+    const keyJson = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
+
+    const auth = new JWT({
+      email: keyJson.client_email,
+      key:   keyJson.private_key,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
+
+    this.sheetsClient = google.sheets({ version: 'v4', auth });
+    console.log('[Sheets] ✅ Autenticado como:', keyJson.client_email);
+  }
+
+  private static get api(): sheets_v4.Sheets {
+    if (!this.sheetsClient) throw new Error('GoogleSheetsService no inicializado — llama a init() primero');
+    return this.sheetsClient;
+  }
+
+  /**
+   * Convierte el color de fondo de una celda al tipo comercial.
+   * Google Sheets devuelve RGB como floats 0–1.
+   *
+   * Lógica:
+   *  - Blanco / sin color → null
+   *  - Verde dominante    → 'verde'
+   *  - Rojo + verde alto  → 'naranja'  (en RGB naranja = rojo + bastante verde)
+   *  - Rojo dominante     → 'rojo'
+   *  - Azul / morado      → 'morado'
+   */
+  private static bgColorToTipo(
+    bg?: { red?: number | null; green?: number | null; blue?: number | null } | null,
+  ): string | null {
+    if (!bg) return null;
+    const r = bg.red   ?? 1;
+    const g = bg.green ?? 1;
+    const b = bg.blue  ?? 1;
+
+    // Celda sin color (blanca o casi blanca)
+    if (r > 0.92 && g > 0.92 && b > 0.92) return null;
+
+    // Verde: canal verde dominante
+    if (g > r && g > b && g > 0.3) return 'verde';
+
+    // Rojo dominante — distinguir naranja vs rojo puro
+    if (r > g && r > b) {
+      // Naranja: rojo alto + verde significativo (en RGB naranja = rojo + verde)
+      if (g > 0.35 && b < 0.4) return 'naranja';
+      return 'rojo';
+    }
+
+    // Azul / morado (azul solo o mezcla rojo+azul)
+    if (b > g) return 'morado';
+
+    return null;
+  }
+
+  /** Lee todas las filas de datos (sin la fila de encabezado). */
+  static async readRows(): Promise<ActonValeRow[]> {
+    const tab = await this.resolveTabName();
+    const sheetId = getSheetId();
+
+    // 1. Leer valores de texto (A2:M)
+    const resp = await this.api.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: `${tab}!A2:M`,   // 13 columnas: A=EMPRESA … M=DOMINIO
+    });
+    const values = resp.data.values || [];
+    if (values.length === 0) return [];
+
+    // 2. Leer colores de fondo de la columna C (TIPO) para detectar verde/naranja/morado/rojo
+    //    Usamos spreadsheets.get con includeGridData=true solo en el rango C2:C<N>
+    let tipoColors: Array<string | null> = [];
     try {
-      const response = await this.sheets.spreadsheets.values.get({
-        spreadsheetId: SHEET_ID,
-        range: `${SHEET_NAME}!A:Z`,
+      const lastRow = values.length + 1; // +1 porque la fila 1 es el encabezado
+      const fmtResp = await this.api.spreadsheets.get({
+        spreadsheetId: sheetId,
+        ranges: [`${tab}!C2:C${lastRow}`],
+        includeGridData: true,
+        fields: 'sheets(data(rowData(values(userEnteredFormat(backgroundColor)))))',
       });
-
-      const rows = response.data.values || [];
-      if (rows.length === 0) return [];
-
-      const headers = rows[0].map(h => String(h).trim());
-      const records: CompanyRecord[] = [];
-
-      // Convertir filas en objetos
-      for (let i = 1; i < rows.length; i++) {
-        const row = rows[i];
-        const record: CompanyRecord = {};
-        
-        for (let j = 0; j < headers.length; j++) {
-          record[headers[j]] = row[j] ?? null;
-        }
-        
-        records.push(record);
-      }
-
-      console.log(`[GoogleSheets] ✅ Leídos ${records.length} registros`);
-      return records;
-    } catch (error) {
-      console.error('[GoogleSheets] ❌ Error leyendo datos:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Construye índices en memoria para O(1) lookup
-   * Estrategia: crear múltiples índices por diferentes campos
-   */
-  static buildIndices(
-    records: CompanyRecord[],
-  ): {
-    byExactName: Map<string, CompanyRecord & { rowNumber: number }>;
-    byNormalizedName: Map<string, CompanyRecord & { rowNumber: number }>;
-    byKey: Map<string, CompanyRecord & { rowNumber: number }>;
-    allRecords: Array<CompanyRecord & { rowNumber: number }>;
-  } {
-    const byExactName = new Map();
-    const byNormalizedName = new Map();
-    const byKey = new Map();
-    const allRecords: Array<CompanyRecord & { rowNumber: number }> = [];
-
-    for (let i = 0; i < records.length; i++) {
-      const record = { ...records[i], rowNumber: i + 2 }; // +2 porque fila 1 es header, indexing comienza en 1
-      allRecords.push(record);
-
-      const name = record.name?.toString() || '';
-      if (name) {
-        byExactName.set(name, record);
-        byNormalizedName.set(normalizeString(name), record);
-
-        const key = createCompanyKey(name, record.city?.toString());
-        byKey.set(key, record);
-      }
+      const rowData = fmtResp.data.sheets?.[0]?.data?.[0]?.rowData ?? [];
+      tipoColors = rowData.map(row => {
+        const bg = row.values?.[0]?.userEnteredFormat?.backgroundColor;
+        return this.bgColorToTipo(bg as any);
+      });
+    } catch (e) {
+      console.warn('[Sheets] No se pudieron leer los colores de tipo:', (e as Error).message);
     }
 
-    console.log(`[GoogleSheets] ✅ Índices construidos (${records.length} registros indexados)`);
-    return { byExactName, byNormalizedName, byKey, allRecords };
-  }
-
-  /**
-   * Valida un nuevo registro contra los existentes
-   */
-  static validateCompany(
-    newCompany: CompanyRecord,
-    indices: ReturnType<typeof GoogleSheetsService.buildIndices>,
-  ): {
-    status: 'new' | 'duplicate' | 'possible_duplicate';
-    matchedRecord?: CompanyRecord & { rowNumber: number };
-    reason?: string;
-  } {
-    const name = newCompany.name?.toString() || '';
-    if (!name) {
-      return { status: 'duplicate', reason: 'Nombre vacío' };
-    }
-
-    // Cheque exacto por nombre normalizado
-    const normalizedName = normalizeString(name);
-    if (indices.byNormalizedName.has(normalizedName)) {
-      const matched = indices.byNormalizedName.get(normalizedName)!;
+    return values.map((r, i) => {
+      // Prioridad: color de celda > texto en columna C
+      const tipoFromColor = tipoColors[i] ?? null;
+      const tipoFromText  = (r[2] ?? '').trim();
       return {
-        status: 'duplicate',
-        matchedRecord: matched,
-        reason: `Match exacto normalizado con fila ${matched.rowNumber}`,
+        empresa:     (r[0]  ?? '').trim(),
+        telefono:    (r[1]  ?? '').trim(),
+        tipo:        tipoFromColor || tipoFromText,
+        correo:      (r[3]  ?? '').trim(),
+        fecha:       (r[4]  ?? '').trim(),
+        direccion:   (r[5]  ?? '').trim(),   // columna F
+        provincia:   (r[6]  ?? '').trim(),
+        region:      (r[7]  ?? '').trim(),
+        ciudad:      (r[8]  ?? '').trim(),
+        pueblo:      (r[9]  ?? '').trim(),
+        work:        (r[10] ?? '').trim(),   // columna K
+        descripcion: (r[11] ?? '').trim(),
+        dominio:     (r[12] ?? '').trim(),
       };
+    }).filter(r => r.empresa !== '');
+  }
+
+  /**
+   * Limpia TODAS las filas de datos (conserva la fila 1 de encabezados).
+   * Devuelve cuántas filas borró.
+   */
+  static async clearDataRows(): Promise<number> {
+    const sheetId = getSheetId();
+    const tab = await this.resolveTabName();
+
+    // Averiguar cuántas filas hay actualmente
+    const existing = await this.api.spreadsheets.values.get({
+      spreadsheetId: sheetId,
+      range: `${tab}!A2:A`,
+    });
+    const count = (existing.data.values || []).length;
+    if (count === 0) {
+      console.log('[Sheets] Hoja ya vacía — nada que limpiar.');
+      return 0;
     }
 
-    // Cheque fuzzy contra todos los registros
-    let bestMatch: { record: CompanyRecord & { rowNumber: number }; confidence: string } | null = null;
+    // Clear solo el rango de datos (fila 2 en adelante)
+    await this.api.spreadsheets.values.clear({
+      spreadsheetId: sheetId,
+      range: `${tab}!A2:C`,
+    });
+    console.log(`[Sheets] 🧹 ${count} filas de datos eliminadas.`);
+    return count;
+  }
 
-    for (const existingRecord of indices.allRecords) {
-      const assessment = assessDuplication(
-        {
-          name: newCompany.name?.toString() || '',
-          city: newCompany.city?.toString() || '',
-          address: newCompany.address?.toString() || '',
-        },
-        {
-          name: existingRecord.name?.toString() || '',
-          city: existingRecord.city?.toString() || '',
-          address: existingRecord.address?.toString() || '',
-        },
-      );
+  /**
+   * Asegura que la fila de encabezado exista.
+   * Si la fila 1 está vacía escribe los headers del formato Acton Vale.
+   */
+  static async ensureHeaders(): Promise<void> {
+    const tab = await this.resolveTabName();
+    const resp = await this.api.spreadsheets.values.get({
+      spreadsheetId: getSheetId(),
+      range: `${tab}!A1:C1`,
+    });
+    const row = resp.data.values?.[0] || [];
+    if (row.length === 0 || !row[0]) {
+      await this.api.spreadsheets.values.update({
+        spreadsheetId: getSheetId(),
+        range: `${tab}!A1:C1`,
+        valueInputOption: 'RAW',
+        requestBody: { values: [['Empresa', 'DIRECCION', 'WORK']] },
+      });
+      console.log('[Sheets] 📋 Encabezados escritos.');
+    }
+  }
 
-      if (assessment === 'exact' || assessment === 'fuzzy') {
-        return {
-          status: 'duplicate',
-          matchedRecord: existingRecord,
-          reason: `Match fuzzy (${assessment}) con fila ${existingRecord.rowNumber}`,
-        };
+  /**
+   * Exportación completa con deduplicación.
+   *
+   * Flujo:
+   *  1. Leer filas existentes y construir índice en memoria.
+   *  2. Para cada empresa nueva, evaluar si es duplicado.
+   *  3. Insertar solo las nuevas en un único batchUpdate.
+   *
+   * @param rows          Filas a exportar (ya en formato Acton Vale).
+   * @param clearFirst    Si true, borra todos los datos antes de insertar (útil para re-sync total).
+   */
+  static async exportRows(rows: ActonValeRow[], clearFirst = false): Promise<ExportResult> {
+    const t0 = Date.now();
+    await this.init();
+    await this.ensureHeaders();
+
+    if (clearFirst) {
+      await this.clearDataRows();
+    }
+
+    // ── Leer existentes y construir índice normalizado ──────────────────────
+    const existingRows = clearFirst ? [] : await this.readRows();
+    const existingIndex = new Map<string, ActonValeRow>();
+    for (const r of existingRows) {
+      const key = normalizeString(r.empresa);
+      if (key) existingIndex.set(key, r);
+    }
+    console.log(`[Sheets] 📖 ${existingRows.length} filas existentes en la hoja.`);
+
+    // ── Deduplicar ──────────────────────────────────────────────────────────
+    const toInsert: ActonValeRow[] = [];
+    const duplicateNames: string[] = [];
+    const possibleDuplicateNames: string[] = [];
+
+    for (const row of rows) {
+      const key = normalizeString(row.empresa);
+      if (!key) continue; // nombre vacío → skip
+
+      // Exact match
+      if (existingIndex.has(key)) {
+        duplicateNames.push(row.empresa);
+        continue;
       }
 
-      if (assessment === 'possible') {
-        if (!bestMatch || assessment === 'possible') {
-          bestMatch = { record: existingRecord, confidence: assessment };
+      // Fuzzy match contra todos los existentes
+      let skip = false;
+      for (const [, existing] of existingIndex) {
+        const result = assessDuplication(
+          { name: row.empresa,      address: row.direccion },
+          { name: existing.empresa, address: existing.direccion },
+        );
+        if (result === 'exact' || result === 'fuzzy') {
+          duplicateNames.push(row.empresa);
+          skip = true;
+          break;
+        }
+        if (result === 'possible') {
+          possibleDuplicateNames.push(row.empresa);
+          skip = true;
+          break;
         }
       }
+      if (skip) continue;
+
+      toInsert.push(row);
+      // Añadir al índice para detectar dupes dentro del mismo batch
+      existingIndex.set(key, row);
     }
 
-    if (bestMatch) {
-      return {
-        status: 'possible_duplicate',
-        matchedRecord: bestMatch.record,
-        reason: `Posible duplicado (${bestMatch.confidence}) con fila ${bestMatch.record.rowNumber}`,
-      };
+    console.log(`[Sheets] 🔍 A insertar: ${toInsert.length} | Duplicados: ${duplicateNames.length} | Posibles: ${possibleDuplicateNames.length}`);
+
+    // ── Insertar en batch ───────────────────────────────────────────────────
+    if (toInsert.length > 0) {
+      const tab = await this.resolveTabName();
+      // Siguiente fila disponible
+      const currentCount = await this.api.spreadsheets.values.get({
+        spreadsheetId: getSheetId(),
+        range: `${tab}!A:A`,
+      });
+      const nextRow = (currentCount.data.values?.length || 0) + 1;
+
+      const values = toInsert.map(r => [r.empresa, r.direccion, r.work]);
+      await this.api.spreadsheets.values.update({
+        spreadsheetId: getSheetId(),
+        range: `${tab}!A${nextRow}`,
+        valueInputOption: 'RAW',
+        requestBody: { values },
+      });
+      console.log(`[Sheets] ✅ ${toInsert.length} filas insertadas a partir de la fila ${nextRow}.`);
     }
 
-    return { status: 'new' };
-  }
-
-  /**
-   * Inserta nuevos registros en batch
-   * Respeta orden de columnas y estructura existente
-   */
-  static async batchInsertRecords(
-    headers: string[],
-    newRecords: CompanyRecord[],
-  ): Promise<void> {
-    if (!this.sheets || newRecords.length === 0) return;
-
-    try {
-      // Preparar valores en orden de headers
-      const values = newRecords.map(record => {
-        return headers.map(header => record[header] ?? '');
-      });
-
-      // Obtener siguiente fila disponible
-      const response = await this.sheets.spreadsheets.values.get({
-        spreadsheetId: SHEET_ID,
-        range: `${SHEET_NAME}!A:A`,
-      });
-
-      const nextRow = (response.data.values?.length || 0) + 1;
-
-      // Insertar en batch
-      await this.sheets.spreadsheets.values.batchUpdate({
-        spreadsheetId: SHEET_ID,
-        requestBody: {
-          data: [
-            {
-              range: `${SHEET_NAME}!A${nextRow}`,
-              values,
-            },
-          ],
-          valueInputOption: 'RAW',
-        },
-      });
-
-      console.log(`[GoogleSheets] ✅ ${newRecords.length} registros insertados a partir de fila ${nextRow}`);
-    } catch (error) {
-      console.error('[GoogleSheets] ❌ Error insertando registros:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Obtiene headers de la hoja
-   */
-  static async getHeaders(): Promise<string[]> {
-    if (!this.sheets) throw new Error('GoogleSheets no inicializado');
-
-    try {
-      const response = await this.sheets.spreadsheets.values.get({
-        spreadsheetId: SHEET_ID,
-        range: `${SHEET_NAME}!A1:Z1`,
-      });
-
-      const headers = (response.data.values?.[0] || []).map(h => String(h).trim());
-      return headers;
-    } catch (error) {
-      console.error('[GoogleSheets] ❌ Error obteniendo headers:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Proceso completo de importación
-   */
-  static async importCompanies(
-    newCompanies: CompanyRecord[],
-    options?: { autoInsert?: boolean; markPossibleDuplicates?: boolean },
-  ): Promise<ImportResult> {
-    const startTime = Date.now();
-    const result: ImportResult = {
-      total: newCompanies.length,
-      inserted: 0,
-      duplicates: [],
-      possibleDuplicates: [],
-      errors: [],
-      stats: {
-        processedTime: 0,
-        deduplicationTime: 0,
-        insertionTime: 0,
-      },
+    return {
+      total:              rows.length,
+      inserted:           toInsert.length,
+      duplicates:         duplicateNames.length,
+      possibleDuplicates: possibleDuplicateNames.length,
+      details:            { duplicateNames, possibleDuplicateNames },
+      durationMs:         Date.now() - t0,
     };
-
-    try {
-      // Paso 1: Leer registros existentes
-      console.log('[Import] 📖 Leyendo registros existentes...');
-      const existingRecords = await this.getAllRecords();
-      const headers = await this.getHeaders();
-
-      // Paso 2: Construir índices
-      const dedupStartTime = Date.now();
-      const indices = this.buildIndices(existingRecords);
-      result.stats.deduplicationTime = Date.now() - dedupStartTime;
-
-      // Paso 3: Validar cada nuevo registro
-      const recordsToInsert: CompanyRecord[] = [];
-
-      for (const newCompany of newCompanies) {
-        try {
-          const validation = this.validateCompany(newCompany, indices);
-
-          if (validation.status === 'duplicate') {
-            result.duplicates.push({
-              name: newCompany.name?.toString() || 'Sin nombre',
-              reason: validation.reason || 'Duplicado',
-              matchedRow: validation.matchedRecord?.rowNumber,
-            });
-          } else if (validation.status === 'possible_duplicate') {
-            result.possibleDuplicates.push({
-              name: newCompany.name?.toString() || 'Sin nombre',
-              confidence: validation.reason || 'Posible duplicado',
-              matchedRow: validation.matchedRecord?.rowNumber,
-            });
-
-            // Insertar si está habilitado auto-insert
-            if (options?.autoInsert) {
-              recordsToInsert.push(newCompany);
-            }
-          } else {
-            // Status === 'new'
-            recordsToInsert.push(newCompany);
-          }
-        } catch (err) {
-          result.errors.push({
-            name: newCompany.name?.toString() || 'Sin nombre',
-            error: (err as Error).message,
-          });
-        }
-      }
-
-      // Paso 4: Insertar registros nuevos en batch
-      if (recordsToInsert.length > 0) {
-        const insertStartTime = Date.now();
-        await this.batchInsertRecords(headers, recordsToInsert);
-        result.stats.insertionTime = Date.now() - insertStartTime;
-        result.inserted = recordsToInsert.length;
-      }
-
-      result.stats.processedTime = Date.now() - startTime;
-
-      console.log(`[Import] ✅ Importación completada:`);
-      console.log(`   - Insertados: ${result.inserted}`);
-      console.log(`   - Duplicados: ${result.duplicates.length}`);
-      console.log(`   - Posibles duplicados: ${result.possibleDuplicates.length}`);
-      console.log(`   - Errores: ${result.errors.length}`);
-      console.log(`   - Tiempo total: ${result.stats.processedTime}ms`);
-
-      return result;
-    } catch (error) {
-      console.error('[Import] ❌ Error en importación:', error);
-      throw error;
-    }
   }
 }

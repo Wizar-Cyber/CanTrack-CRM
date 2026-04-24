@@ -43,6 +43,7 @@ export class GeminiService {
 - "phone": string (main office phone number with country code, e.g. "+1 514 555-1234", empty string if unknown)
 - "contact_email": string (main company contact or HR email address, e.g. "info@company.com", empty string if unknown)
 - "description": string (2-3 sentences about what the company does and what type of workers they employ)
+- "is_closed": boolean (set to true ONLY if you find clear evidence this business is permanently closed, permanently out of business, or does not exist — e.g. "permanently closed" on Google Maps, "business closed", "company dissolved". Otherwise always false)
 
 Return ONLY the JSON object. No markdown code fences, no extra text.`;
 

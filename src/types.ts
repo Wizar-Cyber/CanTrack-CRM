@@ -1,6 +1,14 @@
 export type JobSource = 'linkedin' | 'indeed' | 'glassdoor' | 'company_website' | 'other';
 export type JobStatus = 'Saved' | 'Applied' | 'Interview' | 'Offer' | 'Rejected';
 
+/** Clasificación comercial de la empresa */
+export type CompanyTipo =
+  | 'verde'    // Vale la pena visita presencial
+  | 'naranja'  // Pequeña — solo llamadas, no visita
+  | 'morado'   // Casa/residencia — solo llamadas, no visita
+  | 'rojo'     // Cerrada o ya no existe
+  | null;
+
 export interface Company {
   id: string;
   name: string; // normalized name
@@ -10,6 +18,8 @@ export interface Company {
   size?: string;           // company_size
   hqCity?: string;
   hqProvince?: string;
+  hqRegion?: string;
+  hqTown?: string;
   hqCountry?: string;
   exactAddress?: string;
   phone?: string;
@@ -20,6 +30,9 @@ export interface Company {
   enrichedAt?: string;
   location?: string; // Legacy fallback
   enrichmentStatus?: 'pending' | 'db_matched' | 'scraped' | 'verified' | 'failed' | 'processing';
+  /** Clasificación comercial: verde/naranja/morado/rojo */
+  tipo?: CompanyTipo;
+  tipoUpdatedAt?: string;
 }
 
 export interface Candidate {
@@ -83,12 +96,22 @@ export interface Job {
   hasDirectServiceMatch?: boolean; // false = el clasificador no encontró match
 }
 
+export interface TipoStats {
+  verde:   number;
+  naranja: number;
+  morado:  number;
+  rojo:    number;
+  sinTipo: number;
+  total:   number;
+}
+
 export interface DashboardStats {
   totalJobs: number;
   activeCandidates: number;
   totalApplications: number;
   placements: number;
   enrichedCompanies: number;
+  tipoStats: TipoStats;
 }
 
 export interface ImportStats {

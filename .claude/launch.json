@@ -1,0 +1,14 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "cantrack-dev",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["tsx", "server.ts"],
+      "port": 3000,
+      "env": {
+        "PORT": "3000"
+      }
+    }
+  ]
+}
