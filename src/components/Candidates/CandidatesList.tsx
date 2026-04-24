@@ -80,7 +80,7 @@ export const CandidatesList: React.FC<CandidatesListProps> = ({ onCandidatesChan
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm('¿Eliminar este candidato permanentemente?')) return;
+    if (!confirm('Permanently delete this candidate?')) return;
     setDeletingId(id);
     try {
       const res = await api(`/api/candidates/${id}`, { method: 'DELETE' });

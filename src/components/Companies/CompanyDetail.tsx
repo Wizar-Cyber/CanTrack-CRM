@@ -4,6 +4,8 @@ import { X, MapPin, Building, ExternalLink, Mail, Phone, Users, Briefcase, Spark
 import { Company, Job } from '../../types';
 import { SendOfferModal } from './SendOfferModal';
 import { api } from '../../services/apiClient';
+import { TipoSelector } from '../UI/TipoSelector';
+import { TIPO_CONFIG } from '../../utils/tipo';
 
 interface CompanyDetailProps {
   company: Company;
@@ -13,6 +15,7 @@ interface CompanyDetailProps {
 }
 
 export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onClose, onViewJob }) => {
+  const [localTipo, setLocalTipo] = useState(company.tipo ?? null);
   const [intelligence, setIntelligence] = useState<Partial<Company> | null>(null);
   const [loading, setLoading] = useState(true);
   const [showOfferModal, setShowOfferModal] = useState(false);
@@ -47,6 +50,12 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
 
   const displayCompany = { ...company, ...intelligence };
 
+  // Si exactAddress parece un teléfono (solo dígitos/espacios/guiones, 7-15 chars),
+  // lo movemos al campo phone y limpiamos address
+  const looksLikePhone = (val?: string) => !!val && /^[\d\s\-\+\(\)\.]{7,15}$/.test(val.trim());
+  const resolvedPhone   = displayCompany.phone || (looksLikePhone(displayCompany.exactAddress) ? displayCompany.exactAddress : undefined);
+  const resolvedAddress = looksLikePhone(displayCompany.exactAddress) ? undefined : displayCompany.exactAddress;
+
   return (
     <AnimatePresence>
       {/* Backdrop */}
@@ -74,7 +83,20 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
           </div>
           <div>
             <h2 className="text-lg font-bold text-slate-900">{displayCompany.name}</h2>
-            <p className="text-sm text-slate-500">{displayCompany.legalName || 'Legal Name Pending'}</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              {displayCompany.knownATSPortal && (
+                <span className="px-2 py-0.5 bg-lime-50 text-lime-700 border border-lime-100 rounded text-xs font-semibold">
+                  {displayCompany.knownATSPortal}
+                </span>
+              )}
+              {company.id && !company.id.startsWith('temp') && (
+                <TipoSelector
+                  companyId={company.id}
+                  current={localTipo}
+                  onUpdate={t => setLocalTipo(t)}
+                />
+              )}
+            </div>
           </div>
         </div>
         <button 
@@ -109,10 +131,14 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
 
         {/* Quick Info pills */}
         <div className="flex flex-wrap gap-2 items-center">
-          {(displayCompany.hqCity || displayCompany.location) && (
-            <div className="flex items-center gap-1 px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-medium">
-              <MapPin className="w-3 h-3" />
-              {displayCompany.hqCity ? `${displayCompany.hqCity}${displayCompany.hqProvince ? `, ${displayCompany.hqProvince}` : ''}` : displayCompany.location}
+          {(displayCompany.hqCity || resolvedAddress || displayCompany.location) && (
+            <div className="flex items-center gap-1 px-3 py-1 bg-slate-100 text-slate-600 rounded-full text-xs font-medium max-w-xs truncate">
+              <MapPin className="w-3 h-3 shrink-0" />
+              <span className="truncate">
+                {displayCompany.hqCity
+                  ? `${displayCompany.hqCity}${displayCompany.hqProvince ? `, ${displayCompany.hqProvince}` : ''}`
+                  : resolvedAddress || displayCompany.location}
+              </span>
             </div>
           )}
           {displayCompany.size && (
@@ -163,13 +189,13 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
                   <p className="text-xs font-medium text-slate-900">{displayCompany.hqCountry || '—'}</p>
                 </div>
                 <div className="col-span-2 space-y-0.5">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase">Address</p>
-                  <p className="text-xs font-medium text-slate-900">{displayCompany.exactAddress || '—'}</p>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">Dirección</p>
+                  <p className="text-xs font-medium text-slate-900">{resolvedAddress || '—'}</p>
                 </div>
                 <div className="space-y-0.5">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1"><Phone className="w-3 h-3" />Phone</p>
-                  {displayCompany.phone
-                    ? <a href={`tel:${displayCompany.phone}`} className="text-xs font-medium text-blue-600 hover:underline">{displayCompany.phone}</a>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1"><Phone className="w-3 h-3" />Teléfono</p>
+                  {resolvedPhone
+                    ? <a href={`tel:${resolvedPhone}`} className="text-xs font-medium text-blue-600 hover:underline">{resolvedPhone}</a>
                     : <p className="text-xs font-medium text-slate-900">—</p>}
                 </div>
                 <div className="space-y-0.5">
@@ -179,8 +205,10 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
                     : <p className="text-xs font-medium text-slate-900">—</p>}
                 </div>
                 <div className="space-y-0.5">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase">ATS Portal</p>
-                  <p className="text-xs font-medium text-slate-900 capitalize">{displayCompany.knownATSPortal || '—'}</p>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">Servicio</p>
+                  {displayCompany.knownATSPortal
+                    ? <span className="px-2 py-0.5 bg-lime-50 text-lime-700 rounded text-xs font-medium">{displayCompany.knownATSPortal}</span>
+                    : <p className="text-xs font-medium text-slate-900">—</p>}
                 </div>
               </div>
             )}

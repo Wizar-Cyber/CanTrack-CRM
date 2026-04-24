@@ -2,11 +2,12 @@ import React, { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { ProfileSettings } from './ProfileSettings';
 import { UserManagement } from './UserManagement';
-import { User, Users, Bell } from 'lucide-react';
+import { ExcelExport } from './ExcelExport';
+import { User, Users, Bell, FileSpreadsheet } from 'lucide-react';
 
 export const Settings: React.FC = () => {
   const { userProfile } = useAuth();
-  const [activeTab, setActiveTab] = useState<'profile' | 'users' | 'notifications'>('profile');
+  const [activeTab, setActiveTab] = useState<'profile' | 'users' | 'notifications' | 'excel'>('profile');
 
   return (
     <div className="space-y-6">
@@ -47,6 +48,18 @@ export const Settings: React.FC = () => {
             <Bell className="w-4 h-4" />
             Notifications
           </button>
+
+          {userProfile?.role === 'admin' && (
+            <button
+              onClick={() => setActiveTab('excel')}
+              className={`flex items-center gap-2 px-6 py-4 text-sm font-medium transition-colors border-b-2 ${
+                activeTab === 'excel' ? 'border-lime-600 text-lime-700 bg-lime-50/50' : 'border-transparent text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              Excel Export
+            </button>
+          )}
         </div>
 
         <div className="p-6 bg-slate-50/50 min-h-[500px]">
@@ -58,6 +71,7 @@ export const Settings: React.FC = () => {
               <p>Notification preferences coming soon.</p>
             </div>
           )}
+          {activeTab === 'excel' && userProfile?.role === 'admin' && <ExcelExport />}
         </div>
       </div>
     </div>

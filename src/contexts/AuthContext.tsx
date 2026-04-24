@@ -121,7 +121,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const data = await res.json();
     if (!res.ok) {
-      throw new Error(data.error || 'Error al iniciar sesión.');
+      throw new Error(data.error || 'Login failed.');
     }
 
     storeToken(data.token);
