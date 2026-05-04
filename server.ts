@@ -70,6 +70,13 @@ async function runMigrations() {
 
       ALTER TABLE jobs ADD COLUMN IF NOT EXISTS raw_company_name VARCHAR(255);
 
+      CREATE TABLE IF NOT EXISTS candidate_skills (
+        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        candidate_id UUID REFERENCES candidates(id) ON DELETE CASCADE,
+        skill VARCHAR(100) NOT NULL,
+        UNIQUE(candidate_id, skill)
+      );
+
       CREATE TABLE IF NOT EXISTS ontario_companies (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         nombre TEXT NOT NULL,
@@ -170,9 +177,10 @@ async function startServer() {
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc:  ["'self'", "'unsafe-inline'"], // Vite HMR requires inline scripts in dev
-        styleSrc:   ["'self'", "'unsafe-inline'"], // Tailwind requires this
+        styleSrc:   ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'], // Tailwind and Google Fonts
+        fontSrc:    ["'self'", 'data:', 'https://fonts.gstatic.com'],
         imgSrc:     ["'self'", 'data:', 'blob:'],
-        connectSrc: ["'self'"],
+        connectSrc: ["'self'", 'ws://localhost:24678', 'http://localhost:24678'],
       },
     },
     crossOriginEmbedderPolicy: false, // allow Vite dev assets
