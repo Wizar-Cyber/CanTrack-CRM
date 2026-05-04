@@ -23,7 +23,7 @@ export type { EnrichmentData };
 
 // Campos que se intentan completar con la cadena de fallback
 const FIELDS: (keyof EnrichmentData)[] = [
-  'industry', 'company_size', 'hq_city', 'hq_province', 'hq_country',
+  'industry', 'company_size', 'hq_city', 'hq_province', 'hq_region', 'hq_town', 'hq_country',
   'exact_address', 'phone', 'contact_email', 'website', 'description',
 ];
 

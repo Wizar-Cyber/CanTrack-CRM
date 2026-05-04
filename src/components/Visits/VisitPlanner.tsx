@@ -367,7 +367,7 @@ const FilterSelect: React.FC<{
         onChange={e => onChange(e.target.value)}
         className={`w-full text-sm border rounded-lg px-3 py-1.5 pr-7 appearance-none focus:outline-none focus:ring-2 focus:ring-lime-500/30 focus:border-lime-400 ${value ? 'border-lime-300 bg-lime-50 text-lime-800' : 'border-slate-200 bg-white text-slate-700'}`}
       >
-        <option value="">Todos</option>
+        <option value="">All</option>
         {options.map(o => (
           <option key={o.value} value={o.value}>{o.label}</option>
         ))}

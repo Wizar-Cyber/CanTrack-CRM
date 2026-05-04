@@ -2,6 +2,7 @@ import React from 'react';
 import { Briefcase, CheckCircle, Calendar, Users, TrendingUp, Database, Zap, AlertTriangle, Building } from 'lucide-react';
 import { DashboardStats, Job, ImportStats } from '../../types';
 import { StatusBadge } from '../UI/Badges';
+import { TIPO_CONFIG } from '../../utils/tipo';
 
 interface DashboardProps {
   stats: DashboardStats;
@@ -63,6 +64,47 @@ export const Dashboard: React.FC<DashboardProps> = ({ stats, recentJobs, onSelec
           </div>
         ))}
       </div>
+
+      {/* ── Tipo stats ─────────────────────────────────────────────────────── */}
+      {stats.tipoStats && stats.tipoStats.total > 0 && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-bold text-slate-700">Clasificación de Empresas</h3>
+            <span className="text-xs text-slate-400">{stats.tipoStats.total} en Sheet</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            {(Object.entries(TIPO_CONFIG) as [string, typeof TIPO_CONFIG[keyof typeof TIPO_CONFIG]][]).map(([key, cfg]) => {
+              const count = stats.tipoStats![key as keyof typeof stats.tipoStats] as number;
+              const pct   = stats.tipoStats!.total > 0 ? Math.round((count / stats.tipoStats!.total) * 100) : 0;
+              return (
+                <div key={key} className={`rounded-xl p-3 border ${cfg.badge} flex flex-col gap-1`}>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-lg leading-none">{cfg.emoji}</span>
+                    <span className="text-xs font-semibold truncate">{cfg.label}</span>
+                  </div>
+                  <p className="text-2xl font-bold mt-0.5">{count}</p>
+                  <div className="w-full bg-white/60 rounded-full h-1 mt-1">
+                    <div className={`h-1 rounded-full ${cfg.dot}`} style={{ width: `${pct}%` }} />
+                  </div>
+                  <p className="text-[10px] opacity-70">{pct}%</p>
+                </div>
+              );
+            })}
+            {/* Sin tipo */}
+            <div className="rounded-xl p-3 border bg-gray-50 text-gray-500 border-gray-200 flex flex-col gap-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-lg leading-none">○</span>
+                <span className="text-xs font-semibold">Sin tipo</span>
+              </div>
+              <p className="text-2xl font-bold mt-0.5">{stats.tipoStats.sinTipo}</p>
+              <div className="w-full bg-white/60 rounded-full h-1 mt-1">
+                <div className="h-1 rounded-full bg-gray-300" style={{ width: `${stats.tipoStats.total > 0 ? Math.round((stats.tipoStats.sinTipo / stats.tipoStats.total) * 100) : 0}%` }} />
+              </div>
+              <p className="text-[10px] opacity-70">{stats.tipoStats.total > 0 ? Math.round((stats.tipoStats.sinTipo / stats.tipoStats.total) * 100) : 0}%</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 space-y-4">

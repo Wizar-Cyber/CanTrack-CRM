@@ -84,7 +84,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Error al iniciar sesión.');
+    if (!res.ok) throw new Error(data.error || 'Login failed.');
     setCurrentUser(buildProfile(data.user));
   };
 

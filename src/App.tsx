@@ -15,9 +15,11 @@ import { Settings } from './components/Settings/Settings';
 import { Job, DashboardStats, Candidate, Company } from './types';
 import { AnimatePresence } from 'framer-motion';
 import { Loader2 } from 'lucide-react';
-import { CandidatesList } from './components/Candidates/CandidatesList';
+import { ServicesList } from './components/Services/ServicesList';
 import { JobsView } from './components/Jobs/JobsView';
 import { VisitPlanner } from './components/Visits/VisitPlanner';
+import CampaignModule from './components/Campaigns/CampaignModule';
+import { ApplicationQueue } from './components/Jobs/ApplicationQueue';
 import { ToastContainer, useToasts } from './components/UI/Toast';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -66,30 +68,46 @@ const AppContent: React.FC = () => {
   const [enrichingIds, setEnrichingIds] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(true);
   const [refreshTick, setRefreshTick] = useState(0);
+  const { currentUser } = useAuth();
 
   const refreshCompanies = React.useCallback(() => {
     setRefreshTick(t => t + 1);
   }, []);
 
-  // Fetch data from real DB
+  // Fetch data from real DB — solo cuando el usuario está autenticado
   React.useEffect(() => {
+    // No correr si no hay sesión activa
+    if (!currentUser) {
+      setIsLoading(false);
+      return;
+    }
+
     const fetchData = async () => {
+
       try {
         // 1. Sincronizar vacantes nuevas del scraper antes de cargar datos
-        //    (crea companies + jobs para cualquier scraped_job nuevo)
         await api('/api/sync/scraped-jobs', { method: 'POST' }).catch(() => {});
 
         const [jobsRes, companiesRes] = await Promise.all([
           api('/api/jobs'),
-          api('/api/companies')
+          // Fuente de verdad de compañías = Google Sheets (no la BD)
+          api('/api/campaigns/sheet-companies')
         ]);
-        
+
+        // Si el token expiró, limpiar y no procesar
+        if (jobsRes.status === 401 || companiesRes.status === 401) {
+          localStorage.removeItem('token');
+          return;
+        }
+
         if (jobsRes.ok && companiesRes.ok) {
           const jobsJson = await jobsRes.json();
           const jobsData = Array.isArray(jobsJson) ? jobsJson : (jobsJson.data ?? []);
           if (!Array.isArray(jobsJson)) setJobsTotal(jobsJson.total ?? jobsData.length);
-          const companiesData = await companiesRes.json();
-          
+          const sheetData = await companiesRes.json();
+          // sheet-companies devuelve { total, companies: [...] }
+          const sheetRows: any[] = sheetData.companies ?? sheetData ?? [];
+
           const formattedJobs: Job[] = jobsData.map((j: any) => ({
             id: j.id,
             title: j.title,
@@ -104,32 +122,44 @@ const AppContent: React.FC = () => {
             isEasyApply: j.is_easy_apply,
             country: j.country,
             postedAt: j.created_at,
-            // Datos de la empresa directamente desde el JOIN
             companyEnrichmentStatus: j.company_enrichment_status,
             companyIndustry: j.company_industry,
             companyHqCity: j.company_hq_city,
             companyHqCountry: j.company_hq_country,
             companyWebsite: j.company_website,
+            serviceTypeId: j.service_type_id ?? null,
+            serviceName:   j.service_name   ?? null,
+            serviceNumber: j.service_number ?? null,
+            serviceCategory: j.service_category ?? null,
+            titleDisplay:  j.title_display  ?? j.title,
+            hasDirectServiceMatch: j.has_direct_service_match ?? false,
           }));
 
-          const formattedCompanies: Company[] = companiesData.map((c: any) => ({
-            id: c.id,
-            name: c.name,
-            slug: c.slug,
-            legalName: c.legal_name,
-            industry: c.industry,
-            size: c.company_size,
-            hqCity: c.hq_city,
-            hqProvince: c.hq_province,
-            hqCountry: c.hq_country,
-            phone: c.phone,
-            contactEmail: c.contact_email,
-            exactAddress: c.exact_address,
-            website: c.website,
-            description: c.description,
-            knownATSPortal: c.known_ats_portal,
-            enrichmentStatus: c.enrichment_status,
-            enrichedAt: c.enriched_at
+          // Mapear filas del Sheet al tipo Company.
+          // Los campos que no existen en el Sheet (industry, website…) se dejan
+          // vacíos; si la empresa existe en la BD se rellenan desde el JOIN que
+          // el endpoint ya hace (enrichmentStatus, contactEmail, addedToSheetAt).
+          const formattedCompanies: Company[] = sheetRows.map((c: any) => ({
+            id:               c.companyId   ?? c.empresa,
+            name:             c.empresa,
+            slug:             c.empresa?.toLowerCase().replace(/[^a-z0-9]/g, '-') ?? '',
+            industry:         c.industry    || undefined,
+            size:             c.companySize || undefined,
+            hqCity:           c.hqCity      || c.ciudad    || undefined,
+            hqProvince:       c.hqProvince  || c.provincia || 'QC',
+            hqRegion:         c.hqRegion    || c.region    || undefined,
+            hqTown:           c.hqTown      || c.pueblo    || undefined,
+            hqCountry:        'Canada',
+            exactAddress:     c.exactAddress || c.direccion || undefined,
+            phone:            c.phone        || undefined,
+            contactEmail:     c.email        || undefined,
+            website:          c.dominio      || c.website   || undefined,
+            description:      c.descripcion  || c.description || undefined,
+            knownATSPortal:   c.work         || undefined,
+            enrichmentStatus: (c.enrichmentStatus as any)  || undefined,
+            enrichedAt:       c.addedToSheetAt || undefined,
+            tipo:             c.tipo           || undefined,
+            tipoUpdatedAt:    c.tipoUpdatedAt  || undefined,
           }));
 
           setJobs(formattedJobs);
@@ -144,9 +174,9 @@ const AppContent: React.FC = () => {
 
     fetchData();
     // Poll every 10 seconds to check for new scraped jobs
-    const interval = setInterval(fetchData, 10000);
+    const interval = setInterval(fetchData, 60000); // cada 60s en lugar de 10s
     return () => clearInterval(interval);
-  }, [refreshTick]);
+  }, [refreshTick, currentUser]);
 
   // ── Enrichment Queue: procesa una empresa pending por vez desde el servidor ──
   const enrichmentRunningRef = React.useRef(false);
@@ -168,6 +198,7 @@ const AppContent: React.FC = () => {
           if (json.companyId) {
             setCompanies(prev => prev.map(c => {
               if (c.id !== json.companyId) return c;
+              const autoRojo = json.data?.is_closed === true;
               const updated = {
                 ...c,
                 enrichmentStatus: (json.source === 'db_matched' ? 'db_matched' : 'scraped') as Company['enrichmentStatus'],
@@ -185,12 +216,14 @@ const AppContent: React.FC = () => {
                 contactEmail: json.data?.contact_email ?? c.contactEmail,
                 needsManualReview: (json.data?.confidence_score ?? 100) < 60,
                 enrichedAt: new Date().toISOString(),
+                // Auto-rojo: si el modelo detectó empresa cerrada
+                tipo: autoRojo ? 'rojo' : c.tipo,
               };
               // Notificación toast
               addToast({
-                type: json.source === 'db_matched' ? 'info' : 'success',
-                title: `Empresa enriquecida`,
-                message: `${updated.name || 'Empresa'} — ${updated.industry || json.source}`,
+                type: autoRojo ? 'error' : (json.source === 'db_matched' ? 'info' : 'success'),
+                title: autoRojo ? `🔴 Empresa cerrada detectada` : `Empresa enriquecida`,
+                message: `${updated.name || 'Empresa'}${autoRojo ? ' — marcada como ROJO automáticamente' : ` — ${updated.industry || json.source}`}`,
               });
               return updated;
             }));
@@ -220,6 +253,14 @@ const AppContent: React.FC = () => {
     totalApplications: 0,
     placements: candidates.filter(c => c.status === 'Placed').length,
     enrichedCompanies: companies.filter(c => c.enrichmentStatus !== 'pending').length,
+    tipoStats: {
+      verde:   companies.filter(c => c.tipo === 'verde').length,
+      naranja: companies.filter(c => c.tipo === 'naranja').length,
+      morado:  companies.filter(c => c.tipo === 'morado').length,
+      rojo:    companies.filter(c => c.tipo === 'rojo').length,
+      sinTipo: companies.filter(c => !c.tipo).length,
+      total:   companies.length,
+    },
   };
 
   return (
@@ -245,8 +286,8 @@ const AppContent: React.FC = () => {
           />
         </MainLayout></ProtectedRoute>} />
 
-        <Route path="/candidates" element={<ProtectedRoute><MainLayout>
-          <CandidatesList onCandidatesChange={setCandidates} />
+        <Route path="/services" element={<ProtectedRoute><MainLayout>
+          <ServicesList />
         </MainLayout></ProtectedRoute>} />
 
         <Route path="/companies" element={<ProtectedRoute><MainLayout>
@@ -260,8 +301,16 @@ const AppContent: React.FC = () => {
           />
         </MainLayout></ProtectedRoute>} />
 
+        <Route path="/campaigns" element={<ProtectedRoute><MainLayout>
+          <CampaignModule />
+        </MainLayout></ProtectedRoute>} />
+
         <Route path="/visits" element={<ProtectedRoute><MainLayout>
           <VisitPlanner companies={companies} onSelectCompany={setSelectedCompany} />
+        </MainLayout></ProtectedRoute>} />
+
+        <Route path="/agent" element={<ProtectedRoute><MainLayout>
+          <ApplicationQueue />
         </MainLayout></ProtectedRoute>} />
 
         <Route path="/settings" element={<ProtectedRoute><MainLayout><Settings /></MainLayout></ProtectedRoute>} />
@@ -276,11 +325,10 @@ const AppContent: React.FC = () => {
 
       <AnimatePresence>
         {selectedJob && (
-          <JobDetail 
+          <JobDetail
             job={selectedJob}
             company={companies.find(c => c.name === selectedJob.companyName || c.id === selectedJob.companyId)}
-            candidates={candidates}
-            onClose={() => setSelectedJob(null)} 
+            onClose={() => setSelectedJob(null)}
             onSelectCompany={(name) => {
               const company = companies.find(c => c.name === name);
               if (company) setSelectedCompany(company);

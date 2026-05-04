@@ -18,12 +18,15 @@ export const GROQ_PROMPT = (companyName: string) => `Research the company "${com
 - "company_size": string (one of: "1-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10001+")
 - "hq_city": string (city name)
 - "hq_province": string (province or state abbreviation, e.g. "QC", "ON", "BC", "AB")
+- "hq_region": string (administrative region / sub-province, e.g. in Quebec: "Montérégie", "Estrie", "Laurentides", "Montréal"; in Ontario: "GTA", "Eastern Ontario"; empty string if unknown)
+- "hq_town": string (specific municipality or town if different from hq_city, empty string otherwise)
 - "hq_country": string (country name in English, e.g. "Canada", "United States")
 - "exact_address": string (full street address: number, street, city, province, postal code — as precise as possible, empty string if unknown)
 - "website": string (official URL with https://, or empty string if unknown)
 - "phone": string (main office phone number with country code, e.g. "+1 514 555-1234", empty string if unknown)
 - "contact_email": string (main company contact or HR email address, e.g. "info@company.com", empty string if unknown)
 - "description": string (2-3 sentences about what the company does and what type of workers they employ)
+- "is_closed": boolean (set to true ONLY if you find clear evidence this business is permanently closed, permanently out of business, or does not exist — e.g. "permanently closed" on Google Maps, "business closed", "company dissolved". Otherwise always false)
 
 Return ONLY the JSON object. No markdown, no extra text.`;
 
@@ -32,12 +35,15 @@ export interface EnrichmentData {
   company_size?: string;
   hq_city?: string;
   hq_province?: string;
+  hq_region?: string;
+  hq_town?: string;
   hq_country?: string;
   exact_address?: string;
   phone?: string;
   contact_email?: string;
   website?: string;
   description?: string;
+  is_closed?: boolean;
   _provider?: string;
 }
 
