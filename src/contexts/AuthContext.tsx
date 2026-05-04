@@ -9,56 +9,29 @@ export interface UserProfile {
   role: 'admin' | 'editor' | 'viewer';
   isActive: boolean;
   createdAt: string;
-  // Computed convenience getter
   name: string;
 }
 
 interface AuthContextType {
   currentUser: UserProfile | null;
   userProfile: UserProfile | null;
-  token: string | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
 
-// ── Storage helpers ───────────────────────────────────────────────────────────
-const TOKEN_KEY = 'cantrack_token';
-
-export function getStoredToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
-}
-
-function storeToken(token: string) {
-  localStorage.setItem(TOKEN_KEY, token);
-}
-
-function clearToken() {
-  localStorage.removeItem(TOKEN_KEY);
-}
-
-function buildProfile(data: any): UserProfile {
-  return {
-    id: data.id,
-    email: data.email,
-    firstName: data.firstName,
-    lastName: data.lastName,
-    role: data.role,
-    isActive: data.isActive,
-    createdAt: data.createdAt,
-    name: `${data.firstName} ${data.lastName}`,
-  };
+function buildProfile(data: Omit<UserProfile, 'name'>): UserProfile {
+  return { ...data, name: `${data.firstName} ${data.lastName}` };
 }
 
 // ── Context ───────────────────────────────────────────────────────────────────
 const AuthContext = createContext<AuthContextType>({
   currentUser: null,
   userProfile: null,
-  token: null,
   loading: true,
   login: async () => {},
-  logout: () => {},
+  logout: async () => {},
   refreshUser: async () => {},
 });
 
@@ -67,48 +40,38 @@ export const useAuth = () => useContext(AuthContext);
 // ── Provider ──────────────────────────────────────────────────────────────────
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
-  const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const logout = useCallback(() => {
-    clearToken();
-    setToken(null);
+  // All fetches use credentials: 'include' so the httpOnly cookie is sent automatically.
+  // The frontend never reads or stores the JWT token.
+
+  const logout = useCallback(async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    } catch { /* ignore network errors during logout */ }
     setCurrentUser(null);
   }, []);
 
   const refreshUser = useCallback(async () => {
-    const storedToken = getStoredToken();
-    if (!storedToken) return;
     try {
-      const res = await fetch('/api/auth/me', {
-        headers: { Authorization: `Bearer ${storedToken}` },
-      });
-      if (!res.ok) {
-        logout();
-        return;
-      }
+      const res = await fetch('/api/auth/me', { credentials: 'include' });
+      if (!res.ok) { await logout(); return; }
       const data = await res.json();
       setCurrentUser(buildProfile(data));
     } catch {
-      logout();
+      await logout();
     }
   }, [logout]);
 
-  // On mount: try to restore session from stored token
+  // On mount: restore session from cookie (the server validates it)
   useEffect(() => {
-    const storedToken = getStoredToken();
-    if (!storedToken) {
-      setLoading(false);
-      return;
-    }
-    setToken(storedToken);
-    fetch('/api/auth/me', { headers: { Authorization: `Bearer ${storedToken}` } })
+    fetch('/api/auth/me', { credentials: 'include' })
       .then(res => {
-        if (!res.ok) throw new Error('Token invalid');
+        if (!res.ok) throw new Error('No session');
         return res.json();
       })
       .then(data => setCurrentUser(buildProfile(data)))
-      .catch(() => clearToken())
+      .catch(() => setCurrentUser(null))
       .finally(() => setLoading(false));
   }, []);
 
@@ -116,21 +79,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include', // receive httpOnly Set-Cookie
       body: JSON.stringify({ email, password }),
     });
 
     const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.error || 'Error al iniciar sesión.');
-    }
-
-    storeToken(data.token);
-    setToken(data.token);
+    if (!res.ok) throw new Error(data.error || 'Error al iniciar sesión.');
     setCurrentUser(buildProfile(data.user));
   };
 
   return (
-    <AuthContext.Provider value={{ currentUser, userProfile: currentUser, token, loading, login, logout, refreshUser }}>
+    <AuthContext.Provider value={{ currentUser, userProfile: currentUser, loading, login, logout, refreshUser }}>
       {!loading && children}
     </AuthContext.Provider>
   );

@@ -9,8 +9,8 @@ import { Topbar } from './components/Layout/Topbar';
 import { Dashboard } from './components/Dashboard/Dashboard';
 import { JobTable } from './components/Jobs/JobTable';
 import { JobDetail } from './components/Jobs/JobDetail';
-import { CompanyList } from './components/Companies/CompanyList';
 import { CompanyDetail } from './components/Companies/CompanyDetail';
+import { CompaniesHub } from './components/Companies/CompaniesHub';
 import { Settings } from './components/Settings/Settings';
 import { Job, DashboardStats, Candidate, Company } from './types';
 import { AnimatePresence } from 'framer-motion';
@@ -250,7 +250,7 @@ const AppContent: React.FC = () => {
         </MainLayout></ProtectedRoute>} />
 
         <Route path="/companies" element={<ProtectedRoute><MainLayout>
-          <CompanyList 
+          <CompaniesHub
             companies={companies} 
             jobs={jobs} 
             onSelectCompany={setSelectedCompany} 

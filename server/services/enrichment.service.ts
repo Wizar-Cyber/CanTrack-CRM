@@ -48,6 +48,30 @@ function missing(data: Partial<EnrichmentData>): string[] {
   return FIELDS.filter(f => !filled((data as any)[f]));
 }
 
+/**
+ * Verifica que una URL responde realmente (HEAD request, timeout 5 s).
+ * Sigue hasta 2 redirecciones. Devuelve false si la URL es inválida,
+ * no responde o devuelve un error HTTP (4xx/5xx).
+ */
+async function verifyUrl(url: string): Promise<boolean> {
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return false;
+
+    const res = await fetch(url, {
+      method: 'HEAD',
+      redirect: 'follow',
+      signal: AbortSignal.timeout(5_000),
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; CanTrackBot/1.0)' },
+    });
+    // Algunos servidores devuelven 405 para HEAD pero responden bien a GET.
+    // Consideramos válidos 2xx, 3xx finales y 405.
+    return res.ok || res.status === 405 || (res.status >= 300 && res.status < 400);
+  } catch {
+    return false;
+  }
+}
+
 export class EnrichmentService {
   /**
    * Enriquece una empresa usando todos los proveedores disponibles.
@@ -57,6 +81,20 @@ export class EnrichmentService {
   static async enrichCompany(companyName: string): Promise<EnrichmentData> {
     const merged: Partial<EnrichmentData> = {};
     const usedProviders: string[] = [];
+
+    // ── Devuelve el resultado final verificando el website ───────────────────
+    async function finalize(): Promise<EnrichmentData> {
+      if (merged.website) {
+        const alive = await verifyUrl(merged.website);
+        if (!alive) {
+          console.warn(`[Enrichment] Website no responde (posible alucinación), descartado: ${merged.website}`);
+          delete merged.website;
+        } else {
+          console.info(`[Enrichment] Website verificado: ${merged.website}`);
+        }
+      }
+      return { ...merged, _provider: usedProviders.join('+') };
+    }
 
     // ── Helper: llama a un proveedor, mergea campos faltantes ────────────────
     async function tryProvider(
@@ -80,18 +118,14 @@ export class EnrichmentService {
     // 1. Groq ─────────────────────────────────────────────────────────────────
     if (GroqService.isConfigured()) {
       await tryProvider('groq', () => GroqService.enrichCompany(companyName));
-      if (missing(merged).length === 0) {
-        return { ...merged, _provider: usedProviders.join('+') };
-      }
+      if (missing(merged).length === 0) return finalize();
       console.info(`[Enrichment] Groq dejó vacíos: ${missing(merged).join(', ')} — continuando…`);
     }
 
     // 2. Gemini ───────────────────────────────────────────────────────────────
     if (process.env.GEMINI_API_KEY) {
       await tryProvider('gemini', () => GeminiService.enrichCompany(companyName));
-      if (missing(merged).length === 0) {
-        return { ...merged, _provider: usedProviders.join('+') };
-      }
+      if (missing(merged).length === 0) return finalize();
       if (missing(merged).length < FIELDS.length) {
         console.info(`[Enrichment] Gemini dejó vacíos: ${missing(merged).join(', ')} — continuando…`);
       }
@@ -100,9 +134,7 @@ export class EnrichmentService {
     // 3. Ollama (local) ───────────────────────────────────────────────────────
     if (await OllamaService.isAvailable()) {
       await tryProvider('ollama', () => OllamaService.enrichCompany(companyName));
-      if (missing(merged).length === 0) {
-        return { ...merged, _provider: usedProviders.join('+') };
-      }
+      if (missing(merged).length === 0) return finalize();
       if (missing(merged).length < FIELDS.length) {
         console.info(`[Enrichment] Ollama dejó vacíos: ${missing(merged).join(', ')} — continuando…`);
       }
@@ -125,7 +157,7 @@ export class EnrichmentService {
       console.info(`[Enrichment] Campos que quedaron vacíos para "${companyName}": ${stillMissing.join(', ')}`);
     }
 
-    return { ...merged, _provider: usedProviders.join('+') };
+    return finalize();
   }
 
   /**

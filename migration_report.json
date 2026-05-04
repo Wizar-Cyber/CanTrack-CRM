@@ -1,0 +1,100 @@
+{
+  "timestamp": "2026-05-04T14:50:15.866045",
+  "reset_tables": true,
+  "datasets": [
+    {
+      "dataset": "Ontario",
+      "table": "ontario_companies",
+      "file": "C:\\Users\\ripre\\Downloads\\BASE DE DATOS PROVINCIA DE ONTARIO sheets.xlsx",
+      "rows": 8035,
+      "inserted_attempted": 8032,
+      "duplicates": 3,
+      "errors": 0,
+      "active_total_after": 8032,
+      "duplicates_sample": [
+        {
+          "row": 2480,
+          "nombre": "Dixie Orchards",
+          "reason": "Ya existe en la tabla o en el lote"
+        },
+        {
+          "row": 3097,
+          "nombre": "Foster Family Farm",
+          "reason": "Ya existe en la tabla o en el lote"
+        },
+        {
+          "row": 7066,
+          "nombre": "Symposium Cafe",
+          "reason": "Ya existe en la tabla o en el lote"
+        }
+      ],
+      "errors_sample": []
+    },
+    {
+      "dataset": "Quebec",
+      "table": "quebec_companies",
+      "file": "C:\\Users\\ripre\\Downloads\\Base De Datos Provincia De Quebec sheets.xlsx",
+      "rows": 15357,
+      "inserted_attempted": 15336,
+      "duplicates": 21,
+      "errors": 0,
+      "active_total_after": 15336,
+      "duplicates_sample": [
+        {
+          "row": 499,
+          "nombre": "Canards Du Lac Brome",
+          "reason": "Ya existe en la tabla o en el lote"
+        },
+        {
+          "row": 1058,
+          "nombre": "Ferme Bourgeois",
+          "reason": "Ya existe en la tabla o en el lote"
+        },
+        {
+          "row": 1078,
+          "nombre": "Ferme Ciel Et Racines",
+          "reason": "Ya existe en la tabla o en el lote"
+        },
+        {
+          "row": 1267,
+          "nombre": "Ferme Parisbel",
+          "reason": "Ya existe en la tabla o en el lote"
+        },
+        {
+          "row": 2729,
+          "nombre": "Sintra Inc.",
+          "reason": "Ya existe en la tabla o en el lote"
+        },
+        {
+          "row": 3014,
+          "nombre": "Vignoble De La Bauge",
+          "reason": "Ya existe en la tabla o en el lote"
+        },
+        {
+          "row": 3021,
+          "nombre": "Vignoble L'Ardennais",
+          "reason": "Ya existe en la tabla o en el lote"
+        },
+        {
+          "row": 3170,
+          "nombre": "Aaa Canada",
+          "reason": "Ya existe en la tabla o en el lote"
+        },
+        {
+          "row": 3623,
+          "nombre": "Au Vieux Duluth",
+          "reason": "Ya existe en la tabla o en el lote"
+        },
+        {
+          "row": 5891,
+          "nombre": "Domaine Du Breuil",
+          "reason": "Ya existe en la tabla o en el lote"
+        }
+      ],
+      "errors_sample": []
+    }
+  ],
+  "total_inserted_attempted": 23368,
+  "total_duplicates": 24,
+  "total_errors": 0
+}

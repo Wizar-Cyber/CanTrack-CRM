@@ -27,8 +27,7 @@ export const Setup: React.FC = () => {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Configuration error.');
-      // Store token and redirect to login
-      localStorage.setItem('cantrack_token', data.token);
+      // Cookie is set by the server via Set-Cookie; just redirect.
       navigate('/');
       window.location.reload();
     } catch (err: any) {

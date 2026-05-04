@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import type { Pool } from 'pg';
 
 export interface JwtPayload {
   id: string;
@@ -13,30 +14,67 @@ export interface AuthRequest extends Request {
   user?: JwtPayload;
 }
 
-export function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
-  const JWT_SECRET = process.env.JWT_SECRET;
-  if (!JWT_SECRET) {
-    return res.status(500).json({ error: 'Server misconfiguration: JWT_SECRET not set.' });
-  }
+/**
+ * Returns a requireAuth middleware bound to the given pool so it can verify
+ * that the user is still active in the database on every request.
+ */
+export function createRequireAuth(pool: Pool) {
+  return async function requireAuth(
+    req: AuthRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    const JWT_SECRET = process.env.JWT_SECRET;
+    if (!JWT_SECRET) {
+      res.status(500).json({ error: 'Server misconfiguration: JWT_SECRET not set.' });
+      return;
+    }
 
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Authentication required.' });
-  }
+    // Support both httpOnly cookie and Bearer header (cookie takes precedence)
+    const tokenFromCookie = (req.cookies as Record<string, string>)?.auth_token;
+    const authHeader = req.headers.authorization;
+    const tokenFromHeader =
+      authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
 
-  const token = authHeader.substring(7);
-  try {
-    req.user = jwt.verify(token, JWT_SECRET) as JwtPayload;
+    const token = tokenFromCookie ?? tokenFromHeader;
+    if (!token) {
+      res.status(401).json({ error: 'Authentication required.' });
+      return;
+    }
+
+    let payload: JwtPayload;
+    try {
+      payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
+    } catch {
+      res.status(401).json({ error: 'Token inválido o expirado.' });
+      return;
+    }
+
+    // Verify the user is still active in the database
+    try {
+      const result = await pool.query(
+        'SELECT is_active FROM users WHERE id = $1',
+        [payload.id],
+      );
+      if (!result.rows[0]?.is_active) {
+        res.status(401).json({ error: 'Cuenta desactivada.' });
+        return;
+      }
+    } catch {
+      res.status(500).json({ error: 'Error verificando sesión.' });
+      return;
+    }
+
+    req.user = payload;
     next();
-  } catch {
-    return res.status(401).json({ error: 'Token inválido o expirado.' });
-  }
+  };
 }
 
 export function requireRole(...roles: string[]) {
-  return (req: AuthRequest, res: Response, next: NextFunction) => {
+  return (req: AuthRequest, res: Response, next: NextFunction): void => {
     if (!req.user || !roles.includes(req.user.role)) {
-      return res.status(403).json({ error: 'Permisos insuficientes.' });
+      res.status(403).json({ error: 'Permisos insuficientes.' });
+      return;
     }
     next();
   };

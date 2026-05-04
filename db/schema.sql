@@ -174,6 +174,34 @@ CREATE TABLE IF NOT EXISTS scraped_jobs (
     fecha_creacion TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
 );
 
+-- ── Tabla: Ontario Companies (Datos importados de Excel)
+-- Contiene base de datos de empresas de Ontario, Canadá
+CREATE TABLE IF NOT EXISTS ontario_companies (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    nombre VARCHAR(255) NOT NULL,
+    telefono VARCHAR(20),
+    tipo VARCHAR(100),
+    correo VARCHAR(255),
+    direccion TEXT,
+    provincia VARCHAR(100),
+    region VARCHAR(100),
+    ciudad VARCHAR(100),
+    pueblo VARCHAR(100),
+    work VARCHAR(100),
+    descripcion TEXT,
+    dominio_de_pagina VARCHAR(255),
+    lista_de_llamadas TEXT,
+    is_duplicate BOOLEAN DEFAULT FALSE,
+    status VARCHAR(50) DEFAULT 'pending',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Índice para buscar por nombre (case-insensitive, para validar duplicados)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ontario_companies_nombre_unique 
+    ON ontario_companies (LOWER(TRIM(nombre))) 
+    WHERE is_duplicate = FALSE;
+
 -- 3. Insertar las empresas (UPSERT para evitar duplicados)
 INSERT INTO companies (name, slug, enrichment_status) VALUES
 ('Quala', 'quala', 'pending'),
