@@ -3,7 +3,7 @@ import { apiJson } from '../../services/apiClient';
 import {
   Mail, Send, Eye, Settings, Clock, CheckCircle, XCircle,
   AlertTriangle, RefreshCw, ChevronDown, ChevronUp, Building2,
-  Calendar, BarChart3, Loader2, Filter, Phone, MapPin,
+  Calendar, BarChart3, Loader2, Filter, Phone, MapPin, Globe,
 } from 'lucide-react';
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
@@ -97,7 +97,7 @@ async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
 // ── Componente principal ──────────────────────────────────────────────────────
 
 export default function CampaignModule() {
-  const [tab, setTab] = useState<'companies' | 'preview' | 'history' | 'config'>('companies');
+  const [tab, setTab] = useState<'companies' | 'preview' | 'history' | 'config' | 'mdirector'>('mdirector');
 
   return (
     <div className="flex flex-col h-full bg-gray-50">
@@ -108,18 +108,19 @@ export default function CampaignModule() {
             <Mail className="w-5 h-5 text-blue-600" />
           </div>
           <div>
-            <h1 className="text-xl font-semibold text-gray-900">Campañas de Email</h1>
-            <p className="text-sm text-gray-500">Empresas del Sheet → MDirector</p>
+            <h1 className="text-xl font-semibold text-gray-900">Email Campaigns</h1>
+            <p className="text-sm text-gray-500">Ontario &amp; Quebec → MDirector</p>
           </div>
         </div>
 
         {/* Tabs */}
-        <nav className="flex gap-1">
+        <nav className="flex gap-1 flex-wrap">
           {([
-            { key: 'companies', label: 'Empresas', icon: Building2 },
-            { key: 'preview',   label: 'Vista previa',  icon: Eye },
-            { key: 'history',   label: 'Historial', icon: Clock },
-            { key: 'config',    label: 'Configuración', icon: Settings },
+            { key: 'mdirector', label: 'Ontario / Quebec', icon: Globe },
+            { key: 'companies', label: 'Sheet Companies',  icon: Building2 },
+            { key: 'preview',   label: 'Preview',          icon: Eye },
+            { key: 'history',   label: 'History',          icon: Clock },
+            { key: 'config',    label: 'Settings',         icon: Settings },
           ] as const).map(({ key, label, icon: Icon }) => (
             <button
               key={key}
@@ -139,6 +140,7 @@ export default function CampaignModule() {
 
       {/* Content */}
       <div className="flex-1 overflow-auto p-6">
+        {tab === 'mdirector' && <MDirectorTab />}
         {tab === 'companies' && <CompaniesTab />}
         {tab === 'preview'   && <PreviewTab onGoHistory={() => setTab('history')} />}
         {tab === 'history'   && <HistoryTab />}
@@ -836,6 +838,282 @@ function TemplateMapEditor({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ── MDirector Tab (Ontario / Quebec bulk campaigns) ───────────────────────────
+
+interface MDPreviewRow {
+  id: string;
+  nombre: string;
+  email: string;
+  work: string;
+  segmentId: string;
+  listId: string;
+  ciudad: string | null;
+  provincia: string | null;
+  lastCampaignAt: string | null;
+}
+
+interface MDPreviewResult {
+  toSend: MDPreviewRow[];
+  skipped: Array<{ name: string; reason: string }>;
+  byWork: Record<string, number>;
+  total: number;
+  listId: string;
+}
+
+interface MDSendResult {
+  totalSubscribed: number;
+  totalCampaigns: number;
+  results: Array<{ work: string; segmentId: string; campaignId: string; subscribed: number; errors: string[] }>;
+  noSegment: string[];
+}
+
+function MDirectorTab() {
+  const [source, setSource]           = useState<'ontario' | 'quebec'>('ontario');
+  const [preview, setPreview]         = useState<MDPreviewResult | null>(null);
+  const [loadingPrev, setLdPrev]      = useState(false);
+  const [sending, setSending]         = useState(false);
+  const [sendResult, setSendResult]   = useState<MDSendResult | null>(null);
+  const [error, setError]             = useState('');
+  const [subject, setSubject]         = useState('');
+  const [scheduleDate, setSched]      = useState('');
+  const [showSkipped, setShowSkipped] = useState(false);
+
+  const loadPreview = useCallback(async () => {
+    setLdPrev(true); setError(''); setPreview(null); setSendResult(null);
+    try {
+      const d = await apiFetch<MDPreviewResult>(`/campaign/preview/${source}`);
+      setPreview(d);
+    } catch (e: any) { setError(e.message); }
+    finally { setLdPrev(false); }
+  }, [source]);
+
+  const sendCampaign = async () => {
+    if (!preview || preview.total === 0) return;
+    setSending(true); setError(''); setSendResult(null);
+    try {
+      const body: Record<string, string> = {};
+      if (subject)      body.subject      = subject;
+      if (scheduleDate) body.scheduleDate = scheduleDate.replace('T', ' ') + ':00';
+      const d = await apiFetch<MDSendResult>(`/campaign/send/${source}`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(body),
+      });
+      setSendResult(d);
+    } catch (e: any) { setError(e.message); }
+    finally { setSending(false); }
+  };
+
+  const byWork: [string, number][] = preview
+    ? (Object.entries(preview.byWork) as [string, number][]).sort((a, b) => b[1] - a[1])
+    : [];
+
+  return (
+    <div className="space-y-5 max-w-4xl">
+
+      {/* Source selector */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h2 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
+          <Globe className="w-4 h-4 text-blue-500" /> Target database
+        </h2>
+        <div className="flex gap-3 mb-4">
+          {(['ontario', 'quebec'] as const).map(s => (
+            <button
+              key={s}
+              onClick={() => { setSource(s); setPreview(null); setSendResult(null); }}
+              className={`px-5 py-2.5 rounded-lg font-medium text-sm transition-all ${
+                source === s
+                  ? 'bg-blue-600 text-white shadow'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+              }`}
+            >
+              {s === 'ontario' ? '🍁 Ontario' : '❄️ Quebec'}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-gray-400">
+          {source === 'ontario'
+            ? 'Ontario companies → French template · MDirector list 28'
+            : 'Quebec companies → English template · MDirector list 30'}
+        </p>
+
+        <div className="grid grid-cols-2 gap-3 mt-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Subject (optional — auto if blank)</label>
+            <input
+              type="text"
+              placeholder={source === 'ontario' ? 'Services de personnel — …' : 'Staffing services — …'}
+              value={subject}
+              onChange={e => setSubject(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Schedule date (optional — send immediately if blank)</label>
+            <input
+              type="datetime-local"
+              value={scheduleDate}
+              onChange={e => setSched(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
+            />
+          </div>
+        </div>
+
+        <div className="flex gap-3 mt-4">
+          <button
+            onClick={loadPreview}
+            disabled={loadingPrev}
+            className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium disabled:opacity-50 transition-colors"
+          >
+            {loadingPrev ? <Loader2 className="w-4 h-4 animate-spin" /> : <Eye className="w-4 h-4" />}
+            Preview
+          </button>
+          <button
+            onClick={sendCampaign}
+            disabled={sending || !preview || preview.total === 0}
+            className="flex items-center gap-2 px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 transition-colors"
+          >
+            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            {sending ? 'Sending…' : `Send ${preview ? preview.total : ''} campaigns`}
+          </button>
+        </div>
+      </div>
+
+      {/* Error */}
+      {error && (
+        <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-xl p-4 text-red-700 text-sm">
+          <XCircle className="w-4 h-4 shrink-0" /> {error}
+        </div>
+      )}
+
+      {/* Preview */}
+      {preview && !sendResult && (
+        <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <h2 className="font-semibold text-gray-800 flex items-center gap-2">
+              <BarChart3 className="w-4 h-4 text-blue-500" /> {preview.total} companies ready to receive campaigns
+            </h2>
+            <span className="text-xs text-gray-400">{preview.skipped.length} skipped</span>
+          </div>
+
+          {byWork.length > 0 && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {byWork.map(([work, count]) => (
+                <div key={work} className="flex items-center justify-between bg-blue-50 rounded-lg px-3 py-2">
+                  <span className="text-xs font-medium text-blue-800 truncate">{work}</span>
+                  <span className="text-xs text-blue-600 font-bold ml-2 shrink-0">{count}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="overflow-auto max-h-64 rounded-lg border border-gray-100">
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50 sticky top-0">
+                <tr>
+                  <th className="text-left px-3 py-2 font-medium text-gray-500">Company</th>
+                  <th className="text-left px-3 py-2 font-medium text-gray-500">Email</th>
+                  <th className="text-left px-3 py-2 font-medium text-gray-500">Work type</th>
+                  <th className="text-left px-3 py-2 font-medium text-gray-500">Seg.</th>
+                  <th className="text-left px-3 py-2 font-medium text-gray-500">Last campaign</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {preview.toSend.slice(0, 100).map(r => (
+                  <tr key={r.id} className="hover:bg-gray-50">
+                    <td className="px-3 py-1.5 font-medium text-gray-800 max-w-[170px] truncate">{r.nombre}</td>
+                    <td className="px-3 py-1.5 text-gray-500 max-w-[150px] truncate">{r.email}</td>
+                    <td className="px-3 py-1.5 text-gray-600 max-w-[120px] truncate">{r.work}</td>
+                    <td className="px-3 py-1.5 text-gray-400">{r.segmentId}</td>
+                    <td className="px-3 py-1.5 text-gray-400">{daysAgo(r.lastCampaignAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {preview.total > 100 && (
+              <p className="text-center text-xs text-gray-400 py-2">… and {preview.total - 100} more</p>
+            )}
+          </div>
+
+          {preview.skipped.length > 0 && (
+            <div>
+              <button
+                onClick={() => setShowSkipped(s => !s)}
+                className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600"
+              >
+                {showSkipped ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                {preview.skipped.length} companies skipped (no email)
+              </button>
+              {showSkipped && (
+                <ul className="mt-2 space-y-1 max-h-40 overflow-y-auto pl-1">
+                  {preview.skipped.map((s, i) => (
+                    <li key={i} className="flex items-start gap-2 text-xs text-gray-500">
+                      <AlertTriangle className="w-3 h-3 text-yellow-500 mt-0.5 shrink-0" />
+                      <span><strong>{s.name}</strong> — {s.reason}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Send result */}
+      {sendResult && (
+        <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
+          <div className="flex items-center gap-2">
+            <CheckCircle className="w-5 h-5 text-green-500" />
+            <h2 className="font-semibold text-gray-800">
+              Done — {sendResult.totalSubscribed} contacts subscribed · {sendResult.totalCampaigns} campaigns created
+            </h2>
+          </div>
+
+          {sendResult.noSegment.length > 0 && (
+            <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              ⚠️ No segment mapped for: {sendResult.noSegment.join(', ')}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {sendResult.results.map((r, i) => (
+              <div
+                key={i}
+                className={`rounded-lg border px-4 py-3 ${
+                  r.campaignId ? 'border-green-200 bg-green-50' : 'border-red-100 bg-red-50'
+                }`}
+              >
+                <div className="flex items-center justify-between text-sm">
+                  <span className="font-medium text-gray-800">{r.work}</span>
+                  <div className="flex gap-4 text-xs">
+                    <span className="text-green-700">{r.subscribed} subscribed</span>
+                    {r.campaignId
+                      ? <span className="text-blue-600 font-medium">Campaign #{r.campaignId}</span>
+                      : <span className="text-red-500">Campaign failed</span>}
+                  </div>
+                </div>
+                {r.errors.length > 0 && (
+                  <ul className="mt-1.5 text-xs text-red-600 space-y-0.5">
+                    {r.errors.slice(0, 5).map((e, j) => <li key={j}>• {e}</li>)}
+                    {r.errors.length > 5 && <li>… and {r.errors.length - 5} more</li>}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
+
+          <button
+            onClick={() => { setPreview(null); setSendResult(null); }}
+            className="text-sm text-blue-600 hover:underline"
+          >
+            ← Send another campaign
+          </button>
+        </div>
+      )}
     </div>
   );
 }

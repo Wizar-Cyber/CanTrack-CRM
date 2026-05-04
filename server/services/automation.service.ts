@@ -193,6 +193,7 @@ export class AutomationService {
 
       // Intentar cargar stealth plugin
       try {
+        // @ts-ignore — no type declarations for this package
         const StealthPlugin = await import('puppeteer-extra-plugin-stealth');
         (chromium as any).use(StealthPlugin.default());
         addLog('Plugin anti-detección activo.', 'info');

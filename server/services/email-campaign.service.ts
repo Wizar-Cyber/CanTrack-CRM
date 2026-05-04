@@ -1,19 +1,34 @@
 /**
  * EmailCampaignService
  *
- * Orquesta el flujo completo de campañas de email:
- *   1. Lee empresas desde Google Sheets (Empresa | DIRECCION | WORK)
- *   2. Cruza con la DB para obtener emails y fechas de último envío
- *   3. Filtra: nuevas (< newCompanyDays) vs antiguas (> resendIntervalDays desde último envío)
- *   4. Sube la lista a MDirector con columnas: NOMBRE | CORREO ELECTRONICO | CATEGORIA
- *   5. Lanza la campaña vinculada a la plantilla configurada para ese WORK
- *   6. Registra cada envío en email_campaign_log
+ * Orchestrates the full email campaign flow for Ontario and Quebec companies:
+ *   1. Load companies from ontario_companies / quebec_companies DB table
+ *   2. Group by `work` field
+ *   3. Map each work label → MDirector list + segment
+ *   4. Filter out recently-sent companies (check email_campaign_log)
+ *   5. Preview: return grouped companies with segment mapping
+ *   6. Send:
+ *      a. subscribeContact per company
+ *      b. Create one campaign per work-type group
+ *      c. Log results to email_campaign_log
  */
 
 import pg from 'pg';
 import { GoogleSheetsService, ActonValeRow } from './google-sheets.service.js';
+import { MDirectorService } from './mdirector.service.js';
+import {
+  QUEBEC_LIST_ID,
+  ONTARIO_LIST_ID,
+  QUEBEC_SEGMENTS,
+  ONTARIO_SEGMENTS,
+} from '../data/mdirectorSegments.js';
 
-// ── Las 52 categorías de servicio (nombre exacto del campo WORK en el Sheet) ──
+// ── Province source ───────────────────────────────────────────────────────────
+
+export type ProvinceSource = 'quebec' | 'ontario';
+
+// ── Service labels (for legacy Google Sheets flow) ────────────────────────────
+
 export const SERVICE_LABELS: string[] = [
   'EMPACADORES',
   'OPERADORES DE MONTEACARGA',
@@ -69,16 +84,21 @@ export const SERVICE_LABELS: string[] = [
   'CARPINTERO',
 ];
 
-// ── Tipos ─────────────────────────────────────────────────────────────────────
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface CampaignConfig {
-  newCompanyDays:      number;   // días para considerar empresa "nueva"  (default 15)
-  resendIntervalDays:  number;   // días mínimos entre reenvíos           (default 90)
+  newCompanyDays:      number;
+  resendIntervalDays:  number;
   mdirectorApiKey:     string;
   mdirectorApiSecret:  string;
   mdirectorFromEmail:  string;
   mdirectorFromName:   string;
-  /** Mapa directo: WORK_LABEL (en mayúsculas) → mdirector_template_id */
+  mdirectorUsername:   string;
+  mdirectorPassword:   string;
+  mdirectorReplyTo:    string;
+  quebecListId:        string;
+  ontarioListId:       string;
+  /** Legacy map: WORK_LABEL → mdirector_template_id */
   serviceTemplateMap:  Record<string, string>;
 }
 
@@ -86,21 +106,27 @@ export interface CampaignContact {
   companyId:      string | null;
   companyName:    string;
   email:          string;
-  work:           string;       // valor WORK del sheet, en mayúsculas
-  templateId:     string | null;
+  work:           string;
+  listId:         string;
+  segmentId:      string | null;
   direccion:      string;
   isNew:          boolean;
   lastSentAt:     Date | null;
-  addedToSheetAt: Date | null;
   tipo:           string | null;
+  source:         ProvinceSource;
+  language:       'fr' | 'en';
+  // Legacy fields kept for backward compat
+  templateId?:    string | null;
+  addedToSheetAt?: Date | null;
 }
 
 export interface CampaignPreview {
-  toSend:   CampaignContact[];
-  skipped:  Array<{ name: string; reason: string }>;
-  byWork:   Record<string, number>;
-  totalNew: number;
-  totalOld: number;
+  toSend:         CampaignContact[];
+  skipped:        Array<{ name: string; reason: string }>;
+  byWork:         Record<string, number>;
+  totalNew:       number;
+  totalOld:       number;
+  source:         ProvinceSource;
 }
 
 export interface CampaignSendResult {
@@ -109,6 +135,8 @@ export interface CampaignSendResult {
   skipped: number;
   details: Array<{ name: string; email: string; status: 'sent' | 'failed' | 'skipped'; error?: string }>;
 }
+
+// ── Service class ─────────────────────────────────────────────────────────────
 
 export class EmailCampaignService {
 
@@ -119,6 +147,8 @@ export class EmailCampaignService {
       SELECT new_company_days, resend_interval_days,
              mdirector_api_key, mdirector_api_secret,
              mdirector_from_email, mdirector_from_name,
+             mdirector_username, mdirector_password, mdirector_reply_to,
+             quebec_list_id, ontario_list_id,
              service_template_map
       FROM campaign_config LIMIT 1
     `);
@@ -130,7 +160,12 @@ export class EmailCampaignService {
       mdirectorApiSecret:  row.mdirector_api_secret || process.env.MDIRECTOR_API_SECRET || '',
       mdirectorFromEmail:  row.mdirector_from_email || process.env.MDIRECTOR_FROM_EMAIL || '',
       mdirectorFromName:   row.mdirector_from_name  || process.env.MDIRECTOR_FROM_NAME  || 'VSM Services',
-      serviceTemplateMap:  row.service_template_map ?? {},
+      mdirectorUsername:   row.mdirector_username   || process.env.MDIRECTOR_USERNAME   || '107843',
+      mdirectorPassword:   row.mdirector_password   || process.env.MDIRECTOR_PASSWORD   || '',
+      mdirectorReplyTo:    row.mdirector_reply_to   || process.env.MDIRECTOR_REPLY_TO   || '',
+      quebecListId:        row.quebec_list_id        || QUEBEC_LIST_ID,
+      ontarioListId:       row.ontario_list_id       || ONTARIO_LIST_ID,
+      serviceTemplateMap:  row.service_template_map  ?? {},
     };
   }
 
@@ -138,24 +173,148 @@ export class EmailCampaignService {
     const fields: string[] = [];
     const values: any[]   = [];
     let i = 1;
-    if (cfg.newCompanyDays     !== undefined) { fields.push(`new_company_days=$${i++}`);      values.push(cfg.newCompanyDays); }
-    if (cfg.resendIntervalDays !== undefined) { fields.push(`resend_interval_days=$${i++}`);  values.push(cfg.resendIntervalDays); }
-    if (cfg.mdirectorApiKey    !== undefined) { fields.push(`mdirector_api_key=$${i++}`);     values.push(cfg.mdirectorApiKey); }
-    if (cfg.mdirectorApiSecret !== undefined) { fields.push(`mdirector_api_secret=$${i++}`);  values.push(cfg.mdirectorApiSecret); }
-    if (cfg.mdirectorFromEmail !== undefined) { fields.push(`mdirector_from_email=$${i++}`);  values.push(cfg.mdirectorFromEmail); }
-    if (cfg.mdirectorFromName  !== undefined) { fields.push(`mdirector_from_name=$${i++}`);   values.push(cfg.mdirectorFromName); }
-    if (cfg.serviceTemplateMap !== undefined) { fields.push(`service_template_map=$${i++}`);  values.push(JSON.stringify(cfg.serviceTemplateMap)); }
+    if (cfg.newCompanyDays     !== undefined) { fields.push(`new_company_days=$${i++}`);       values.push(cfg.newCompanyDays); }
+    if (cfg.resendIntervalDays !== undefined) { fields.push(`resend_interval_days=$${i++}`);   values.push(cfg.resendIntervalDays); }
+    if (cfg.mdirectorApiKey    !== undefined) { fields.push(`mdirector_api_key=$${i++}`);      values.push(cfg.mdirectorApiKey); }
+    if (cfg.mdirectorApiSecret !== undefined) { fields.push(`mdirector_api_secret=$${i++}`);   values.push(cfg.mdirectorApiSecret); }
+    if (cfg.mdirectorFromEmail !== undefined) { fields.push(`mdirector_from_email=$${i++}`);   values.push(cfg.mdirectorFromEmail); }
+    if (cfg.mdirectorFromName  !== undefined) { fields.push(`mdirector_from_name=$${i++}`);    values.push(cfg.mdirectorFromName); }
+    if (cfg.mdirectorUsername  !== undefined) { fields.push(`mdirector_username=$${i++}`);     values.push(cfg.mdirectorUsername); }
+    if (cfg.mdirectorPassword  !== undefined) { fields.push(`mdirector_password=$${i++}`);     values.push(cfg.mdirectorPassword); }
+    if (cfg.mdirectorReplyTo   !== undefined) { fields.push(`mdirector_reply_to=$${i++}`);     values.push(cfg.mdirectorReplyTo); }
+    if (cfg.quebecListId       !== undefined) { fields.push(`quebec_list_id=$${i++}`);         values.push(cfg.quebecListId); }
+    if (cfg.ontarioListId      !== undefined) { fields.push(`ontario_list_id=$${i++}`);        values.push(cfg.ontarioListId); }
+    if (cfg.serviceTemplateMap !== undefined) { fields.push(`service_template_map=$${i++}`);   values.push(JSON.stringify(cfg.serviceTemplateMap)); }
     if (fields.length === 0) return;
     fields.push(`updated_at=NOW()`);
     await pool.query(
       `UPDATE campaign_config SET ${fields.join(', ')} WHERE id='00000000-0000-0000-0000-000000000001'`,
       values,
     );
+    // Clear token cache if credentials changed
+    MDirectorService.clearToken();
   }
 
-  // ── Preview ───────────────────────────────────────────────────────────────
+  // ── Load from DB ──────────────────────────────────────────────────────────
 
-  static async buildPreview(pool: pg.Pool): Promise<CampaignPreview> {
+  /**
+   * Load companies from ontario_companies or quebec_companies,
+   * map work → listId + segmentId, check last campaign log.
+   */
+  static async loadFromDb(pool: pg.Pool, source: ProvinceSource): Promise<CampaignContact[]> {
+    const table    = source === 'ontario' ? 'ontario_companies' : 'quebec_companies';
+    const listId   = source === 'ontario' ? ONTARIO_LIST_ID      : QUEBEC_LIST_ID;
+    const segments = source === 'ontario' ? ONTARIO_SEGMENTS      : QUEBEC_SEGMENTS;
+    const language: 'fr' | 'en' = source === 'ontario' ? 'fr' : 'en';
+
+    // Load companies with email
+    const companiesRes = await pool.query<{
+      id: string; nombre: string; correo: string; work: string | null;
+      tipo: string | null; direccion: string | null; created_at: Date;
+    }>(
+      `SELECT id, nombre, correo, work, tipo, direccion, created_at
+       FROM ${table}
+       WHERE correo IS NOT NULL AND correo != '' AND is_duplicate = FALSE
+       ORDER BY created_at DESC`,
+    );
+
+    if (companiesRes.rows.length === 0) return [];
+
+    // Load last sent dates from campaign log
+    const emailList = companiesRes.rows.map(r => r.correo);
+    const logRes = await pool.query<{ company_email: string; max_sent: Date }>(
+      `SELECT company_email, MAX(sent_at) AS max_sent
+       FROM email_campaign_log
+       WHERE company_email = ANY($1::text[])
+       GROUP BY company_email`,
+      [emailList],
+    );
+    const lastSentMap = new Map<string, Date>();
+    for (const row of logRes.rows) {
+      lastSentMap.set(row.company_email.toLowerCase(), new Date(row.max_sent));
+    }
+
+    return companiesRes.rows.map(row => {
+      const work      = (row.work || '').toUpperCase().trim();
+      const segmentId = segments[work] ?? null;
+      const lastSentAt = lastSentMap.get(row.correo.toLowerCase()) ?? null;
+
+      return {
+        companyId:  row.id,
+        companyName: row.nombre,
+        email:      row.correo,
+        work,
+        listId,
+        segmentId,
+        direccion:  row.direccion || '',
+        isNew:      false, // will be computed in buildPreview
+        lastSentAt,
+        tipo:       row.tipo,
+        source,
+        language,
+        addedToSheetAt: row.created_at,
+      } as CampaignContact;
+    });
+  }
+
+  // ── Preview (DB-based) ────────────────────────────────────────────────────
+
+  static async buildPreview(pool: pg.Pool, source: ProvinceSource): Promise<CampaignPreview> {
+    const config   = await this.getConfig(pool);
+    const contacts = await this.loadFromDb(pool, source);
+    const now      = new Date();
+
+    const toSend:  CampaignContact[]                      = [];
+    const skipped: Array<{ name: string; reason: string }> = [];
+    const byWork:  Record<string, number>                  = {};
+
+    for (const c of contacts) {
+      if (!c.email || !c.email.includes('@')) {
+        skipped.push({ name: c.companyName, reason: 'No valid email' });
+        continue;
+      }
+
+      if (!c.segmentId) {
+        skipped.push({ name: c.companyName, reason: `No segment mapping for "${c.work}"` });
+        continue;
+      }
+
+      // Compute isNew based on created_at vs newCompanyDays
+      const addedAt = (c as any).addedToSheetAt as Date | null;
+      const daysSinceAdded = addedAt
+        ? (now.getTime() - addedAt.getTime()) / 86_400_000
+        : 9999;
+      const isNew = daysSinceAdded <= config.newCompanyDays;
+
+      // Skip if not new and recently sent
+      if (!isNew && c.lastSentAt) {
+        const daysSinceSent = (now.getTime() - c.lastSentAt.getTime()) / 86_400_000;
+        if (daysSinceSent < config.resendIntervalDays) {
+          skipped.push({
+            name: c.companyName,
+            reason: `Recent send (${Math.round(daysSinceSent)}d ago, interval ${config.resendIntervalDays}d)`,
+          });
+          continue;
+        }
+      }
+
+      toSend.push({ ...c, isNew });
+      byWork[c.work] = (byWork[c.work] ?? 0) + 1;
+    }
+
+    return {
+      toSend,
+      skipped,
+      byWork,
+      totalNew: toSend.filter(c => c.isNew).length,
+      totalOld: toSend.filter(c => !c.isNew).length,
+      source,
+    };
+  }
+
+  // ── Legacy Google Sheets preview ──────────────────────────────────────────
+
+  static async buildPreviewFromSheet(pool: pg.Pool): Promise<any> {
     await GoogleSheetsService.init();
     const config    = await this.getConfig(pool);
     const sheetRows = await GoogleSheetsService.readRows();
@@ -173,9 +332,8 @@ export class EmailCampaignService {
     for (const row of sheetRows) {
       const db    = dbMap.get(this.normalizeKey(row.empresa));
 
-      // Determinar tipo: prioridad DB sobre Sheet
       const sheetTipoRaw = (row.tipo || '').toLowerCase().trim()
-        .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        .normalize('NFD').replace(/[̀-ͯ]/g, '');
       let tipoFromSheet: string | null = null;
       if (sheetTipoRaw.includes('rojo') || sheetTipoRaw.includes('red') || sheetTipoRaw === 'r') tipoFromSheet = 'rojo';
       else if (sheetTipoRaw.includes('verde') || sheetTipoRaw === 'v') tipoFromSheet = 'verde';
@@ -183,16 +341,14 @@ export class EmailCampaignService {
       else if (sheetTipoRaw.includes('morado') || sheetTipoRaw.includes('lila') || sheetTipoRaw === 'm') tipoFromSheet = 'morado';
       const tipo = db?.tipo ?? tipoFromSheet;
 
-      // Excluir automáticamente empresas rojas (cerradas / no existen)
       if (tipo === 'rojo') {
-        skipped.push({ name: row.empresa, reason: '🔴 Empresa cerrada o no existe (rojo)' });
+        skipped.push({ name: row.empresa, reason: 'Empresa cerrada (rojo)' });
         continue;
       }
 
       const email = db?.contact_email || row.correo || '';
-
       if (!email || !email.includes('@')) {
-        skipped.push({ name: row.empresa, reason: 'Sin email' });
+        skipped.push({ name: row.empresa, reason: 'No email' });
         continue;
       }
 
@@ -200,25 +356,19 @@ export class EmailCampaignService {
       const templateId = config.serviceTemplateMap[work] ?? null;
 
       if (!templateId) {
-        skipped.push({ name: row.empresa, reason: `Sin plantilla MDirector para "${work}"` });
+        skipped.push({ name: row.empresa, reason: `No MDirector template for "${work}"` });
         continue;
       }
 
-      const addedAt    = db?.sheets_exported_at     ? new Date(db.sheets_exported_at)     : null;
-      const lastSentAt = db?.last_campaign_sent_at  ? new Date(db.last_campaign_sent_at)  : null;
-
-      const daysSinceAdded = addedAt
-        ? (now.getTime() - addedAt.getTime()) / 86_400_000
-        : 9999;
+      const addedAt    = db?.sheets_exported_at    ? new Date(db.sheets_exported_at)    : null;
+      const lastSentAt = db?.last_campaign_sent_at ? new Date(db.last_campaign_sent_at) : null;
+      const daysSinceAdded = addedAt ? (now.getTime() - addedAt.getTime()) / 86_400_000 : 9999;
       const isNew = daysSinceAdded <= config.newCompanyDays;
 
       if (!isNew && lastSentAt) {
         const daysSinceSent = (now.getTime() - lastSentAt.getTime()) / 86_400_000;
         if (daysSinceSent < config.resendIntervalDays) {
-          skipped.push({
-            name: row.empresa,
-            reason: `Envío reciente (hace ${Math.round(daysSinceSent)}d, intervalo ${config.resendIntervalDays}d)`,
-          });
+          skipped.push({ name: row.empresa, reason: `Recent send (${Math.round(daysSinceSent)}d)` });
           continue;
         }
       }
@@ -228,28 +378,152 @@ export class EmailCampaignService {
         companyName:    row.empresa,
         email,
         work,
+        listId:         QUEBEC_LIST_ID,
+        segmentId:      QUEBEC_SEGMENTS[work] ?? null,
         templateId,
         direccion:      row.direccion,
         isNew,
         lastSentAt,
         addedToSheetAt: addedAt,
         tipo,
+        source:         'quebec',
+        language:       'en',
       };
 
       toSend.push(contact);
       byWork[work] = (byWork[work] ?? 0) + 1;
     }
 
-    return {
-      toSend,
-      skipped,
-      byWork,
-      totalNew: toSend.filter(c => c.isNew).length,
-      totalOld: toSend.filter(c => !c.isNew).length,
-    };
+    return { toSend, skipped, byWork, totalNew: toSend.filter(c => c.isNew).length, totalOld: toSend.filter(c => !c.isNew).length };
   }
 
-  // ── Send ──────────────────────────────────────────────────────────────────
+  // ── Send (DB-based) ───────────────────────────────────────────────────────
+
+  static async sendCampaignFromDb(
+    pool:         pg.Pool,
+    source:       ProvinceSource,
+    opts: {
+      fromEmail?:          string;
+      fromName?:           string;
+      subject:             string;
+      scheduleDate?:       string;
+      workFilter?:         string;
+      templateServiceId?:  string;
+    },
+    sentByUserId: string,
+  ): Promise<CampaignSendResult> {
+    const config  = await this.getConfig(pool);
+    const preview = await this.buildPreview(pool, source);
+
+    let contacts = preview.toSend;
+    if (opts.workFilter) {
+      contacts = contacts.filter(c => c.work === opts.workFilter.toUpperCase());
+    }
+
+    if (contacts.length === 0) {
+      return { sent: 0, failed: 0, skipped: 0, details: [] };
+    }
+
+    // Sync env vars from DB config so MDirectorService picks them up
+    if (config.mdirectorUsername) process.env.MDIRECTOR_USERNAME = config.mdirectorUsername;
+    if (config.mdirectorPassword) process.env.MDIRECTOR_PASSWORD = config.mdirectorPassword;
+    if (config.mdirectorFromEmail) process.env.MDIRECTOR_FROM_EMAIL = config.mdirectorFromEmail;
+    if (config.mdirectorFromName)  process.env.MDIRECTOR_FROM_NAME  = config.mdirectorFromName;
+    if (config.mdirectorReplyTo)   process.env.MDIRECTOR_REPLY_TO   = config.mdirectorReplyTo;
+    MDirectorService.clearToken();
+
+    const fromEmail = opts.fromEmail || config.mdirectorFromEmail || MDirectorService.fromEmail;
+    const fromName  = opts.fromName  || config.mdirectorFromName  || MDirectorService.fromName;
+
+    const result: CampaignSendResult = { sent: 0, failed: 0, skipped: 0, details: [] };
+
+    // Group by work so we create one campaign per work-type
+    const groups = new Map<string, CampaignContact[]>();
+    for (const c of contacts) {
+      if (!c.segmentId) {
+        result.skipped++;
+        result.details.push({ name: c.companyName, email: c.email, status: 'skipped', error: 'No segment mapping' });
+        continue;
+      }
+      const arr = groups.get(c.work) ?? [];
+      arr.push(c);
+      groups.set(c.work, arr);
+    }
+
+    const dateStr = new Date().toISOString().slice(0, 10);
+
+    for (const [work, batch] of groups) {
+      // 1. Subscribe all contacts in this group
+      const subscribeErrors: string[] = [];
+      for (const contact of batch) {
+        try {
+          await MDirectorService.subscribeContact(
+            contact.email,
+            contact.companyName,
+            contact.listId,
+            contact.segmentId!,
+          );
+        } catch (err: any) {
+          console.error(`[Campaign] subscribeContact failed for ${contact.email}:`, err.message);
+          subscribeErrors.push(`${contact.email}: ${err.message}`);
+        }
+      }
+
+      // 2. Load HTML template from DB if templateServiceId provided, else use default
+      let html = '<p>VSM Services</p>';
+      if (opts.templateServiceId) {
+        try {
+          const tmplRes = await pool.query(
+            `SELECT content FROM service_templates WHERE id = $1`,
+            [opts.templateServiceId],
+          );
+          if (tmplRes.rows[0]?.content) html = tmplRes.rows[0].content;
+        } catch (e) { /* use default */ }
+      }
+
+      // 3. Create campaign for the segment
+      const campaignName = `CRM-${source.toUpperCase()}-${work.replace(/\s+/g, '_').slice(0, 30)}-${dateStr}`;
+      let campaignId = '';
+
+      try {
+        const res = await MDirectorService.sendCampaignToSegment({
+          campaignName,
+          listId:      batch[0].listId,
+          segmentId:   batch[0].segmentId!,
+          subject:     opts.subject,
+          html,
+          fromEmail,
+          fromName,
+          scheduleDate: opts.scheduleDate,
+        });
+        campaignId = res.campaignId;
+        console.log(`[Campaign] Created campaign "${campaignName}" → id=${campaignId}`);
+      } catch (err: any) {
+        console.error(`[Campaign] createCampaign failed for ${work}:`, err.message);
+        for (const contact of batch) {
+          result.failed++;
+          result.details.push({ name: contact.companyName, email: contact.email, status: 'failed', error: err.message });
+        }
+        continue;
+      }
+
+      // 4. Log and count
+      for (const contact of batch) {
+        try {
+          await this.logSent(pool, contact, campaignId, contact.listId, sentByUserId);
+          result.sent++;
+          result.details.push({ name: contact.companyName, email: contact.email, status: 'sent' });
+        } catch (err: any) {
+          result.failed++;
+          result.details.push({ name: contact.companyName, email: contact.email, status: 'failed', error: err.message });
+        }
+      }
+    }
+
+    return result;
+  }
+
+  // ── Legacy send (Google Sheets flow) ─────────────────────────────────────
 
   static async sendCampaign(
     pool:          pg.Pool,
@@ -257,9 +531,10 @@ export class EmailCampaignService {
     sentByUserId:  string,
   ): Promise<CampaignSendResult> {
     const config = await this.getConfig(pool);
-    if (!config.mdirectorApiKey) throw new Error('MDIRECTOR_API_KEY no configurado');
+    if (!config.mdirectorApiKey && !config.mdirectorPassword) {
+      throw new Error('MDirector not configured');
+    }
 
-    // Agrupar por templateId (cada plantilla = un tipo de servicio)
     const groups = new Map<string, CampaignContact[]>();
     for (const c of contacts) {
       if (!c.templateId) continue;
@@ -281,7 +556,7 @@ export class EmailCampaignService {
           result.details.push({ name: contact.companyName, email: contact.email, status: 'sent' });
         }
       } catch (err: any) {
-        console.error(`[Campaign] Error en template ${templateId}:`, err.message);
+        console.error(`[Campaign] Error template ${templateId}:`, err.message);
         for (const contact of batch) {
           result.failed++;
           result.details.push({ name: contact.companyName, email: contact.email, status: 'failed', error: err.message });
@@ -292,20 +567,14 @@ export class EmailCampaignService {
     return result;
   }
 
-  // ── MDirector API calls ───────────────────────────────────────────────────
+  // ── Legacy MDirector API calls (api_key based) ────────────────────────────
 
-  /**
-   * Crea una lista en MDirector y sube los suscriptores con el formato:
-   *   NOMBRE | CORREO ELECTRONICO | CATEGORIA
-   */
   private static async createMDirectorList(
     config:     CampaignConfig,
     templateId: string,
     contacts:   CampaignContact[],
   ): Promise<string> {
     const listName = `VSM_${contacts[0].work}_${new Date().toISOString().slice(0, 10)}`;
-
-    // 1. Crear la lista
     const createRes = await fetch('https://api.mdirector.com/api_list', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -319,37 +588,9 @@ export class EmailCampaignService {
     if (!createRes.ok || !createData.id) {
       throw new Error(`MDirector createList error: ${JSON.stringify(createData)}`);
     }
-    const listId = String(createData.id);
-    console.log(`[MDirector] Lista creada: "${listName}" → id=${listId}`);
-
-    // 2. Subir suscriptores — formato idéntico al Excel: NOMBRE | CORREO ELECTRONICO | CATEGORIA
-    const subscribers = contacts.map(c => ({
-      'NOMBRE':              c.companyName,
-      'CORREO ELECTRONICO':  c.email,
-      'CATEGORIA':           c.work,       // valor WORK = categoría de servicio
-    }));
-
-    const subRes = await fetch('https://api.mdirector.com/api_subscriber', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        api_key:     config.mdirectorApiKey,
-        api_secret:  config.mdirectorApiSecret,
-        list_id:     listId,
-        subscribers,
-      }),
-    });
-    const subData: any = await subRes.json().catch(() => ({}));
-    if (!subRes.ok) {
-      throw new Error(`MDirector addSubscribers error: ${JSON.stringify(subData)}`);
-    }
-    console.log(`[MDirector] ${subscribers.length} suscriptores subidos a lista ${listId}`);
-    return listId;
+    return String(createData.id);
   }
 
-  /**
-   * Lanza una campaña en MDirector usando la plantilla configurada + la lista recién creada.
-   */
   private static async launchMDirectorCampaign(
     config:     CampaignConfig,
     templateId: string,
@@ -357,7 +598,6 @@ export class EmailCampaignService {
     workLabel:  string,
   ): Promise<string> {
     const campaignName = `VSM_${workLabel}_${new Date().toISOString().slice(0, 16).replace('T', '_')}`;
-
     const res = await fetch('https://api.mdirector.com/api_campaign', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -375,20 +615,10 @@ export class EmailCampaignService {
     if (!res.ok || !data.id) {
       throw new Error(`MDirector createCampaign error: ${JSON.stringify(data)}`);
     }
-    const campaignId = String(data.id);
-
-    // Launch (algunos planes de MDirector requieren paso separado)
-    await fetch(`https://api.mdirector.com/api_campaign/${campaignId}/launch`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ api_key: config.mdirectorApiKey, api_secret: config.mdirectorApiSecret }),
-    }).catch(() => null);
-
-    console.log(`[MDirector] Campaña "${campaignName}" lanzada → id=${campaignId}`);
-    return campaignId;
+    return String(data.id);
   }
 
-  // ── Historial & DB ────────────────────────────────────────────────────────
+  // ── Log & History ─────────────────────────────────────────────────────────
 
   static async logSent(
     pool:          pg.Pool,
@@ -406,10 +636,12 @@ export class EmailCampaignService {
         contact.work, campaignId, listId, sentByUserId]);
 
     if (contact.companyId) {
+      // Update last_campaign_sent_at on the source table
+      const table = (contact.source === 'ontario') ? 'ontario_companies' : 'quebec_companies';
       await pool.query(
-        `UPDATE companies SET last_campaign_sent_at=NOW() WHERE id=$1`,
+        `UPDATE ${table} SET updated_at = NOW() WHERE id = $1`,
         [contact.companyId],
-      );
+      ).catch(() => null);
     }
   }
 

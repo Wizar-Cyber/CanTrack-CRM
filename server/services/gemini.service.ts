@@ -76,4 +76,15 @@ Return ONLY the JSON object. No markdown code fences, no extra text.`;
       return `Dear Hiring Manager,\n\nI am writing to express my interest in the ${job.title} position at ${job.companyName}. Best regards,\n${candidate.name}`;
     }
   }
+
+  /** Generic text generation — used by AI-improve endpoints */
+  static async generateText(prompt: string): Promise<string> {
+    const ai = this.getAI();
+    if (!ai) throw new Error('GEMINI_API_KEY not configured');
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+    });
+    return response.text || '';
+  }
 }

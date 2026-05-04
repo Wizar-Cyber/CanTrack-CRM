@@ -22,6 +22,10 @@ import {
 import { GoogleSheetsService } from "./server/services/google-sheets.service.js";
 import { MDirectorService } from "./server/services/mdirector.service.js";
 import { EmailCampaignService } from "./server/services/email-campaign.service.js";
+import {
+  ONTARIO_LIST_ID, QUEBEC_LIST_ID,
+  ONTARIO_SEGMENTS, QUEBEC_SEGMENTS,
+} from "./server/data/mdirectorSegments.js";
 import { spawn } from 'child_process';
 import pkg from 'pg';
 const { Pool } = pkg;
@@ -29,7 +33,8 @@ import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
-import { requireAuth, requireRole, AuthRequest } from './server/middleware/auth.middleware.js';
+import cookieParser from 'cookie-parser';
+import { createRequireAuth, requireRole, AuthRequest } from './server/middleware/auth.middleware.js';
 
 dotenv.config();
 
@@ -56,6 +61,7 @@ const pool = new Pool({
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
 });
+const requireAuth = createRequireAuth(pool);
 
 pool.connect((err) => {
   if (err) {
@@ -275,6 +281,12 @@ async function runMigrations() {
         ON quebec_companies (LOWER(TRIM(nombre))) WHERE is_duplicate = FALSE;
       CREATE INDEX IF NOT EXISTS idx_ontario_companies_created_at ON ontario_companies(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_quebec_companies_created_at  ON quebec_companies(created_at DESC);
+    `);
+    // Idempotent column additions (ALTER TABLE IF NOT EXISTS column)
+    for (const tbl of ['ontario_companies', 'quebec_companies']) {
+      await client.query(`ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS last_campaign_at TIMESTAMPTZ`);
+    }
+    await client.query(`
       CREATE INDEX IF NOT EXISTS idx_jobs_url ON jobs(url);
     `);
     console.log("✅ Migraciones aplicadas correctamente.");
@@ -314,6 +326,7 @@ async function startServer() {
   const PORT = parseInt(process.env.PORT || '3000', 10);
 
   app.use(express.json({ limit: '1mb' }));
+  app.use(cookieParser());
 
   // ── Rate limiters ───────────────────────────────────────────────────────────
   const authLimiter = rateLimit({
@@ -333,6 +346,16 @@ async function startServer() {
   // ── Helpers ─────────────────────────────────────────────────────────────────
   function signToken(payload: object) {
     return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+  }
+
+  function setAuthCookie(res: express.Response, token: string) {
+    res.cookie('auth_token', token, {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 8 * 60 * 60 * 1000,
+      path: '/',
+    });
   }
 
   function sanitizeUser(row: any) {
@@ -374,6 +397,7 @@ async function startServer() {
       );
       const user = sanitizeUser(result.rows[0]);
       const token = signToken({ id: user.id, email: user.email, role: user.role, firstName: user.firstName, lastName: user.lastName });
+      setAuthCookie(res, token);
       console.log(`✅ Admin inicial creado: ${email}`);
       return res.status(201).json({ token, user });
     } catch (error: any) {
@@ -403,6 +427,7 @@ async function startServer() {
 
       const user = sanitizeUser(row);
       const token = signToken({ id: user.id, email: user.email, role: user.role, firstName: user.firstName, lastName: user.lastName });
+      setAuthCookie(res, token);
       return res.json({ token, user });
     } catch (error) {
       console.error('[Login Error]:', error);
@@ -413,6 +438,11 @@ async function startServer() {
   // ==========================================================================
   // AUTH ROUTES (protected)
   // ==========================================================================
+
+  app.post('/api/auth/logout', (_req, res) => {
+    res.clearCookie('auth_token', { path: '/' });
+    return res.json({ success: true });
+  });
 
   app.get('/api/auth/me', requireAuth, async (req: AuthRequest, res) => {
     try {
@@ -1430,7 +1460,7 @@ async function startServer() {
   /** GET /api/campaigns/preview — vista previa sin enviar */
   app.get('/api/campaigns/preview', requireAuth, requireRole('admin', 'editor'), async (_req, res) => {
     try {
-      const preview = await EmailCampaignService.buildPreview(pool);
+      const preview = await EmailCampaignService.buildPreviewFromSheet(pool);
       res.json(preview);
     } catch (err: any) {
       console.error('[Campaign Preview]', err.message);
@@ -2401,6 +2431,174 @@ Respond in ${language || 'English'} with JSON format:
       return res.json({ success: true, ...parsed });
     } catch (err: any) {
       return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ── MDirector Bulk Campaigns (Ontario / Quebec DB) ────────────────────────────
+
+  /** GET /api/mdirector/status — MDirector credentials configured? */
+  app.get('/api/mdirector/status', requireAuth, (_req, res) => {
+    res.json({ configured: MDirectorService.isConfigured() });
+  });
+
+  /** GET /api/mdirector/lists — fetch all MDirector lists */
+  app.get('/api/mdirector/lists', requireAuth, requireRole('admin', 'editor'), async (_req, res) => {
+    try {
+      const data = await MDirectorService.getLists();
+      res.json({ success: true, data });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /** GET /api/campaign/preview/:source — preview companies that will receive campaign */
+  app.get('/api/campaign/preview/:source', requireAuth, requireRole('admin', 'editor'), async (req, res) => {
+    const { source } = req.params as { source: string };
+    if (source !== 'ontario' && source !== 'quebec') {
+      return res.status(400).json({ error: "source must be 'ontario' or 'quebec'" });
+    }
+    try {
+      const table      = source === 'ontario' ? 'ontario_companies' : 'quebec_companies';
+      const segMap     = source === 'ontario' ? ONTARIO_SEGMENTS   : QUEBEC_SEGMENTS;
+      const listId     = source === 'ontario' ? ONTARIO_LIST_ID    : QUEBEC_LIST_ID;
+
+      const rows = await pool.query(
+        `SELECT id, nombre, correo AS email, work, ciudad, provincia, last_campaign_at
+         FROM ${table}
+         WHERE correo IS NOT NULL AND correo LIKE '%@%'
+         ORDER BY work, nombre`
+      );
+
+      const toSend: any[] = [];
+      const skipped: Array<{ name: string; reason: string }> = [];
+      const byWork: Record<string, number> = {};
+
+      for (const row of rows.rows) {
+        const work    = (row.work || '').toUpperCase().trim() || 'GENERAL';
+        const segId   = segMap[work] ?? segMap['GENERAL'] ?? null;
+        if (!segId) {
+          skipped.push({ name: row.nombre, reason: `No segment for work: "${work}"` });
+          continue;
+        }
+        toSend.push({ id: row.id, nombre: row.nombre, email: row.email, work, segmentId: segId, listId, ciudad: row.ciudad, provincia: row.provincia, lastCampaignAt: row.last_campaign_at });
+        byWork[work] = (byWork[work] || 0) + 1;
+      }
+
+      res.json({ success: true, source, listId, toSend, skipped, byWork, total: toSend.length });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /** POST /api/campaign/send/:source — subscribe contacts & launch campaigns per segment */
+  app.post('/api/campaign/send/:source', requireAuth, requireRole('admin'), async (req: AuthRequest, res) => {
+    const { source } = req.params as { source: string };
+    if (source !== 'ontario' && source !== 'quebec') {
+      return res.status(400).json({ error: "source must be 'ontario' or 'quebec'" });
+    }
+
+    const { subject, scheduleDate, contactIds } = req.body as {
+      subject?: string;
+      scheduleDate?: string;
+      contactIds?: string[];
+    };
+
+    const table    = source === 'ontario' ? 'ontario_companies' : 'quebec_companies';
+    const segMap   = source === 'ontario' ? ONTARIO_SEGMENTS   : QUEBEC_SEGMENTS;
+    const listId   = source === 'ontario' ? ONTARIO_LIST_ID    : QUEBEC_LIST_ID;
+    const lang     = source === 'ontario' ? 'fr' : 'en'; // Ontario→French, Quebec→English
+
+    try {
+      // Build query
+      let query = `SELECT id, nombre, correo AS email, work FROM ${table} WHERE correo IS NOT NULL AND correo LIKE '%@%'`;
+      const params: any[] = [];
+      if (Array.isArray(contactIds) && contactIds.length > 0) {
+        params.push(contactIds);
+        query += ` AND id = ANY($1::uuid[])`;
+      }
+      query += ` ORDER BY work, nombre`;
+
+      const rows = await pool.query(query, params);
+
+      // Group by segment
+      const bySegment = new Map<string, Array<{ id: string; nombre: string; email: string; work: string }>>();
+      const noSegment: string[] = [];
+
+      for (const row of rows.rows) {
+        const work  = (row.work || '').toUpperCase().trim() || 'GENERAL';
+        const segId = segMap[work] ?? segMap['GENERAL'] ?? '';
+        if (!segId) { noSegment.push(row.nombre); continue; }
+        const key = `${segId}|||${work}`;
+        const arr = bySegment.get(key) || [];
+        arr.push(row);
+        bySegment.set(key, arr);
+      }
+
+      const results: Array<{
+        work: string; segmentId: string; campaignId: string; subscribed: number; errors: string[];
+      }> = [];
+
+      for (const [key, contacts] of bySegment) {
+        const [segId, work] = key.split('|||');
+        const errors: string[] = [];
+        let subscribed = 0;
+
+        // Subscribe each contact to list+segment
+        for (const c of contacts) {
+          try {
+            await MDirectorService.subscribeContact(c.email, c.nombre, listId, segId);
+            subscribed++;
+          } catch (e: any) {
+            errors.push(`${c.nombre}: ${e.message}`);
+          }
+        }
+
+        if (subscribed === 0) {
+          results.push({ work, segmentId: segId, campaignId: '', subscribed: 0, errors });
+          continue;
+        }
+
+        // Fetch HTML template from service_templates table or fall back to built-in
+        const tmplKey = work.toLowerCase().replace(/[^a-z0-9]/g, '_');
+        const tmplRes = await pool.query(
+          `SELECT content FROM service_templates WHERE service_type_id = $1 LIMIT 1`, [tmplKey]
+        );
+        const html = tmplRes.rows[0]?.content || MDirectorService.buildOfferEmailHtml({
+          companyName:              '{{NOMBRE}}',
+          employeeTypeName:         work,
+          employeeTypeDescription:  work,
+          senderName:               process.env.MDIRECTOR_FROM_NAME || 'VSM Services',
+        });
+
+        const campSubject = subject || (lang === 'fr'
+          ? `Services de personnel — ${work}`
+          : `Staffing services — ${work}`);
+        const campName = `${source.toUpperCase()}_${work}_${new Date().toISOString().slice(0, 10)}`;
+
+        try {
+          const campaignId = await MDirectorService.createCampaign({
+            name: campName, listId, segmentId: segId,
+            subject: campSubject, html, scheduleDate,
+          });
+          results.push({ work, segmentId: segId, campaignId, subscribed, errors });
+
+          // Mark last_campaign_at
+          const ids = contacts.map(c => c.id);
+          await pool.query(
+            `UPDATE ${table} SET last_campaign_at = NOW() WHERE id = ANY($1::uuid[])`, [ids]
+          );
+        } catch (e: any) {
+          results.push({ work, segmentId: segId, campaignId: '', subscribed, errors: [...errors, e.message] });
+        }
+      }
+
+      const totalSubscribed = results.reduce((s, r) => s + r.subscribed, 0);
+      const totalCampaigns  = results.filter(r => r.campaignId).length;
+
+      res.json({ success: true, source, totalSubscribed, totalCampaigns, results, noSegment });
+    } catch (err: any) {
+      console.error('[Campaign MDirector]', err.message);
+      res.status(500).json({ error: err.message });
     }
   });
 

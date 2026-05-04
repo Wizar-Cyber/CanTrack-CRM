@@ -1,110 +1,314 @@
 /**
- * Servicio de integración con mDirector (mdirector.com)
- * Documentación: https://developers.mdirector.com
+ * MDirectorService — OAuth2 + Campaign API
  *
- * Configura en .env:
- *   MDIRECTOR_API_KEY=tu_api_key
- *   MDIRECTOR_API_SECRET=tu_api_secret
- *   MDIRECTOR_FROM_EMAIL=noreply@tuempresa.com
- *   MDIRECTOR_FROM_NAME=CanTrack Staffing
+ * Configure in .env:
+ *   MDIRECTOR_USERNAME=107843
+ *   MDIRECTOR_PASSWORD=<your_password_hash>
+ *   MDIRECTOR_FROM_EMAIL=noreply@yourcompany.com
+ *   MDIRECTOR_FROM_NAME=VSM Services
+ *   MDIRECTOR_REPLY_TO=reply@yourcompany.com
  */
 
-export interface SendEmailPayload {
-  toEmail: string;
-  toName?: string;
+export interface MDirectorCampaignOptions {
+  campaignName: string;
+  listId: string;
+  segmentId: string;
   subject: string;
-  htmlBody: string;
-  textBody?: string;
-  // Para tracking interno
-  companyId: string;
-  employeeTypeId: string;
-  sentByUserId: string;
+  html: string;
+  fromEmail?: string;
+  fromName?: string;
+  replyTo?: string;
+  scheduleDate?: string; // 'YYYY-MM-DD HH:MM:SS'
 }
 
-export interface MDirectorResult {
-  success: boolean;
-  messageId?: string;
-  error?: string;
-  rawResponse?: any;
+export interface MDirectorCampaignResult {
+  campaignId: string;
 }
 
 export class MDirectorService {
-  private static readonly BASE_URL = 'https://api.mdirector.com';
+  private static readonly OAUTH_URL = 'https://app.mdirector.com/oauth2/token';
+  private static readonly API_URL   = 'https://api.mdirector.com';
 
-  static get apiKey() {
-    return process.env.MDIRECTOR_API_KEY;
-  }
+  // Token cache
+  private static _token: string | null = null;
+  private static _tokenExpiresAt = 0;
 
-  static get apiSecret() {
-    return process.env.MDIRECTOR_API_SECRET;
-  }
-
-  static get fromEmail() {
-    return process.env.MDIRECTOR_FROM_EMAIL;
-  }
-
-  static get fromName() {
-    return process.env.MDIRECTOR_FROM_NAME || 'CanTrack Staffing';
-  }
+  static get username()  { return process.env.MDIRECTOR_USERNAME  || '107843'; }
+  static get password()  { return process.env.MDIRECTOR_PASSWORD  || ''; }
+  static get fromEmail() { return process.env.MDIRECTOR_FROM_EMAIL || ''; }
+  static get fromName()  { return process.env.MDIRECTOR_FROM_NAME  || 'VSM Services'; }
+  static get replyTo()   { return process.env.MDIRECTOR_REPLY_TO   || process.env.MDIRECTOR_FROM_EMAIL || ''; }
 
   static isConfigured(): boolean {
-    return !!(this.apiKey && this.apiSecret && this.fromEmail);
+    return !!(this.password && this.fromEmail);
   }
 
   /**
-   * Envía un email transaccional a través de la API de mDirector.
-   * Ref: https://developers.mdirector.com/#api-Email-SendEmail
+   * Returns a valid Bearer token, refreshing if expired.
    */
-  static async sendEmail(payload: SendEmailPayload): Promise<MDirectorResult> {
-    if (!this.isConfigured()) {
-      console.error('[mDirector] Credenciales no configuradas. Revisa MDIRECTOR_API_KEY, MDIRECTOR_API_SECRET y MDIRECTOR_FROM_EMAIL en .env');
-      return { success: false, error: 'Servicio de email no configurado. Contacta al administrador.' };
+  static async getToken(): Promise<string> {
+    const now = Date.now();
+    if (this._token && now < this._tokenExpiresAt - 60_000) {
+      return this._token;
     }
 
-    const body = {
-      api_key:    this.apiKey,
-      api_secret: this.apiSecret,
-      toEmail:    payload.toEmail,
-      toName:     payload.toName || payload.toEmail,
-      fromEmail:  this.fromEmail,
-      fromName:   this.fromName,
-      subject:    payload.subject,
-      html:       payload.htmlBody,
-      text:       payload.textBody || this.stripHtml(payload.htmlBody),
-    };
+    const body = new URLSearchParams({
+      grant_type: 'password',
+      client_id:  'webapp',
+      username:   this.username,
+      password:   this.password,
+    });
 
+    const res = await fetch(this.OAUTH_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`[MDirector] OAuth failed (${res.status}): ${text}`);
+    }
+
+    const data: any = await res.json();
+    if (!data.access_token) {
+      throw new Error(`[MDirector] OAuth response missing access_token: ${JSON.stringify(data)}`);
+    }
+
+    this._token = data.access_token;
+    this._tokenExpiresAt = now + (data.expires_in || 3600) * 1000;
+    console.log('[MDirector] Token obtained, expires in', data.expires_in, 's');
+    return this._token!;
+  }
+
+  /**
+   * Clears the cached token (useful for testing or forced refresh).
+   */
+  static clearToken(): void {
+    this._token = null;
+    this._tokenExpiresAt = 0;
+  }
+
+  private static async authHeaders(): Promise<Record<string, string>> {
+    const token = await this.getToken();
+    return {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type':  'application/x-www-form-urlencoded',
+    };
+  }
+
+  /**
+   * Subscribe a contact to a list + segment.
+   * POST /api_contact
+   */
+  static async subscribeContact(
+    email: string,
+    name: string,
+    listId: string,
+    segmentId: string,
+  ): Promise<void> {
+    const headers = await this.authHeaders();
+    const body = new URLSearchParams({ email, name, listId, segmentId });
+
+    const res = await fetch(`${this.API_URL}/api_contact`, {
+      method:  'POST',
+      headers,
+      body: body.toString(),
+    });
+
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(`[MDirector] subscribeContact failed (${res.status}): ${JSON.stringify(data)}`);
+    }
+    console.log(`[MDirector] Subscribed ${email} → list=${listId} segment=${segmentId}`);
+  }
+
+  /**
+   * Get all lists.
+   * GET /api_list
+   */
+  static async getLists(): Promise<any> {
+    const token  = await this.getToken();
+    const res    = await fetch(`${this.API_URL}/api_list`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(`[MDirector] getLists failed (${res.status}): ${JSON.stringify(data)}`);
+    }
+    return data;
+  }
+
+  /**
+   * Get all campaigns.
+   * GET /api_campaign
+   */
+  static async getCampaigns(): Promise<any> {
+    const token = await this.getToken();
+    const res   = await fetch(`${this.API_URL}/api_campaign`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(`[MDirector] getCampaigns failed (${res.status}): ${JSON.stringify(data)}`);
+    }
+    return data;
+  }
+
+  /**
+   * Create a campaign (and optionally schedule it).
+   * POST /api_campaign → { data: { camId: "X" } }
+   * If scheduleDate provided: PUT /api_campaign to schedule
+   */
+  static async createCampaign(opts: {
+    name: string;
+    listId: string;
+    segmentId: string;
+    subject: string;
+    html: string;
+    fromEmail?: string;
+    fromName?: string;
+    replyTo?: string;
+    scheduleDate?: string;
+  }): Promise<string> {
+    const headers = await this.authHeaders();
+
+    const body = new URLSearchParams({
+      name:      opts.name,
+      listId:    opts.listId,
+      segmentId: opts.segmentId,
+      subject:   opts.subject,
+      fromName:  opts.fromName  || this.fromName,
+      fromEmail: opts.fromEmail || this.fromEmail,
+      html:      opts.html,
+      replyTo:   opts.replyTo   || this.replyTo,
+    });
+
+    const res = await fetch(`${this.API_URL}/api_campaign`, {
+      method:  'POST',
+      headers,
+      body: body.toString(),
+    });
+
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(`[MDirector] createCampaign failed (${res.status}): ${JSON.stringify(data)}`);
+    }
+
+    const camId = String(data?.data?.camId ?? data?.data?.id ?? data?.id ?? '');
+    if (!camId) {
+      throw new Error(`[MDirector] createCampaign: no camId returned: ${JSON.stringify(data)}`);
+    }
+
+    console.log(`[MDirector] Campaign created: "${opts.name}" → camId=${camId}`);
+
+    if (opts.scheduleDate) {
+      await this.scheduleCampaign(camId, opts.name, opts.scheduleDate);
+    }
+
+    return camId;
+  }
+
+  /**
+   * Schedule an existing campaign.
+   * PUT /api_campaign
+   */
+  static async scheduleCampaign(
+    id: string,
+    name: string,
+    scheduleDate: string,
+  ): Promise<void> {
+    const headers = await this.authHeaders();
+
+    const body = new URLSearchParams({ id, name, scheduleDate });
+
+    const res = await fetch(`${this.API_URL}/api_campaign`, {
+      method:  'PUT',
+      headers,
+      body: body.toString(),
+    });
+
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(`[MDirector] scheduleCampaign failed (${res.status}): ${JSON.stringify(data)}`);
+    }
+    console.log(`[MDirector] Campaign ${id} scheduled for ${scheduleDate}`);
+  }
+
+  /**
+   * Delete/close a campaign.
+   * DELETE /api_campaign?id=X
+   */
+  static async deleteCampaign(id: string): Promise<void> {
+    const token = await this.getToken();
+    const res   = await fetch(`${this.API_URL}/api_campaign?id=${encodeURIComponent(id)}`, {
+      method:  'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(`[MDirector] deleteCampaign failed (${res.status}): ${JSON.stringify(data)}`);
+    }
+    console.log(`[MDirector] Campaign ${id} deleted`);
+  }
+
+  /**
+   * Full flow: create + optionally schedule a campaign for a segment.
+   */
+  static async sendCampaignToSegment(opts: MDirectorCampaignOptions): Promise<MDirectorCampaignResult> {
+    const campaignId = await this.createCampaign({
+      name:         opts.campaignName,
+      listId:       opts.listId,
+      segmentId:    opts.segmentId,
+      subject:      opts.subject,
+      html:         opts.html,
+      fromEmail:    opts.fromEmail || this.fromEmail,
+      fromName:     opts.fromName  || this.fromName,
+      replyTo:      opts.replyTo   || this.replyTo,
+      scheduleDate: opts.scheduleDate,
+    });
+
+    return { campaignId };
+  }
+
+  /**
+   * Backward-compatible individual email send:
+   * subscribes the contact to a general segment and creates a one-off campaign.
+   */
+  static async sendEmail(opts: {
+    toEmail:        string;
+    toName:         string;
+    subject:        string;
+    htmlBody:       string;
+    companyId?:     string;
+    employeeTypeId?: string;
+    sentByUserId?:  string;
+    [key: string]:  unknown;
+  }): Promise<{ success: boolean; messageId?: string; error?: string }> {
     try {
-      const response = await fetch(`${this.BASE_URL}/api_email`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+      // Use Ontario "General" segment as default for individual sends
+      const listId    = '28';
+      const segmentId = '712';
+
+      await this.subscribeContact(opts.toEmail, opts.toName, listId, segmentId);
+
+      const campaignName = `OFFER_${opts.toEmail.split('@')[0]}_${Date.now()}`;
+      const campaignId   = await this.createCampaign({
+        name:      campaignName,
+        listId,
+        segmentId,
+        subject:   opts.subject,
+        html:      opts.htmlBody,
       });
 
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        console.error('[mDirector] Error HTTP:', response.status, data);
-        return {
-          success: false,
-          error: data?.message || `Error ${response.status} al enviar email.`,
-          rawResponse: data,
-        };
-      }
-
-      // mDirector devuelve { status: 'ok', id: '...' } en caso de éxito
-      if (data.status === 'ok' || data.success || response.status === 200) {
-        return { success: true, messageId: data.id || data.messageId, rawResponse: data };
-      }
-
-      return { success: false, error: data?.message || 'Respuesta inesperada de mDirector.', rawResponse: data };
+      return { success: true, messageId: campaignId };
     } catch (err: any) {
-      console.error('[mDirector] Error de red:', err.message);
-      return { success: false, error: `Error de conectividad: ${err.message}` };
+      return { success: false, error: err.message };
     }
   }
 
   /**
-   * Construye el HTML del correo de oferta de personal.
+   * Keep backward compat: build offer email HTML for individual sends.
    */
   static buildOfferEmailHtml(opts: {
     companyName: string;
@@ -114,7 +318,9 @@ export class MDirectorService {
     customMessage?: string;
     senderName: string;
   }): string {
-    const greeting = opts.contactName ? `Estimado/a ${opts.contactName}` : `Estimado/a equipo de ${opts.companyName}`;
+    const greeting = opts.contactName
+      ? `Estimado/a ${opts.contactName}`
+      : `Estimado/a equipo de ${opts.companyName}`;
 
     return `<!DOCTYPE html>
 <html lang="es">
@@ -124,90 +330,42 @@ export class MDirectorService {
   <title>Oferta de Personal — ${opts.employeeTypeName}</title>
 </head>
 <body style="margin:0;padding:0;background:#f8fafc;font-family:'Segoe UI',Arial,sans-serif;">
-
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:32px 0;">
     <tr><td align="center">
       <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.07);">
-
-        <!-- Header -->
         <tr>
           <td style="background:linear-gradient(135deg,#1e3a5f 0%,#2563eb 100%);padding:32px 40px;">
-            <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:700;letter-spacing:-0.5px;">
-              CanTrack Staffing
-            </h1>
+            <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:700;">VSM Services</h1>
             <p style="margin:4px 0 0;color:#bfdbfe;font-size:13px;">Soluciones de Personal Especializado</p>
           </td>
         </tr>
-
-        <!-- Body -->
         <tr>
           <td style="padding:40px;">
             <p style="margin:0 0 20px;color:#1e293b;font-size:16px;">${greeting},</p>
-
             <p style="margin:0 0 20px;color:#475569;font-size:15px;line-height:1.7;">
-              Nos ponemos en contacto con ustedes para presentarles nuestro perfil de
-              <strong style="color:#2563eb;">${opts.employeeTypeName}</strong>,
-              disponible para vinculación inmediata bajo modalidad de outsourcing, contrato temporal o nómina directa.
+              Nos ponemos en contacto para presentarles nuestro perfil de
+              <strong style="color:#2563eb;">${opts.employeeTypeName}</strong>.
             </p>
-
-            <!-- Profile Card -->
             <table width="100%" cellpadding="0" cellspacing="0" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;margin:24px 0;">
               <tr>
                 <td style="padding:24px;">
-                  <p style="margin:0 0 6px;font-size:11px;font-weight:700;color:#3b82f6;text-transform:uppercase;letter-spacing:0.8px;">Perfil Ofrecido</p>
-                  <h2 style="margin:0 0 12px;font-size:20px;color:#1e3a5f;font-weight:700;">${opts.employeeTypeName}</h2>
+                  <h2 style="margin:0 0 12px;font-size:20px;color:#1e3a5f;">${opts.employeeTypeName}</h2>
                   <p style="margin:0;color:#334155;font-size:14px;line-height:1.6;">${opts.employeeTypeDescription}</p>
                 </td>
               </tr>
             </table>
-
-            ${opts.customMessage ? `
-            <p style="margin:0 0 20px;color:#475569;font-size:15px;line-height:1.7;">${opts.customMessage.replace(/\n/g, '<br>')}</p>
-            ` : ''}
-
-            <p style="margin:0 0 20px;color:#475569;font-size:15px;line-height:1.7;">
-              Si están interesados en conocer más detalles sobre este perfil, con gusto coordinamos una reunión
-              para presentarles candidatos preseleccionados y hablar sobre condiciones de vinculación.
-            </p>
-
-            <!-- CTA -->
-            <table cellpadding="0" cellspacing="0" style="margin:32px 0;">
-              <tr>
-                <td style="background:#2563eb;border-radius:8px;padding:14px 32px;">
-                  <a href="mailto:${opts.senderName}" style="color:#ffffff;font-size:15px;font-weight:600;text-decoration:none;">
-                    Solicitar información →
-                  </a>
-                </td>
-              </tr>
-            </table>
-
+            ${opts.customMessage ? `<p style="margin:0 0 20px;color:#475569;font-size:15px;line-height:1.7;">${opts.customMessage.replace(/\n/g, '<br>')}</p>` : ''}
             <p style="margin:0;color:#64748b;font-size:14px;line-height:1.7;">
               Cordialmente,<br>
               <strong style="color:#1e293b;">${opts.senderName}</strong><br>
-              <span style="color:#94a3b8;font-size:13px;">CanTrack Staffing</span>
+              <span style="color:#94a3b8;font-size:13px;">VSM Services</span>
             </p>
           </td>
         </tr>
-
-        <!-- Footer -->
-        <tr>
-          <td style="background:#f1f5f9;padding:20px 40px;border-top:1px solid #e2e8f0;">
-            <p style="margin:0;color:#94a3b8;font-size:11px;text-align:center;line-height:1.6;">
-              Este correo fue enviado a <strong>${opts.companyName}</strong> a través de CanTrack CRM.<br>
-              Si no desea recibir más comunicaciones, por favor responda con "No contactar".
-            </p>
-          </td>
-        </tr>
-
       </table>
     </td></tr>
   </table>
-
 </body>
 </html>`;
-  }
-
-  private static stripHtml(html: string): string {
-    return html.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
   }
 }

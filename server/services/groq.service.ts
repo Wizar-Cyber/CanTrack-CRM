@@ -44,6 +44,7 @@ export interface EnrichmentData {
   website?: string;
   description?: string;
   is_closed?: boolean;
+  confidence_score?: number;
   _provider?: string;
 }
 
