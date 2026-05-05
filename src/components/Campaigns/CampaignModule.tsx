@@ -844,61 +844,76 @@ function TemplateMapEditor({
 
 // ── MDirector Tab (Ontario / Quebec bulk campaigns) ───────────────────────────
 
-interface MDPreviewRow {
+interface MDTemplateMapping {
   id: string;
-  nombre: string;
-  email: string;
-  work: string;
-  segmentId: string;
-  listId: string;
-  ciudad: string | null;
-  provincia: string | null;
-  lastCampaignAt: string | null;
-}
-
-interface MDPreviewResult {
-  toSend: MDPreviewRow[];
-  skipped: Array<{ name: string; reason: string }>;
-  byWork: Record<string, number>;
-  total: number;
-  listId: string;
+  region: string;
+  work_label: string;
+  template_id: string;
+  template_name: string | null;
+  language: string;
+  active: boolean;
 }
 
 interface MDSendResult {
+  success: boolean;
+  region: string;
+  language: string;
+  listId: string;
+  template: { id: string; name: string };
+  scheduleDate: string;
+  totalCompanies: number;
   totalSubscribed: number;
   totalCampaigns: number;
-  results: Array<{ work: string; segmentId: string; campaignId: string; subscribed: number; errors: string[] }>;
-  noSegment: string[];
+  skipped: Array<{ name: string; email: string; reason: string }>;
+  results: Array<{
+    work: string;
+    segmentId: string;
+    contactCount: number;
+    subscribed: number;
+    campaignId?: string;
+    envId?: string;
+    status: 'success' | 'failed';
+    errors: string[];
+  }>;
 }
 
 function MDirectorTab() {
-  const [source, setSource]           = useState<'ontario' | 'quebec'>('ontario');
-  const [preview, setPreview]         = useState<MDPreviewResult | null>(null);
-  const [loadingPrev, setLdPrev]      = useState(false);
+  const [region, setRegion]           = useState<'ontario' | 'quebec'>('ontario');
+  const [work, setWork]               = useState<string>('');
+  const [mappings, setMappings]       = useState<MDTemplateMapping[]>([]);
+  const [loadingMap, setLoadingMap]   = useState(false);
+  const [subject, setSubject]         = useState('');
+  const [limit, setLimit]             = useState('');
   const [sending, setSending]         = useState(false);
   const [sendResult, setSendResult]   = useState<MDSendResult | null>(null);
   const [error, setError]             = useState('');
-  const [subject, setSubject]         = useState('');
-  const [scheduleDate, setSched]      = useState('');
-  const [showSkipped, setShowSkipped] = useState(false);
+  const [confirm, setConfirm]         = useState(false);
 
-  const loadPreview = useCallback(async () => {
-    setLdPrev(true); setError(''); setPreview(null); setSendResult(null);
+  const loadMappings = useCallback(async (r: 'ontario' | 'quebec') => {
+    setLoadingMap(true); setError(''); setMappings([]); setWork('');
     try {
-      const d = await apiFetch<MDPreviewResult>(`/campaign/preview/${source}`);
-      setPreview(d);
+      const d = await apiFetch<{ mappings: MDTemplateMapping[] }>(`/campaign/template-map?region=${r}`);
+      setMappings(d.mappings ?? []);
     } catch (e: any) { setError(e.message); }
-    finally { setLdPrev(false); }
-  }, [source]);
+    finally { setLoadingMap(false); }
+  }, []);
+
+  useEffect(() => { loadMappings(region); }, [region, loadMappings]);
+
+  const selectedMapping = work
+    ? mappings.find(m => m.work_label === work) ?? null
+    : null;
+
+  const workOptions = [...new Set(mappings.map(m => m.work_label))].sort();
 
   const sendCampaign = async () => {
-    if (!preview || preview.total === 0) return;
-    setSending(true); setError(''); setSendResult(null);
+    setSending(true); setError(''); setSendResult(null); setConfirm(false);
     try {
-      const body: Record<string, string> = {};
-      if (subject)      body.subject      = subject;
-      if (scheduleDate) body.scheduleDate = scheduleDate.replace('T', ' ') + ':00';
-      const d = await apiFetch<MDSendResult>(`/campaign/send/${source}`, {
+      const body: Record<string, unknown> = { region };
+      if (work)    body.work    = work;
+      if (subject) body.subject = subject;
+      if (limit && Number(limit) > 0) body.limit = Number(limit);
+      const d = await apiFetch<MDSendResult>('/campaign/send-template', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(body),
@@ -908,79 +923,154 @@ function MDirectorTab() {
     finally { setSending(false); }
   };
 
-  const byWork: [string, number][] = preview
-    ? (Object.entries(preview.byWork) as [string, number][]).sort((a, b) => b[1] - a[1])
-    : [];
+  const templateLabel = selectedMapping
+    ? selectedMapping.template_name || selectedMapping.template_id
+    : work === ''
+      ? `${mappings.length} templates (one per work type)`
+      : 'No template registered for this work type';
 
   return (
     <div className="space-y-5 max-w-4xl">
 
-      {/* Source selector */}
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <h2 className="font-semibold text-gray-800 mb-3 flex items-center gap-2">
-          <Globe className="w-4 h-4 text-blue-500" /> Target database
+      {/* Config panel */}
+      <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-5">
+        <h2 className="font-semibold text-gray-800 flex items-center gap-2">
+          <Send className="w-4 h-4 text-blue-500" /> Mass campaign — mDirector
         </h2>
-        <div className="flex gap-3 mb-4">
-          {(['ontario', 'quebec'] as const).map(s => (
-            <button
-              key={s}
-              onClick={() => { setSource(s); setPreview(null); setSendResult(null); }}
-              className={`px-5 py-2.5 rounded-lg font-medium text-sm transition-all ${
-                source === s
-                  ? 'bg-blue-600 text-white shadow'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-              }`}
-            >
-              {s === 'ontario' ? '🍁 Ontario' : '❄️ Quebec'}
-            </button>
-          ))}
-        </div>
-        <p className="text-xs text-gray-400">
-          {source === 'ontario'
-            ? 'Ontario companies → French template · MDirector list 28'
-            : 'Quebec companies → English template · MDirector list 30'}
-        </p>
 
-        <div className="grid grid-cols-2 gap-3 mt-4">
+        {/* Region */}
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-2">Region</label>
+          <div className="flex gap-3">
+            {(['ontario', 'quebec'] as const).map(r => (
+              <button
+                key={r}
+                onClick={() => { setRegion(r); setSendResult(null); setConfirm(false); }}
+                className={`px-5 py-2.5 rounded-lg font-medium text-sm transition-all ${
+                  region === r
+                    ? 'bg-blue-600 text-white shadow'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                }`}
+              >
+                {r === 'ontario' ? '🍁 Ontario (FR)' : '❄️ Quebec (EN)'}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-gray-400 mt-1">
+            {region === 'ontario'
+              ? 'Ontario companies → French templates · MDirector list 28'
+              : 'Quebec companies → English templates · MDirector list 30'}
+          </p>
+        </div>
+
+        {/* Work type */}
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1">
+            Work type <span className="text-gray-400 font-normal">(leave blank to send all work types)</span>
+          </label>
+          {loadingMap ? (
+            <div className="flex items-center gap-2 text-xs text-gray-400">
+              <Loader2 className="w-3 h-3 animate-spin" /> Loading templates…
+            </div>
+          ) : (
+            <select
+              value={work}
+              onChange={e => { setWork(e.target.value); setSendResult(null); setConfirm(false); }}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
+            >
+              <option value="">— All work types ({workOptions.length} templates) —</option>
+              {workOptions.map(w => (
+                <option key={w} value={w}>{w}</option>
+              ))}
+            </select>
+          )}
+        </div>
+
+        {/* Template badge */}
+        {!loadingMap && (
+          <div className={`rounded-lg border px-4 py-3 text-sm ${
+            selectedMapping || work === ''
+              ? 'border-green-200 bg-green-50'
+              : 'border-amber-200 bg-amber-50'
+          }`}>
+            <div className="flex items-start gap-2">
+              {selectedMapping || work === ''
+                ? <CheckCircle className="w-4 h-4 text-green-500 mt-0.5 shrink-0" />
+                : <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />}
+              <div>
+                <span className="font-medium text-gray-800">Template: </span>
+                <span className="text-gray-600">{templateLabel}</span>
+                {selectedMapping && (
+                  <p className="text-xs text-gray-400 mt-0.5 font-mono">{selectedMapping.template_id}</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Optional fields */}
+        <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Subject (optional — auto if blank)</label>
+            <label className="block text-xs font-medium text-gray-500 mb-1">
+              Subject <span className="text-gray-400 font-normal">(optional — uses template name if blank)</span>
+            </label>
             <input
               type="text"
-              placeholder={source === 'ontario' ? 'Services de personnel — …' : 'Staffing services — …'}
+              placeholder={region === 'ontario' ? 'Services de personnel — …' : 'Staffing services — …'}
               value={subject}
               onChange={e => setSubject(e.target.value)}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">Schedule date (optional — send immediately if blank)</label>
+            <label className="block text-xs font-medium text-gray-500 mb-1">
+              Limit <span className="text-gray-400 font-normal">(optional — max companies to contact)</span>
+            </label>
             <input
-              type="datetime-local"
-              value={scheduleDate}
-              onChange={e => setSched(e.target.value)}
+              type="number"
+              min="1"
+              max="1000"
+              placeholder="No limit"
+              value={limit}
+              onChange={e => setLimit(e.target.value)}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
             />
           </div>
         </div>
 
-        <div className="flex gap-3 mt-4">
+        {/* Confirm + Send */}
+        {!confirm ? (
           <button
-            onClick={loadPreview}
-            disabled={loadingPrev}
-            className="flex items-center gap-2 px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium disabled:opacity-50 transition-colors"
+            onClick={() => setConfirm(true)}
+            disabled={loadingMap || (!selectedMapping && work !== '') || workOptions.length === 0}
+            className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 transition-colors"
           >
-            {loadingPrev ? <Loader2 className="w-4 h-4 animate-spin" /> : <Eye className="w-4 h-4" />}
-            Preview
+            <Send className="w-4 h-4" />
+            Prepare campaign
           </button>
-          <button
-            onClick={sendCampaign}
-            disabled={sending || !preview || preview.total === 0}
-            className="flex items-center gap-2 px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 transition-colors"
-          >
-            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-            {sending ? 'Sending…' : `Send ${preview ? preview.total : ''} campaigns`}
-          </button>
-        </div>
+        ) : (
+          <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+            <span className="text-sm text-amber-800 flex-1">
+              This will subscribe and email {work ? `all <strong>${work}</strong>` : 'all'} {region} companies with a valid email.
+              {limit ? ` Limited to ${limit}.` : ''} Are you sure?
+            </span>
+            <button
+              onClick={sendCampaign}
+              disabled={sending}
+              className="flex items-center gap-2 px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 transition-colors shrink-0"
+            >
+              {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+              {sending ? 'Sending…' : 'Yes, send'}
+            </button>
+            <button
+              onClick={() => setConfirm(false)}
+              className="text-sm text-gray-500 hover:text-gray-700 shrink-0"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Error */}
@@ -990,110 +1080,51 @@ function MDirectorTab() {
         </div>
       )}
 
-      {/* Preview */}
-      {preview && !sendResult && (
-        <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-gray-800 flex items-center gap-2">
-              <BarChart3 className="w-4 h-4 text-blue-500" /> {preview.total} companies ready to receive campaigns
-            </h2>
-            <span className="text-xs text-gray-400">{preview.skipped.length} skipped</span>
-          </div>
-
-          {byWork.length > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-              {byWork.map(([work, count]) => (
-                <div key={work} className="flex items-center justify-between bg-blue-50 rounded-lg px-3 py-2">
-                  <span className="text-xs font-medium text-blue-800 truncate">{work}</span>
-                  <span className="text-xs text-blue-600 font-bold ml-2 shrink-0">{count}</span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="overflow-auto max-h-64 rounded-lg border border-gray-100">
-            <table className="w-full text-xs">
-              <thead className="bg-gray-50 sticky top-0">
-                <tr>
-                  <th className="text-left px-3 py-2 font-medium text-gray-500">Company</th>
-                  <th className="text-left px-3 py-2 font-medium text-gray-500">Email</th>
-                  <th className="text-left px-3 py-2 font-medium text-gray-500">Work type</th>
-                  <th className="text-left px-3 py-2 font-medium text-gray-500">Seg.</th>
-                  <th className="text-left px-3 py-2 font-medium text-gray-500">Last campaign</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {preview.toSend.slice(0, 100).map(r => (
-                  <tr key={r.id} className="hover:bg-gray-50">
-                    <td className="px-3 py-1.5 font-medium text-gray-800 max-w-[170px] truncate">{r.nombre}</td>
-                    <td className="px-3 py-1.5 text-gray-500 max-w-[150px] truncate">{r.email}</td>
-                    <td className="px-3 py-1.5 text-gray-600 max-w-[120px] truncate">{r.work}</td>
-                    <td className="px-3 py-1.5 text-gray-400">{r.segmentId}</td>
-                    <td className="px-3 py-1.5 text-gray-400">{daysAgo(r.lastCampaignAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {preview.total > 100 && (
-              <p className="text-center text-xs text-gray-400 py-2">… and {preview.total - 100} more</p>
-            )}
-          </div>
-
-          {preview.skipped.length > 0 && (
-            <div>
-              <button
-                onClick={() => setShowSkipped(s => !s)}
-                className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600"
-              >
-                {showSkipped ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                {preview.skipped.length} companies skipped (no email)
-              </button>
-              {showSkipped && (
-                <ul className="mt-2 space-y-1 max-h-40 overflow-y-auto pl-1">
-                  {preview.skipped.map((s, i) => (
-                    <li key={i} className="flex items-start gap-2 text-xs text-gray-500">
-                      <AlertTriangle className="w-3 h-3 text-yellow-500 mt-0.5 shrink-0" />
-                      <span><strong>{s.name}</strong> — {s.reason}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Send result */}
       {sendResult && (
         <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
           <div className="flex items-center gap-2">
             <CheckCircle className="w-5 h-5 text-green-500" />
             <h2 className="font-semibold text-gray-800">
-              Done — {sendResult.totalSubscribed} contacts subscribed · {sendResult.totalCampaigns} campaigns created
+              Campaign launched — {sendResult.totalSubscribed} contacts · {sendResult.totalCampaigns} deliveries created
             </h2>
           </div>
 
-          {sendResult.noSegment.length > 0 && (
-            <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-              ⚠️ No segment mapped for: {sendResult.noSegment.join(', ')}
-            </div>
-          )}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+            {[
+              { label: 'Companies', value: sendResult.totalCompanies },
+              { label: 'Subscribed', value: sendResult.totalSubscribed },
+              { label: 'Campaigns', value: sendResult.totalCampaigns },
+              { label: 'Skipped', value: sendResult.skipped.length },
+            ].map(({ label, value }) => (
+              <div key={label} className="bg-gray-50 rounded-lg px-3 py-2">
+                <div className="text-lg font-bold text-gray-800">{value}</div>
+                <div className="text-xs text-gray-400">{label}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
+            Template: <span className="font-medium">{sendResult.template.name}</span>
+            <span className="text-gray-400 ml-2 font-mono">{sendResult.template.id}</span>
+          </div>
 
           <div className="space-y-2">
             {sendResult.results.map((r, i) => (
               <div
                 key={i}
                 className={`rounded-lg border px-4 py-3 ${
-                  r.campaignId ? 'border-green-200 bg-green-50' : 'border-red-100 bg-red-50'
+                  r.status === 'success' ? 'border-green-200 bg-green-50' : 'border-red-100 bg-red-50'
                 }`}
               >
-                <div className="flex items-center justify-between text-sm">
+                <div className="flex items-center justify-between text-sm flex-wrap gap-2">
                   <span className="font-medium text-gray-800">{r.work}</span>
-                  <div className="flex gap-4 text-xs">
+                  <div className="flex gap-4 text-xs flex-wrap">
+                    <span className="text-gray-500">{r.contactCount} companies</span>
                     <span className="text-green-700">{r.subscribed} subscribed</span>
-                    {r.campaignId
-                      ? <span className="text-blue-600 font-medium">Campaign #{r.campaignId}</span>
-                      : <span className="text-red-500">Campaign failed</span>}
+                    {r.envId
+                      ? <span className="text-blue-600 font-medium">envId: {r.envId}</span>
+                      : <span className="text-red-500">Delivery failed</span>}
                   </div>
                 </div>
                 {r.errors.length > 0 && (
@@ -1106,8 +1137,21 @@ function MDirectorTab() {
             ))}
           </div>
 
+          {sendResult.skipped.length > 0 && (
+            <details className="text-xs text-gray-500">
+              <summary className="cursor-pointer hover:text-gray-700 flex items-center gap-1">
+                <ChevronDown className="w-3 h-3" /> {sendResult.skipped.length} companies skipped
+              </summary>
+              <ul className="mt-2 space-y-0.5 pl-4">
+                {sendResult.skipped.map((s, i) => (
+                  <li key={i}>• <strong>{s.name}</strong> — {s.reason}</li>
+                ))}
+              </ul>
+            </details>
+          )}
+
           <button
-            onClick={() => { setPreview(null); setSendResult(null); }}
+            onClick={() => setSendResult(null)}
             className="text-sm text-blue-600 hover:underline"
           >
             ← Send another campaign

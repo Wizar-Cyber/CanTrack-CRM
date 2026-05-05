@@ -286,6 +286,23 @@ async function runMigrations() {
     for (const tbl of ['ontario_companies', 'quebec_companies']) {
       await client.query(`ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS last_campaign_at TIMESTAMPTZ`);
     }
+    // Migración: mapeo region+work → templateId UUID de mDirector Plantillas
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS mdirector_template_map (
+        id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        region       TEXT NOT NULL CHECK (region IN ('ontario', 'quebec')),
+        work_label   TEXT NOT NULL,
+        template_id  TEXT NOT NULL,
+        template_name TEXT,
+        language     TEXT NOT NULL DEFAULT 'en',
+        active       BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at   TIMESTAMPTZ DEFAULT NOW(),
+        updated_at   TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(region, work_label)
+      );
+      CREATE INDEX IF NOT EXISTS idx_mdirector_template_map_region_work
+        ON mdirector_template_map(region, work_label);
+    `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_jobs_url ON jobs(url);
     `);
@@ -2605,8 +2622,10 @@ Respond in ${language || 'English'} with JSON format:
   // ── Ontario & Quebec (historical DB) ─────────────────────────────────────────
   {
     const { createOntarioRouter, createQuebecRouter } = await import('./server/routes/ontario.routes.js') as any;
-    app.use('/api/ontario', createOntarioRouter(pool));
-    app.use('/api/quebec',  createQuebecRouter(pool));
+    const { createCampaignRouter } = await import('./server/routes/campaign.routes.js') as any;
+    app.use('/api/ontario',  createOntarioRouter(pool));
+    app.use('/api/quebec',   createQuebecRouter(pool));
+    app.use('/api/campaign', createCampaignRouter(pool));
   }
 
   // ── Vite / Static ────────────────────────────────────────────────────────────

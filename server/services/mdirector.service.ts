@@ -14,7 +14,8 @@ export interface MDirectorCampaignOptions {
   listId: string;
   segmentId: string;
   subject: string;
-  html: string;
+  html?: string;
+  templateId?: string;
   fromEmail?: string;
   fromName?: string;
   replyTo?: string;
@@ -23,6 +24,8 @@ export interface MDirectorCampaignOptions {
 
 export interface MDirectorCampaignResult {
   campaignId: string;
+  envId?: string;
+  subId?: string;
 }
 
 export class MDirectorService {
@@ -41,6 +44,24 @@ export class MDirectorService {
 
   static isConfigured(): boolean {
     return !!(this.password && this.fromEmail);
+  }
+
+  static scheduleDateInMinutes(minutes: number): string {
+    const date = new Date(Date.now() + minutes * 60_000);
+    const pad = (value: number) => String(value).padStart(2, '0');
+    return [
+      date.getFullYear(),
+      '-',
+      pad(date.getMonth() + 1),
+      '-',
+      pad(date.getDate()),
+      ' ',
+      pad(date.getHours()),
+      ':',
+      pad(date.getMinutes()),
+      ':',
+      pad(date.getSeconds()),
+    ].join('');
   }
 
   /**
@@ -94,6 +115,14 @@ export class MDirectorService {
     return {
       'Authorization': `Bearer ${token}`,
       'Content-Type':  'application/x-www-form-urlencoded',
+    };
+  }
+
+  private static async authJsonHeaders(): Promise<Record<string, string>> {
+    const token = await this.getToken();
+    return {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type':  'application/json',
     };
   }
 
@@ -155,6 +184,18 @@ export class MDirectorService {
     return data;
   }
 
+  static async getDeliveries(): Promise<any> {
+    const token = await this.getToken();
+    const res = await fetch(`${this.API_URL}/api_delivery`, {
+      headers: { 'Authorization': `Bearer ${token}` },
+    });
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(`[MDirector] getDeliveries failed (${res.status}): ${JSON.stringify(data)}`);
+    }
+    return data;
+  }
+
   /**
    * Create a campaign (and optionally schedule it).
    * POST /api_campaign → { data: { camId: "X" } }
@@ -165,7 +206,8 @@ export class MDirectorService {
     listId: string;
     segmentId: string;
     subject: string;
-    html: string;
+    html?: string;
+    templateId?: string;
     fromEmail?: string;
     fromName?: string;
     replyTo?: string;
@@ -180,9 +222,15 @@ export class MDirectorService {
       subject:   opts.subject,
       fromName:  opts.fromName  || this.fromName,
       fromEmail: opts.fromEmail || this.fromEmail,
-      html:      opts.html,
       replyTo:   opts.replyTo   || this.replyTo,
+      // Add scheduleDate directly to POST if provided (better than separate PUT)
+      ...(opts.scheduleDate && { scheduleDate: opts.scheduleDate })
     });
+    if (opts.html) body.set('html', opts.html);
+    if (opts.templateId) {
+      body.set('template_id', opts.templateId);
+      body.set('templateId', opts.templateId);
+    }
 
     const res = await fetch(`${this.API_URL}/api_campaign`, {
       method:  'POST',
@@ -200,27 +248,119 @@ export class MDirectorService {
       throw new Error(`[MDirector] createCampaign: no camId returned: ${JSON.stringify(data)}`);
     }
 
-    console.log(`[MDirector] Campaign created: "${opts.name}" → camId=${camId}`);
-
-    if (opts.scheduleDate) {
-      await this.scheduleCampaign(camId, opts.name, opts.scheduleDate);
-    }
+    console.log(`[MDirector] Campaign created: "${opts.name}" → camId=${camId}${opts.scheduleDate ? ` (scheduled for ${opts.scheduleDate})` : ''}`);
 
     return camId;
   }
 
+  static async createDeliveryFromTemplate(opts: {
+    name: string;
+    campaignName: string;
+    templateId: string;
+    segmentId: string;
+    subject: string;
+    language: 'fr' | 'en' | 'es';
+    templateVariables?: Record<string, unknown>;
+    fromName?: string;
+    replyToName?: string;
+    replyToEmail?: string;
+    scheduleDate?: string;
+  }): Promise<MDirectorCampaignResult> {
+    const headers = await this.authJsonHeaders();
+    const body = {
+      type: 'email',
+      name: opts.name,
+      subject: opts.subject,
+      campaignName: opts.campaignName,
+      language: opts.language,
+      segments: JSON.stringify([String(opts.segmentId)]),
+      templateId: opts.templateId,
+      templateVariables: opts.templateVariables ?? {},
+      fromName: opts.fromName || this.fromName,
+      replyToName: opts.replyToName || this.fromName,
+      replyToEmail: opts.replyToEmail || this.replyTo,
+    };
+
+    const res = await fetch(`${this.API_URL}/api_delivery`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(`[MDirector] createDeliveryFromTemplate failed (${res.status}): ${JSON.stringify(data)}`);
+    }
+
+    const campaignId = String(data?.data?.camId ?? data?.camId ?? '');
+    const envId = String(data?.data?.envId ?? data?.envId ?? '');
+    const subId = String(data?.data?.subId ?? data?.subId ?? '');
+    if (!envId) {
+      throw new Error(`[MDirector] createDeliveryFromTemplate: no envId returned: ${JSON.stringify(data)}`);
+    }
+
+    console.log(`[MDirector] Delivery created from template ${opts.templateId}: envId=${envId}${campaignId ? ` camId=${campaignId}` : ''}`);
+
+    if (opts.scheduleDate) {
+      await this.scheduleDelivery(envId, opts.scheduleDate);
+    }
+
+    return { campaignId: campaignId || envId, envId, subId };
+  }
+
+  static async scheduleDelivery(envId: string, date: string = 'now'): Promise<void> {
+    const headers = await this.authJsonHeaders();
+    // mDirector only accepts 'now' or its own internal format; always use 'now' for immediate dispatch
+    const resolvedDate = date && date !== 'now' ? 'now' : 'now';
+    const res = await fetch(`${this.API_URL}/api_delivery`, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ envId, date: resolvedDate }),
+    });
+
+    const data: any = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(`[MDirector] scheduleDelivery failed (${res.status}): ${JSON.stringify(data)}`);
+    }
+    console.log(`[MDirector] Delivery ${envId} scheduled for ${date}`);
+  }
+
   /**
-   * Schedule an existing campaign.
-   * PUT /api_campaign
+   * Schedule an existing campaign (legacy method - kept for backward compatibility).
+   * PUT /api_campaign — IMPORTANT: must send all campaign details when scheduling
    */
   static async scheduleCampaign(
     id: string,
     name: string,
     scheduleDate: string,
+    opts?: {
+      listId?: string;
+      segmentId?: string;
+      subject?: string;
+      html?: string;
+      templateId?: string;
+      fromEmail?: string;
+      fromName?: string;
+      replyTo?: string;
+    }
   ): Promise<void> {
     const headers = await this.authHeaders();
 
-    const body = new URLSearchParams({ id, name, scheduleDate });
+    // Build URLSearchParams with all required fields
+    const body = new URLSearchParams({
+      id,
+      name,
+      scheduleDate,
+      // Include original campaign details when scheduling
+      ...(opts?.listId && { listId: opts.listId }),
+      ...(opts?.segmentId && { segmentId: opts.segmentId }),
+      ...(opts?.subject && { subject: opts.subject }),
+      ...(opts?.html && { html: opts.html }),
+      ...(opts?.templateId && { template_id: opts.templateId, templateId: opts.templateId }),
+      ...(opts?.fromEmail && { fromEmail: opts.fromEmail }),
+      ...(opts?.fromName && { fromName: opts.fromName }),
+      ...(opts?.replyTo && { replyTo: opts.replyTo }),
+    });
 
     const res = await fetch(`${this.API_URL}/api_campaign`, {
       method:  'PUT',
@@ -262,6 +402,7 @@ export class MDirectorService {
       segmentId:    opts.segmentId,
       subject:      opts.subject,
       html:         opts.html,
+      templateId:   opts.templateId,
       fromEmail:    opts.fromEmail || this.fromEmail,
       fromName:     opts.fromName  || this.fromName,
       replyTo:      opts.replyTo   || this.replyTo,
@@ -299,6 +440,7 @@ export class MDirectorService {
         segmentId,
         subject:   opts.subject,
         html:      opts.htmlBody,
+        scheduleDate: this.scheduleDateInMinutes(2),
       });
 
       return { success: true, messageId: campaignId };

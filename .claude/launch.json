@@ -9,6 +9,12 @@
       "env": {
         "PORT": "3000"
       }
+    },
+    {
+      "name": "cantrack-frontend",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite", "--port", "5173"],
+      "port": 5173
     }
   ]
 }
