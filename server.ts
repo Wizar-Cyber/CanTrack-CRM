@@ -581,99 +581,6 @@ app.use(cookieParser());
     }
   });
 
-  // POST /api/geocoding/run — geocodificación masiva con Mapbox, responde con SSE (Server-Sent Events)
-  app.post('/api/geocoding/run', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
-    const { region = 'both', batchSize = 50 } = req.body;
-    const MAPBOX_TOKEN = process.env.MAPBOX_TOKEN || process.env.MAPBOX_PUBLIC_TOKEN || '';
-
-    if (!MAPBOX_TOKEN) {
-      return res.status(400).json({ error: 'MAPBOX_TOKEN no configurado en .env' });
-    }
-
-    // SSE headers for real-time progress
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
-
-    const send = (data: object) => {
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
-    };
-
-    const geocodeWithMapbox = async (address: string, city: string, province: string): Promise<{ lat: number; lng: number } | null> => {
-      try {
-        const query = [address, city, province, 'Canada'].filter(Boolean).join(', ');
-        const encoded = encodeURIComponent(query);
-        const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encoded}.json?country=ca&types=address&limit=1&access_token=${MAPBOX_TOKEN}`;
-        const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-        if (!r.ok) return null;
-        const data = await r.json();
-        if (data.features && data.features.length > 0) {
-          const [lng, lat] = data.features[0].center;
-          return { lat, lng };
-        }
-      } catch (_e) {}
-      return null;
-    };
-
-    const regions = region === 'both' ? ['ontario', 'quebec'] : [region];
-    let totalProcessed = 0;
-    let totalUpdated = 0;
-    let totalFailed = 0;
-
-    for (const reg of regions) {
-      const table = reg === 'ontario' ? 'ontario_companies' : 'quebec_companies';
-
-      const { rows: companies } = await pool.query(`
-        SELECT id, nombre, direccion, ciudad, provincia
-        FROM ${table}
-        WHERE direccion IS NOT NULL AND TRIM(direccion) NOT IN ('','null')
-          AND (lat IS NULL OR lng IS NULL)
-        ORDER BY ciudad, id
-      `);
-
-      send({ type: 'region_start', region: reg, total: companies.length });
-
-      const size = Math.min(batchSize, 100);
-      for (let i = 0; i < companies.length; i += size) {
-        const batch = companies.slice(i, i + size);
-
-        await Promise.all(batch.map(async (c: any) => {
-          const coords = await geocodeWithMapbox(c.direccion, c.ciudad || '', c.provincia || reg);
-          if (coords) {
-            await pool.query(
-              `UPDATE ${table} SET lat = $1, lng = $2, updated_at = NOW() WHERE id = $3`,
-              [coords.lat, coords.lng, c.id]
-            );
-            totalUpdated++;
-          } else {
-            totalFailed++;
-          }
-          totalProcessed++;
-        }));
-
-        send({
-          type: 'progress',
-          region: reg,
-          processed: Math.min(i + size, companies.length),
-          total: companies.length,
-          updated: totalUpdated,
-          failed: totalFailed,
-          pct: Math.round((Math.min(i + size, companies.length) / companies.length) * 100),
-        });
-
-        // Small delay to respect Mapbox rate limits (600 req/min free tier)
-        if (i + size < companies.length) {
-          await new Promise(r => setTimeout(r, 200));
-        }
-      }
-
-      send({ type: 'region_done', region: reg });
-    }
-
-    send({ type: 'done', totalProcessed, totalUpdated, totalFailed });
-    res.end();
-  });
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
   function signToken(payload: object) {
@@ -3131,7 +3038,6 @@ Respond in ${language || 'English'} with JSON format:
       const params: any[] = [];
       const filters: string[] = [
         `direccion IS NOT NULL AND TRIM(direccion) <> '' AND TRIM(direccion) <> 'null'`,
-        `lat IS NOT NULL AND lng IS NOT NULL`,
       ];
 
       if (town) {
@@ -3142,17 +3048,49 @@ Respond in ${language || 'English'} with JSON format:
         filters.push(`TRIM(ciudad) = $${params.length}`);
       }
 
-      // 1. Fetch companies that already have coordinates (skip geocoding for speed)
-      const { rows: companies } = await pool.query(`
-        SELECT id, nombre, direccion, ciudad, pueblo, telefono, lat, lng
+      // 1. Fetch companies with addresses (with or without coordinates)
+      const addressFilters = filters.filter(f => !f.includes('lat IS NOT NULL'));
+      const { rows: rawCompanies } = await pool.query(`
+        SELECT id, nombre, direccion, ciudad, pueblo, provincia, telefono, lat, lng
         FROM ${table}
-        WHERE ${filters.join(' AND ')}
+        WHERE ${addressFilters.join(' AND ')}
         ORDER BY nombre
         LIMIT 2000
       `, params);
 
+      if (rawCompanies.length === 0) {
+        return res.status(400).json({ error: 'No hay empresas con dirección en esta zona.' });
+      }
+
+      // 2. Separate companies with/without coordinates
+      const withCoords = rawCompanies.filter((c: any) => c.lat && c.lng);
+      const withoutCoords = rawCompanies.filter((c: any) => !c.lat || !c.lng);
+
+      // Geocode up to 30 missing companies on-demand (sequential to respect Nominatim rate limit)
+      const { geocodeAddress } = await import('./server/automation/cron-jobs.js');
+      const geocodedOnDemand: any[] = [];
+      const onDemandLimit = Math.min(30, withoutCoords.length);
+
+      for (let i = 0; i < onDemandLimit; i++) {
+        const c = withoutCoords[i];
+        const coords = await geocodeAddress(c.direccion, c.ciudad || '', c.provincia || region);
+        if (coords) {
+          pool.query(
+            `UPDATE ${table} SET lat = $1, lng = $2, updated_at = NOW() WHERE id = $3`,
+            [coords.lat, coords.lng, c.id]
+          ).catch(() => {});
+          geocodedOnDemand.push({ ...c, lat: coords.lat, lng: coords.lng });
+        }
+        if (i < onDemandLimit - 1) await new Promise(r => setTimeout(r, 1100));
+      }
+
+      const companies = [...withCoords, ...geocodedOnDemand];
+
       if (companies.length === 0) {
-        return res.status(400).json({ error: 'No hay empresas con coordenadas en esta zona. Ejecuta primero el proceso de geocodificación.' });
+        return res.status(400).json({
+          error: 'No hay empresas con coordenadas en esta zona todavía. El servidor está geocodificando las empresas en segundo plano — intenta de nuevo en unos minutos.',
+          pending: withoutCoords.length,
+        });
       }
 
       // 2. Cluster companies geographically

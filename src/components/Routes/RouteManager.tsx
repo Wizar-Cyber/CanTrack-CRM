@@ -2,9 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertCircle, ArrowLeft, CheckCircle2, ChevronDown, ChevronUp,
   Clock, Loader2, MapPin, Navigation, Play, Route,
-  SkipForward, Trash2, XCircle, Zap, Globe
+  SkipForward, Trash2, XCircle, Zap
 } from 'lucide-react';
-import { GeocodingManager } from './GeocodingManager';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -694,7 +693,7 @@ const CreateRoutesForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) =>
 // ─── Main RouteManager ────────────────────────────────────────────────────────
 
 export const RouteManager: React.FC = () => {
-  const [tab, setTab] = useState<'list' | 'create' | 'geocoding'>('list');
+  const [tab, setTab] = useState<'list' | 'create'>('list');
   const [routes, setRoutes] = useState<RouteItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('all');
@@ -798,20 +797,10 @@ export const RouteManager: React.FC = () => {
           >
             + Crear rutas
           </button>
-          <button
-            onClick={() => setTab('geocoding')}
-            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === 'geocoding' ? 'bg-blue-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
-          >
-            <Globe className="w-4 h-4" /> Geocodificar
-          </button>
         </div>
       </div>
 
-      {tab === 'geocoding' ? (
-        <div className="bg-white border border-slate-200 rounded-2xl p-6">
-          <GeocodingManager />
-        </div>
-      ) : tab === 'create' ? (
+      {tab === 'create' ? (
         <div className="bg-white border border-slate-200 rounded-2xl p-6">
           <CreateRoutesForm onCreated={() => { setTab('list'); loadRoutes('all'); setStatusFilter('all'); }} />
         </div>
