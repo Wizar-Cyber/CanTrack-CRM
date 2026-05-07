@@ -3,7 +3,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { LayoutDashboard, Briefcase, Building2, Settings as SettingsIcon, LogOut, Layers, ChevronLeft, ChevronRight, MapPin, Bot, Mail, Route } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../contexts/AuthContext';
-import logoImg from '../public/logo.jpg';
+import logoImg from '../../public/logo.jpg';
 
 export const Sidebar: React.FC = () => {
   const location = useLocation();
