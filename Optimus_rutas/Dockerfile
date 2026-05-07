@@ -55,6 +55,7 @@ COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
 COPY app ./app
 COPY frontend ./frontend
+COPY .env ./.env
 
 # Crear directorio de datos y darle permisos a app
 RUN mkdir -p ${APP_HOME}/data && chown -R app:app ${APP_HOME}

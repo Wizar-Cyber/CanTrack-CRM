@@ -8,13 +8,15 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
-      - DATABASE_URL=postgresql://casaos:casaos@host.docker.internal:5432/casaos
       - OPTIMUS_URL=http://optimus-rutas:8000
     env_file:
       - .env
     restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      optimus-rutas:
+        condition: service_started
     networks:
       - cantrack-network
 
@@ -26,24 +28,52 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=sqlite:///data/routes.db
-    volumes:
-      - optimus-data:/app/data
+      - DATABASE_URL=postgresql+asyncpg://cantrack:cantrack@postgres:5432/cantrack
+      - MAPBOX_TOKEN=MAPBOX_TOKEN_REMOVED
     restart: unless-stopped
-
-  # Nginx (Reverse Proxy)
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "8888:80"
-    volumes:
-      - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
-      - app
+      postgres:
+        condition: service_healthy
+    networks:
+      - cantrack-network
+
+  # Nginx (Reverse Proxy) - use app:3000 or optimus-rutas:8000 directly for now
+  # Uncomment and configure when needed for production
+  # nginx:
+  #   image: nginx:alpine
+  #   ports:
+  #     - "8888:80"
+  #   volumes:
+  #     - ./nginx.conf:/etc/nginx/nginx.conf:ro
+  #   depends_on:
+  #     - app
+  #   restart: unless-stopped
+  #   networks:
+  #     - cantrack-network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: cantrack
+      POSTGRES_PASSWORD: cantrack
+      POSTGRES_DB: cantrack
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
+    networks:
+      - cantrack-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cantrack -d cantrack"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   optimus-data:
+  postgres-data:
 
 networks:
   cantrack-network:
