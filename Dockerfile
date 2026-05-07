@@ -21,9 +21,10 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/public ./public
 COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package-lock.json ./
 
 USER nodejs
 
 EXPOSE 3000
 
-CMD ["node", "node_modules/tsx/bin/tsx.cjs", "server.ts"]
+CMD ["npx", "tsx", "server.ts"]
