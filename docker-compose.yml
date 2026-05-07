@@ -1,6 +1,7 @@
 version: '3.8'
 
 services:
+  # CanTrack CRM (Node.js + React)
   app:
     build: .
     ports:
@@ -8,12 +9,27 @@ services:
     environment:
       - NODE_ENV=production
       - DATABASE_URL=postgresql://casaos:casaos@host.docker.internal:5434/casaos
+      - OPTIMUS_URL=http://optimus-rutas:8000
     env_file:
       - .env
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # Optimus_rutas (Python - Route Optimization)
+  optimus-rutas:
+    build:
+      context: ./Optimus_rutas
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:///data/routes.db
+    volumes:
+      - optimus-data:/app/data
+    restart: unless-stopped
+
+  # Nginx (Reverse Proxy)
   nginx:
     image: nginx:alpine
     ports:
@@ -23,6 +39,9 @@ services:
     depends_on:
       - app
     restart: unless-stopped
+
+volumes:
+  optimus-data:
 
 networks:
   default:

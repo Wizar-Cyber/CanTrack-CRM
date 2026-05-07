@@ -11,3 +11,16 @@ build/
 coverage/
 .vite/
 .optimize.*
+__pycache__/
+*.pyc
+*.pyo
+node_modules/
+dist/
+.vite/
+coverage/
+.optimize.*
+# Optimus_rutas - exclude from Docker build but include in repo
+Optimus_rutas/.git/
+Optimus_rutas/__pycache__/
+Optimus_rutas/data/
+Optimus_rutas/.env

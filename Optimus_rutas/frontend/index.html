@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="fr-CA">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1a2520">
+  <title>Itinéraires · Rutas optimizadas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-row">
+      <div class="brand">
+        <span class="brand-mark">◐</span>
+        <span class="brand-name">Itinéraires</span>
+      </div>
+      <div class="topbar-actions">
+        <div class="unit-toggle" role="group" aria-label="Unités">
+          <button class="unit-btn is-active" data-unit="km" type="button">km</button>
+          <button class="unit-btn" data-unit="mi" type="button">mi</button>
+        </div>
+        <button class="icon-btn" id="btn-settings" type="button" aria-label="Paramètres" title="Paramètres">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab is-active" data-view="list" role="tab">Mes routes</button>
+      <button class="tab" data-view="create" role="tab">Nouvelle</button>
+    </nav>
+  </header>
+
+  <main id="app">
+    <!-- ===================== Vista: lista de rutas ===================== -->
+    <section id="view-list" class="view is-active">
+      <div class="filters">
+        <button class="filter is-active" data-status="">Toutes</button>
+        <button class="filter" data-status="pending">À faire</button>
+        <button class="filter" data-status="in_progress">En cours</button>
+        <button class="filter" data-status="completed">Terminées</button>
+      </div>
+
+      <div id="routes-list" class="routes-list" aria-live="polite"></div>
+
+      <div id="empty-state" class="empty-state hidden">
+        <div class="empty-mark">∅</div>
+        <p class="empty-text">Aucune route. Créez la première.</p>
+      </div>
+
+      <button class="fab" id="fab-new" aria-label="Nouvelle route">
+        <span>+</span>
+      </button>
+    </section>
+
+    <!-- ===================== Vista: crear ===================== -->
+    <section id="view-create" class="view">
+      <h1 class="page-title"><em>Nouvelle</em> route</h1>
+
+      <form id="form-create" class="form" autocomplete="off">
+        <div class="field">
+          <label for="f-name">Nom</label>
+          <input type="text" id="f-name" required maxlength="200" placeholder="Ruta Lunes 5 Mai">
+        </div>
+
+        <div class="field">
+          <label for="f-start">
+            Adresse de départ
+            <button type="button" class="link-btn" id="btn-use-home" hidden>↺ utiliser mon domicile</button>
+          </label>
+          <div class="input-with-status">
+            <input type="text" id="f-start" required minlength="5" maxlength="300" placeholder="1200 Avenue McGill College, Montréal">
+            <span class="status-pill" id="status-start"></span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Arrêts <span class="hint" id="stops-count">(0/30)</span></label>
+          <ul id="stops-list" class="stops-input-list"></ul>
+          <div class="add-stop">
+            <input type="text" id="f-stop" minlength="5" maxlength="300" placeholder="Ajouter une adresse...">
+            <button type="button" id="btn-add-stop" class="btn-secondary">+ Ajouter</button>
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="f-speed">Vitesse moy. <span class="speed-unit">(km/h)</span></label>
+            <input type="number" id="f-speed" min="5" max="200" value="30" step="1">
+          </div>
+          <div class="field checkbox-field">
+            <label>
+              <input type="checkbox" id="f-return">
+              Retour au domicile
+            </label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="f-notes">Notes</label>
+          <textarea id="f-notes" rows="2" maxlength="2000" placeholder="Optionnel"></textarea>
+        </div>
+
+        <div class="actions">
+          <button type="submit" class="btn-primary" id="btn-submit">
+            Optimiser et enregistrer
+          </button>
+        </div>
+
+        <div id="form-error" class="form-error hidden"></div>
+      </form>
+    </section>
+
+    <!-- ===================== Vista: detalle ===================== -->
+    <section id="view-detail" class="view">
+      <button class="back-btn" id="btn-back">← Retour</button>
+      <div id="detail-content"></div>
+    </section>
+  </main>
+
+  <!-- ===================== Modal: paramètres ===================== -->
+  <div id="settings-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-panel">
+      <header class="modal-head">
+        <h2 id="settings-title">Paramètres</h2>
+        <button class="icon-btn" data-close-modal aria-label="Fermer">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </header>
+
+      <div class="modal-body">
+        <div class="field">
+          <label for="s-home">
+            Mon point de départ <span class="hint">(domicile / dépôt)</span>
+          </label>
+          <p class="field-help">Cette adresse sera proposée par défaut comme départ pour chaque nouvelle route.</p>
+          <div class="input-with-status">
+            <input type="text" id="s-home" maxlength="300" placeholder="Mon adresse à Montréal, Laval...">
+            <span class="status-pill" id="status-home"></span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Unités de distance</label>
+          <p class="field-help">Affichage uniquement. Les calculs internes restent en kilomètres.</p>
+          <div class="unit-toggle wide" role="group" aria-label="Unités de distance">
+            <button class="unit-btn is-active" data-unit-modal="km" type="button">Kilomètres (km)</button>
+            <button class="unit-btn" data-unit-modal="mi" type="button">Miles (mi)</button>
+          </div>
+        </div>
+
+        <div class="modal-foot">
+          <button class="btn-primary" id="btn-save-settings" type="button">Enregistrer</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="loader" class="loader hidden">
+    <div class="loader-spinner"></div>
+    <span id="loader-text">Optimisation...</span>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
