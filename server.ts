@@ -557,6 +557,124 @@ app.use(cookieParser());
     res.json({ token });
   });
 
+  // GET /api/geocoding/status — cuántas empresas tienen/necesitan coordenadas
+  app.get('/api/geocoding/status', requireAuth, async (_req, res) => {
+    try {
+      const { rows } = await pool.query(`
+        SELECT region, total, con_coords, sin_coords FROM (
+          SELECT 'ontario' AS region,
+            COUNT(*)::int AS total,
+            COUNT(*) FILTER (WHERE lat IS NOT NULL AND lng IS NOT NULL)::int AS con_coords,
+            COUNT(*) FILTER (WHERE direccion IS NOT NULL AND TRIM(direccion) NOT IN ('','null') AND (lat IS NULL OR lng IS NULL))::int AS sin_coords
+          FROM ontario_companies
+          UNION ALL
+          SELECT 'quebec',
+            COUNT(*)::int,
+            COUNT(*) FILTER (WHERE lat IS NOT NULL AND lng IS NOT NULL)::int,
+            COUNT(*) FILTER (WHERE direccion IS NOT NULL AND TRIM(direccion) NOT IN ('','null') AND (lat IS NULL OR lng IS NULL))::int
+          FROM quebec_companies
+        ) t
+      `);
+      res.json(rows);
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  // POST /api/geocoding/run — geocodificación masiva con Mapbox, responde con SSE (Server-Sent Events)
+  app.post('/api/geocoding/run', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
+    const { region = 'both', batchSize = 50 } = req.body;
+    const MAPBOX_TOKEN = process.env.MAPBOX_TOKEN || process.env.MAPBOX_PUBLIC_TOKEN || '';
+
+    if (!MAPBOX_TOKEN) {
+      return res.status(400).json({ error: 'MAPBOX_TOKEN no configurado en .env' });
+    }
+
+    // SSE headers for real-time progress
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const send = (data: object) => {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const geocodeWithMapbox = async (address: string, city: string, province: string): Promise<{ lat: number; lng: number } | null> => {
+      try {
+        const query = [address, city, province, 'Canada'].filter(Boolean).join(', ');
+        const encoded = encodeURIComponent(query);
+        const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encoded}.json?country=ca&types=address&limit=1&access_token=${MAPBOX_TOKEN}`;
+        const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+        if (!r.ok) return null;
+        const data = await r.json();
+        if (data.features && data.features.length > 0) {
+          const [lng, lat] = data.features[0].center;
+          return { lat, lng };
+        }
+      } catch (_e) {}
+      return null;
+    };
+
+    const regions = region === 'both' ? ['ontario', 'quebec'] : [region];
+    let totalProcessed = 0;
+    let totalUpdated = 0;
+    let totalFailed = 0;
+
+    for (const reg of regions) {
+      const table = reg === 'ontario' ? 'ontario_companies' : 'quebec_companies';
+
+      const { rows: companies } = await pool.query(`
+        SELECT id, nombre, direccion, ciudad, provincia
+        FROM ${table}
+        WHERE direccion IS NOT NULL AND TRIM(direccion) NOT IN ('','null')
+          AND (lat IS NULL OR lng IS NULL)
+        ORDER BY ciudad, id
+      `);
+
+      send({ type: 'region_start', region: reg, total: companies.length });
+
+      const size = Math.min(batchSize, 100);
+      for (let i = 0; i < companies.length; i += size) {
+        const batch = companies.slice(i, i + size);
+
+        await Promise.all(batch.map(async (c: any) => {
+          const coords = await geocodeWithMapbox(c.direccion, c.ciudad || '', c.provincia || reg);
+          if (coords) {
+            await pool.query(
+              `UPDATE ${table} SET lat = $1, lng = $2, updated_at = NOW() WHERE id = $3`,
+              [coords.lat, coords.lng, c.id]
+            );
+            totalUpdated++;
+          } else {
+            totalFailed++;
+          }
+          totalProcessed++;
+        }));
+
+        send({
+          type: 'progress',
+          region: reg,
+          processed: Math.min(i + size, companies.length),
+          total: companies.length,
+          updated: totalUpdated,
+          failed: totalFailed,
+          pct: Math.round((Math.min(i + size, companies.length) / companies.length) * 100),
+        });
+
+        // Small delay to respect Mapbox rate limits (600 req/min free tier)
+        if (i + size < companies.length) {
+          await new Promise(r => setTimeout(r, 200));
+        }
+      }
+
+      send({ type: 'region_done', region: reg });
+    }
+
+    send({ type: 'done', totalProcessed, totalUpdated, totalFailed });
+    res.end();
+  });
+
   // ── Helpers ─────────────────────────────────────────────────────────────────
   function signToken(payload: object) {
     return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
