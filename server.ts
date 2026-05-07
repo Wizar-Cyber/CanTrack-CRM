@@ -539,12 +539,17 @@ app.use(cookieParser());
     legacyHeaders: false,
   });
 
-  // Aplicar rate limiting a rutas API
+// Aplicar rate limiting a rutas API
   app.use('/api/', apiLimiter);
-app.use('/api/auth/login', authLimiter);
+  app.use('/api/auth/login', authLimiter);
   app.use('/api/auth/setup', setupLimiter);
   app.use('/api/routes/create-batch', heavyLimiter);
   app.use('/api/webhook', heavyLimiter);
+
+  // Health check endpoint (public)
+  app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
   function signToken(payload: object) {
