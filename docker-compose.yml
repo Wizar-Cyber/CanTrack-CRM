@@ -7,9 +7,12 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
+      - DATABASE_URL=postgresql://casaos:casaos@host.docker.internal:5434/casaos
     env_file:
       - .env
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   nginx:
     image: nginx:alpine
