@@ -15,7 +15,9 @@ export interface Company {
   slug: string;
   legalName?: string;
   industry?: string;
+  sector?: string;
   size?: string;           // company_size
+  canadianHQ?: boolean;
   hqCity?: string;
   hqProvince?: string;
   hqRegion?: string;
@@ -33,6 +35,11 @@ export interface Company {
   /** Clasificación comercial: verde/naranja/morado/rojo */
   tipo?: CompanyTipo;
   tipoUpdatedAt?: string;
+  isPubliclyTraded?: boolean;
+  stockTicker?: string;
+  techStack?: string[];
+  confidenceScore?: number;
+  needsManualReview?: boolean;
 }
 
 export interface Candidate {

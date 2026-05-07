@@ -46,7 +46,7 @@ export class SyncScrapedJobsUseCase {
       ORDER BY created_at ASC LIMIT 200
     `);
     for (const job of result.rows) {
-      const { id, companyId, isNew } = await this.upsertCompany(job.raw_company_name);
+      const { id, isNew } = await this.upsertCompany(job.raw_company_name);
       if (!id) continue;
       if (isNew) newCompanies++;
       await this.pool.query(`UPDATE jobs SET company_id = $1, updated_at = NOW() WHERE id = $2`, [id, job.id]);

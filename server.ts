@@ -34,7 +34,10 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
+import cors from 'cors';
+import helmet from 'helmet';
 import { createRequireAuth, requireRole, AuthRequest } from './server/middleware/auth.middleware.js';
+import { initCronJobs } from './server/automation/cron-jobs.js';
 
 dotenv.config();
 
@@ -68,7 +71,7 @@ pool.connect((err) => {
     console.error("❌ Error conectando a PostgreSQL:", err.message);
   } else {
     console.log("✅ PostgreSQL conectado correctamente.");
-    runMigrations();
+    runMigrations().then(() => initCronJobs(pool));
   }
 });
 
@@ -125,6 +128,62 @@ async function _flushToExcel() {
 function scheduleExcelExport() {
   if (_exportDebounceTimer) clearTimeout(_exportDebounceTimer);
   _exportDebounceTimer = setTimeout(_flushToExcel, 10_000);
+}
+
+/** Detecta la provincia de una empresa enriquecida y la copia a ontario_companies o quebec_companies
+ *  si su hq_province corresponde. Idempotente: usa ON CONFLICT DO NOTHING por nombre. */
+async function maybeCopyToProvinceTable(pool: import('pg').Pool, companyId: string): Promise<void> {
+  try {
+    const { rows } = await pool.query(
+      `SELECT name, phone, contact_email, hq_city, hq_province, hq_region, hq_town,
+              exact_address, website, description, industry
+       FROM companies WHERE id = $1`,
+      [companyId],
+    );
+    if (!rows.length) return;
+    const co = rows[0];
+
+    const prov = (co.hq_province ?? '').trim().toLowerCase();
+    let targetTable: string | null = null;
+    let provinciaLabel: string | null = null;
+    let regionLabel: string | null = null;
+
+    if (prov === 'on' || prov === 'ontario') {
+      targetTable  = 'ontario_companies';
+      provinciaLabel = 'Ontario';
+      regionLabel    = 'Ontario';
+    } else if (prov === 'qc' || prov === 'quebec' || prov === 'québec') {
+      targetTable  = 'quebec_companies';
+      provinciaLabel = 'Quebec';
+      regionLabel    = 'Quebec';
+    }
+
+    if (!targetTable || !co.name) return;
+
+    await pool.query(
+      `INSERT INTO ${targetTable}
+         (nombre, telefono, correo, ciudad, provincia, region, pueblo, direccion,
+          dominio_de_pagina, descripcion, work, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'enriched')
+       ON CONFLICT DO NOTHING`,
+      [
+        co.name,
+        co.phone       || null,
+        co.contact_email || null,
+        co.hq_city     || null,
+        provinciaLabel,
+        regionLabel,
+        co.hq_town     || null,
+        co.exact_address || null,
+        co.website     || null,
+        co.description || null,
+        co.industry    || 'GENERAL',
+      ],
+    );
+    console.info(`[ProvinceSync] "${co.name}" → ${targetTable}`);
+  } catch (err: any) {
+    console.warn('[ProvinceSync] Error:', err.message);
+  }
 }
 
 // ── Migraciones automáticas ───────────────────────────────────────────────────
@@ -303,10 +362,105 @@ async function runMigrations() {
       CREATE INDEX IF NOT EXISTS idx_mdirector_template_map_region_work
         ON mdirector_template_map(region, work_label);
     `);
+    // Automation: alerts table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS automation_alerts (
+        id           UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        type         VARCHAR(60) NOT NULL,
+        affected_entity VARCHAR(200),
+        message      TEXT,
+        resolved     BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at   TIMESTAMPTZ DEFAULT NOW(),
+        resolved_at  TIMESTAMPTZ,
+        UNIQUE(type, affected_entity)
+      );
+      CREATE INDEX IF NOT EXISTS idx_automation_alerts_resolved ON automation_alerts(resolved, created_at DESC);
+    `);
+    // Automation: log table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS automation_log (
+        id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        job        VARCHAR(60) NOT NULL,
+        status     VARCHAR(20) NOT NULL DEFAULT 'ok',
+        message    TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_automation_log_job ON automation_log(job, created_at DESC);
+    `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_jobs_url ON jobs(url);
     `);
-    console.log("✅ Migraciones aplicadas correctamente.");
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // RUTAS MIGRATION — tablas para gestionar rutas de visitas
+    // ═══════════════════════════════════════════════════════════════════════
+    await client.query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'route_status') THEN
+          CREATE TYPE route_status AS ENUM ('draft','active','paused','completed','cancelled');
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'stop_status') THEN
+          CREATE TYPE stop_status AS ENUM ('pending','visited','skipped','failed');
+        END IF;
+      END $$;
+
+      ALTER TABLE routes ADD COLUMN IF NOT EXISTS start_lat DOUBLE PRECISION;
+      ALTER TABLE routes ADD COLUMN IF NOT EXISTS start_lng DOUBLE PRECISION;
+      
+      ALTER TABLE route_stops ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION;
+      ALTER TABLE route_stops ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION;
+      
+      ALTER TABLE ontario_companies ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION;
+      ALTER TABLE ontario_companies ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION;
+      ALTER TABLE quebec_companies ADD COLUMN IF NOT EXISTS lat DOUBLE PRECISION;
+      ALTER TABLE quebec_companies ADD COLUMN IF NOT EXISTS lng DOUBLE PRECISION;
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS routes (
+        id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        name           VARCHAR(200) NOT NULL,
+        start_address  VARCHAR(300) NOT NULL,
+        start_lat      DOUBLE PRECISION,
+        start_lng      DOUBLE PRECISION,
+        return_to_start BOOLEAN NOT NULL DEFAULT FALSE,
+        average_speed_kmh DOUBLE PRECISION NOT NULL DEFAULT 30.0,
+        total_distance_km DOUBLE PRECISION,
+        estimated_time_minutes DOUBLE PRECISION,
+        status         route_status NOT NULL DEFAULT 'draft',
+        notes          TEXT,
+        created_by     UUID REFERENCES users(id) ON DELETE SET NULL,
+        created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        started_at     TIMESTAMPTZ,
+        completed_at   TIMESTAMPTZ,
+        paused_at      TIMESTAMPTZ
+      );
+      CREATE INDEX IF NOT EXISTS idx_routes_status ON routes(status);
+      CREATE INDEX IF NOT EXISTS idx_routes_created_at ON routes(created_at DESC);
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS route_stops (
+        id                 UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        route_id           UUID NOT NULL REFERENCES routes(id) ON DELETE CASCADE,
+        company_id         UUID REFERENCES companies(id) ON DELETE SET NULL,
+        order_index        INTEGER NOT NULL,
+        address           VARCHAR(300) NOT NULL,
+        lat               DOUBLE PRECISION,
+        lng               DOUBLE PRECISION,
+        label             VARCHAR(200),
+        distance_from_previous_km DOUBLE PRECISION DEFAULT 0,
+        status            stop_status NOT NULL DEFAULT 'pending',
+        visited_at        TIMESTAMPTZ,
+        notes             TEXT,
+        UNIQUE(route_id, order_index)
+      );
+      CREATE INDEX IF NOT EXISTS idx_route_stops_route_id ON route_stops(route_id);
+      CREATE INDEX IF NOT EXISTS idx_route_stops_status ON route_stops(status);
+    `);
+
+    console.log("✅ Migraciones de rutas aplicadas.");
   } catch (err: any) {
     console.error("⚠️ Error en migraciones (puede ignorarse si ya aplicadas):", err.message);
   } finally {
@@ -342,8 +496,15 @@ async function startServer() {
   const app = express();
   const PORT = parseInt(process.env.PORT || '3000', 10);
 
+  // ── Security Headers ───────────────────────────────────────────────────────
+  app.use(helmet());
+  app.use(cors({
+    origin: process.env.ALLOWED_ORIGINS?.split(',').filter(Boolean) || ['http://localhost:5173', 'http://localhost:3000'],
+    credentials: true,
+  }));
+
   app.use(express.json({ limit: '1mb' }));
-  app.use(cookieParser());
+app.use(cookieParser());
 
   // ── Rate limiters ───────────────────────────────────────────────────────────
   const authLimiter = rateLimit({
@@ -354,11 +515,36 @@ async function startServer() {
     legacyHeaders: false,
   });
 
+  const apiLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 60,
+    message: { error: 'Muchas peticiones. Intenta en 1 minuto.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  const heavyLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 10,
+    message: { error: 'Límite de operaciones pesadas alcanzado.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
   const setupLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
     max: 3,
     message: { error: 'Límite de configuración alcanzado.' },
+    standardHeaders: true,
+    legacyHeaders: false,
   });
+
+  // Aplicar rate limiting a rutas API
+  app.use('/api/', apiLimiter);
+app.use('/api/auth/login', authLimiter);
+  app.use('/api/auth/setup', setupLimiter);
+  app.use('/api/routes/create-batch', heavyLimiter);
+  app.use('/api/webhook', heavyLimiter);
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
   function signToken(payload: object) {
@@ -884,6 +1070,8 @@ async function startServer() {
       );
       // Disparar export al Excel en background (debounced 10s)
       if (hasData) scheduleExcelExport();
+      // Copiar a ontario/quebec si la provincia corresponde
+      if (hasData) maybeCopyToProvinceTable(pool, companyId).catch(() => {});
       return res.json({ success: true, source: data._provider ?? 'unknown', data });
     } catch (error) {
       console.error('[Gemini Enrich Error]:', error);
@@ -958,6 +1146,8 @@ async function startServer() {
 
       // Disparar export al Excel en background (debounced 10s)
       if (hasData) scheduleExcelExport();
+      // Copiar a ontario/quebec si la provincia corresponde
+      if (hasData) maybeCopyToProvinceTable(pool, companyId).catch(() => {});
 
       // Auto-sugerir servicios si la empresa tiene datos suficientes (background)
       if (hasData) {
@@ -2333,6 +2523,39 @@ async function startServer() {
     return res.json({ success: true, message: `Exportación iniciada. ${pending} empresas candidatas.`, pending });
   });
 
+  /** POST /api/export/province-sheets — exporta ontario/quebec a sus Google Sheets separados */
+  app.post('/api/export/province-sheets', requireAuth, requireRole('admin'), async (req: AuthRequest, res) => {
+    const province = String(req.body.province ?? '').toLowerCase();
+    if (province && province !== 'ontario' && province !== 'quebec') {
+      return res.status(400).json({ error: 'province debe ser ontario, quebec o vacío para ambas' });
+    }
+    try {
+      const { execFile } = await import('child_process');
+      const { promisify } = await import('util');
+      const execFileAsync = promisify(execFile);
+      const args = ['scripts/export-province-sheets.ts'];
+      if (province) args.push(province);
+
+      // Run in background — respond immediately
+      execFileAsync('npx', ['ts-node', ...args], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 120_000,
+      }).then(({ stdout }) => {
+        console.log('[ProvinceSheets] Export done:', stdout.slice(-200));
+      }).catch(err => {
+        console.error('[ProvinceSheets] Export error:', err.message);
+      });
+
+      return res.json({
+        success: true,
+        message: `Export a Google Sheets iniciado para: ${province || 'ontario + quebec'}. Revisa los logs del servidor.`,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
   // ── Service Templates ─────────────────────────────────────────────────────────
 
   /** GET /api/service-templates — lista todas las plantillas */
@@ -2627,6 +2850,740 @@ Respond in ${language || 'English'} with JSON format:
     app.use('/api/quebec',   createQuebecRouter(pool));
     app.use('/api/campaign', createCampaignRouter(pool));
   }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  // RUTAS API — Gestión de rutas de visitas
+  // ═════════════════════════════════════════════════════════════════════════
+
+  const OPTIMUS_URL = process.env.OPTIMUS_URL || 'http://localhost:8000';
+
+  // POST /api/routes/optimize — llama a Optimus_rutas para optimizar una ruta
+  app.post('/api/routes/optimize', requireAuth, async (req, res) => {
+    const { startAddress, stops, returnToStart } = req.body;
+
+    if (!startAddress || !Array.isArray(stops) || stops.length === 0) {
+      return res.status(400).json({ error: 'startAddress y stops son requeridos.' });
+    }
+
+    // Validar direcciones
+    const validatedStops = await Promise.all(
+      stops.map(async (stop: any) => {
+        const address = stop.address || stop;
+        try {
+          const encoded = encodeURIComponent(address);
+          const geoRes = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encoded}&limit=1`, {
+            headers: { 'User-Agent': 'CanTrackCRM/1.0' }
+          });
+          const geoData = await geoRes.json();
+          
+          if (geoData && geoData.length > 0) {
+            return {
+              address,
+              label: stop.label,
+              lat: parseFloat(geoData[0].lat),
+              lng: parseFloat(geoData[0].lon),
+              valid: true,
+            };
+          }
+          return { address, label: stop.label, valid: false };
+        } catch (e) {
+          return { address, label: stop.label, valid: false, error: true };
+        }
+      })
+    );
+
+    const validStops = validatedStops.filter(s => s.valid);
+    const invalidStops = validatedStops.filter(s => !s.valid);
+
+    if (validStops.length === 0) {
+      return res.status(400).json({ 
+        error: 'Ninguna dirección válida.', 
+        invalidCount: invalidStops.length 
+      });
+    }
+
+    try {
+      const optimusRes = await fetch(`${OPTIMUS_URL}/api/routes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'temp-route',
+          start_address: startAddress,
+          stops: validStops.map((s: any) => s.address),
+          return_to_start: returnToStart || false,
+        }),
+      });
+
+      if (!optimusRes.ok) {
+        const err = await optimusRes.text();
+        console.error('[Optimus error]:', err);
+        return res.status(500).json({ error: 'Error al optimizar ruta.', details: err });
+      }
+
+      const optimized = await optimusRes.json();
+      res.json({
+        ...optimized,
+        validStops: validStops.length,
+        invalidStops: invalidStops.length,
+        invalidAddresses: invalidStops.map(s => s.address),
+      });
+    } catch (error: any) {
+      console.error('[Optimize route error]:', error);
+      if (error.cause?.code === 'ECONNREFUSED') {
+        return res.status(503).json({ error: 'Optimus_rutas no está ejecutándose.' });
+      }
+      res.status(500).json({ error: 'Error al optimizar ruta.' });
+    }
+  });
+
+  // POST /api/routes/create-batch — crear múltiples rutas automáticas desde una ciudad
+  app.post('/api/routes/create-batch', requireAuth, async (req: AuthRequest, res) => {
+    const { region, city, startLat, startLng, stopsPerRoute = 100, routePrefix = 'Route' } = req.body;
+
+    if (!region) return res.status(400).json({ error: 'region es requerida.' });
+
+    const startCoords = startLat && startLng ? { lat: startLat, lng: startLng } : null;
+
+    try {
+      let table = region === 'ontario' ? 'ontario_companies' : 'quebec_companies';
+      let cityFilter = city ? `AND TRIM(ciudad) = $1` : '';
+      let params: any[] = city ? [city] : [];
+
+      // 1. Obtener empresas con dirección
+      const { rows: companies } = await pool.query(`
+        SELECT id, nombre, direccion, ciudad, telefono
+        FROM ${table}
+        WHERE direccion IS NOT NULL AND TRIM(direccion) <> '' AND TRIM(direccion) <> 'null' ${cityFilter}
+        ORDER BY nombre
+        LIMIT 500
+      `, params);
+
+      if (companies.length === 0) {
+        return res.status(400).json({ error: 'No hay empresas con dirección en esta zona.' });
+      }
+
+      // 2. Si tenemos coords iniciales, geocodificar empresas sin coords usando Haversine
+      const companiesWithCoords = await Promise.all(
+        companies.map(async (c: any) => {
+          // Si la empresa ya tiene lat/lng en la BD, usarlos
+          if (c.lat && c.lng) {
+            return { ...c, lat: c.lat, lng: c.lng };
+          }
+          
+          // Geocodificar usando Mapbox o Nominatim
+          try {
+            const encoded = encodeURIComponent(c.direccion + ', ' + c.ciudad + ', ' + region);
+            const geoRes = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encoded}&limit=1`, {
+              headers: { 'User-Agent': 'CanTrackCRM/1.0' }
+            });
+            const geoData = await geoRes.json();
+            if (geoData && geoData.length > 0) {
+              return { ...c, lat: parseFloat(geoData[0].lat), lng: parseFloat(geoData[0].lon) };
+            }
+          } catch (e) {
+            console.warn(`[Geocode] ${c.nombre}:`, e);
+          }
+          return { ...c, lat: null, lng: null, geocodeError: true };
+        })
+      );
+
+      // Filtrar empresas que no pudieron geocodificarse
+      const validCompanies = companiesWithCoords.filter(c => c.lat && c.lng);
+      const failedCompanies = companiesWithCoords.filter(c => !c.lat || !c.lng);
+      
+      if (validCompanies.length === 0) {
+        return res.status(400).json({ error: 'Aucune entreprise avec adresse valide.' });
+      }
+
+      // 3. Función Haversine para calcular distancia
+      const haversineDistance = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+        const R = 6371;
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLng = (lng2 - lng1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLng/2) * Math.sin(dLng/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+      };
+
+      // 4. Obtener punto de inicio (o usar la primera empresa válida si no hay GPS)
+      let startPoint = startCoords || (validCompanies[0] ? { lat: validCompanies[0].lat, lng: validCompanies[0].lng } : null);
+      
+      if (!startPoint) {
+        return res.status(400).json({ error: 'No se pudo determinar punto de inicio.' });
+      }
+
+      // 5. Ordenar por distancia al punto de inicio (nearest first)
+      validCompanies.sort((a, b) => {
+        const distA = haversineDistance(startPoint!.lat, startPoint!.lng, a.lat, a.lng);
+        const distB = haversineDistance(startPoint!.lat, startPoint!.lng, b.lat, b.lng);
+        return distA - distB;
+      });
+
+      // 6. Dividir en grupos de ~100 y crear rutas
+      const routesCreated: any[] = [];
+      const batchSize = Math.min(stopsPerRoute, 100);
+      const numRoutes = Math.ceil(validCompanies.length / batchSize);
+
+      for (let i = 0; i < numRoutes; i++) {
+        const start = i * batchSize;
+        const end = Math.min(start + batchSize, validCompanies.length);
+        const batch = validCompanies.slice(start, end);
+
+        // Usar el último punto de la ruta anterior como inicio de la siguiente
+        if (i > 0 && batch.length > 0) {
+          startPoint = { lat: batch[0].lat, lng: batch[0].lng };
+          await new Promise(r => setTimeout(r, 100)); // small delay
+        }
+
+        try {
+          // Intentar optimizar con Optimus si está disponible
+          const optimusRes = await fetch(`${OPTIMUS_URL}/api/routes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: `${routePrefix} ${city || region} ${i + 1}`,
+              start_address: batch[0].direccion,
+              stops: batch.map((c: any) => c.direccion),
+              return_to_start: false,
+            }),
+          });
+
+          let optimizedOrder = batch.map((_: any, idx: number) => idx);
+          let totalDistance = 0;
+
+          if (optimusRes.ok) {
+            const optData = await optimusRes.json();
+            optimizedOrder = optData.stops?.map((s: any) => s.order) || optimizedOrder;
+            totalDistance = optData.total_distance_km || 0;
+          } else {
+            // Fallback: calcular distancia total
+            for (let j = 1; j < batch.length; j++) {
+              totalDistance += haversineDistance(
+                batch[optimizedOrder[j-1]].lat, batch[optimizedOrder[j-1]].lng,
+                batch[optimizedOrder[j]].lat, batch[optimizedOrder[j]].lng
+              );
+            }
+          }
+
+          // Reordenar según optimización
+          const optimizedBatch = optimizedOrder.map(idx => batch[idx]);
+
+          // Crear ruta en BD
+          const client = await pool.connect();
+          try {
+            await client.query('BEGIN');
+
+            const routeRes = await client.query(
+              `INSERT INTO routes (name, start_address, return_to_start, average_speed_kmh, status, created_by)
+               VALUES ($1, $2, $3, $4, 'draft', $5)
+               RETURNING *`,
+              [
+                `${routePrefix} ${city || region} ${i + 1}/${numRoutes}`,
+                optimizedBatch[0].direccion,
+                false,
+                30,
+                req.user!.id
+              ]
+            );
+            const route = routeRes.rows[0];
+
+            // Crear stops
+            for (let j = 0; j < optimizedBatch.length; j++) {
+              const stop = optimizedBatch[j];
+              await client.query(
+                `INSERT INTO route_stops (route_id, company_id, order_index, address, lat, lng, label)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+                [
+                  route.id,
+                  stop.id,
+                  j,
+                  stop.direccion,
+                  stop.lat,
+                  stop.lng,
+                  stop.nombre
+                ]
+              );
+            }
+
+            await client.query('COMMIT');
+            routesCreated.push({
+              id: route.id,
+              name: route.name,
+              stops: optimizedBatch.length,
+              status: 'draft'
+            });
+          } finally {
+            client.release();
+          }
+        } catch (e) {
+          console.error(`[Batch route ${i}] error:`, e);
+          // Continuar con la siguiente ruta
+        }
+      }
+
+      res.json({
+        success: true,
+        totalCompanies: companies.length,
+        validCompanies: validCompanies.length,
+        failedCompanies: failedCompanies.length,
+        routesCreated: routesCreated.length,
+        routes: routesCreated,
+      });
+    } catch (error) {
+      console.error('[Batch routes error]:', error);
+      res.status(500).json({ error: 'Error al crear rutas.' });
+    }
+  });
+
+  // GET /api/routes/cities — devuelve ciudades únicas de empresas según región
+  app.get('/api/routes/cities', requireAuth, async (req, res) => {
+    try {
+      const region = (req.query.region as string) || 'quebec';
+      let table: string;
+
+      if (region === 'ontario') {
+        table = 'ontario_companies';
+      } else {
+        table = 'quebec_companies';
+      }
+
+      const { rows } = await pool.query(`
+        SELECT DISTINCT TRIM(ciudad) AS city
+        FROM ${table}
+        WHERE ciudad IS NOT NULL AND TRIM(ciudad) <> '' AND TRIM(ciudad) <> 'null'
+        ORDER BY city
+        LIMIT 100
+      `);
+
+      res.json(rows.map(r => r.city));
+    } catch (error) {
+      console.error('[Cities Error]:', error);
+      res.status(500).json({ error: 'Error al obtener ciudades.' });
+    }
+  });
+
+  // GET /api/routes/companies — Empresas filtradas por región y opcionalmente ciudad
+  app.get('/api/routes/companies', requireAuth, async (req, res) => {
+    try {
+      const region = (req.query.region as string) || 'quebec';
+      const city = req.query.city as string;
+      const includeAll = req.query.includeAll === 'true';
+
+      let table: string;
+      const params: any[] = [];
+      let where: string[] = [];
+
+      if (region === 'ontario') {
+        table = 'ontario_companies';
+      } else {
+        table = 'quebec_companies';
+      }
+
+      if (city && city !== '') {
+        params.push(city);
+        where.push(`TRIM(ciudad) = $${params.length}`);
+      }
+
+      if (!includeAll) {
+        where.push(`direccion IS NOT NULL AND TRIM(direccion) <> '' AND TRIM(direccion) <> 'null'`);
+      }
+
+      const whereSQL = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+      const { rows } = await pool.query(`
+        SELECT 
+          id, 
+          nombre AS name, 
+          direccion AS address, 
+          ciudad AS city, 
+          provincia AS province, 
+          telefono AS phone,
+          work AS service,
+          latitude AS lat,
+          longitude AS lng
+        FROM ${table}
+        ${whereSQL}
+        ORDER BY nombre
+        LIMIT 200
+      `, params);
+
+      res.json({
+        region,
+        total: rows.length,
+        companies: rows,
+      });
+    } catch (error) {
+      console.error('[Companies Error]:', error);
+      res.status(500).json({ error: 'Error al obtener empresas.' });
+    }
+  });
+
+  // GET /api/companies/duplicates — Detectar empresas duplicadas
+  app.get('/api/companies/duplicates', requireAuth, async (req, res) => {
+    try {
+      const quebecResult = await pool.query(`
+        SELECT 
+          LOWER(TRIM(nombre)) AS name_clean,
+          COUNT(*) AS count,
+          ARRAY_AGG(id) AS ids,
+          ARRAY_AGG(nombre) AS names
+        FROM quebec_companies
+        GROUP BY LOWER(TRIM(nombre))
+        HAVING COUNT(*) > 1
+        ORDER BY count DESC
+        LIMIT 50
+      `);
+
+      const ontarioResult = await pool.query(`
+        SELECT 
+          LOWER(TRIM(nombre)) AS name_clean,
+          COUNT(*) AS count,
+          ARRAY_AGG(id) AS ids,
+          ARRAY_AGG(nombre) AS names
+        FROM ontario_companies
+        GROUP BY LOWER(TRIM(nombre))
+        HAVING COUNT(*) > 1
+        ORDER BY count DESC
+        LIMIT 50
+      `);
+
+      res.json({
+        quebec: quebecResult.rows,
+        ontario: ontarioResult.rows,
+        totalDuplicates: quebecResult.rows.length + ontarioResult.rows.length,
+      });
+    } catch (error) {
+      console.error('[Duplicates Error]:', error);
+      res.status(500).json({ error: 'Error al detectar duplicados.' });
+    }
+  });
+
+  // GET /api/routes — listar todas las rutas
+  app.get('/api/routes', requireAuth, async (req, res) => {
+    try {
+      const status = req.query.status as string;
+      const limit = Math.min(100, Math.max(10, parseInt(req.query.limit as string) || 50));
+      const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
+
+      let where = '';
+      const params: any[] = [];
+      if (status) {
+        params.push(status);
+        where = `WHERE r.status = $${params.length}`;
+      }
+
+      const countRes = await pool.query(
+        `SELECT COUNT(*)::int FROM routes r ${where}`, params
+      );
+      const total = parseInt(countRes.rows[0].count, 10);
+
+      const rows = await pool.query(`
+        SELECT r.id, r.name, r.start_address, r.status, r.total_distance_km,
+               r.estimated_time_minutes, r.notes, r.created_at, r.updated_at,
+               r.started_at, r.completed_at, r.paused_at,
+               (SELECT COUNT(*)::int FROM route_stops rs WHERE rs.route_id = r.id) AS stops_count,
+               (SELECT COUNT(*)::int FROM route_stops rs WHERE rs.route_id = r.id AND rs.status = 'visited') AS completed_stops
+        FROM routes r
+        ${where ? where + ' AND' : 'WHERE'} r.status != 'cancelled'
+        ORDER BY r.created_at DESC
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset]
+      );
+
+      res.json({
+        items: rows.rows,
+        total,
+        limit,
+        offset,
+      });
+    } catch (error) {
+      console.error('[Routes List Error]:', error);
+      res.status(500).json({ error: 'Error al listar rutas.' });
+    }
+  });
+
+  // POST /api/routes — crear una nueva ruta
+  app.post('/api/routes', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
+    const { name, startAddress, stops, returnToStart, averageSpeedKmh, notes } = req.body;
+
+    if (!name || !startAddress || !Array.isArray(stops) || stops.length === 0) {
+      return res.status(400).json({ error: 'name, startAddress y stops son requeridos.' });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // Crear la ruta
+      const routeRes = await client.query(
+        `INSERT INTO routes (name, start_address, return_to_start, average_speed_kmh, notes, status, created_by)
+         VALUES ($1, $2, $3, $4, $5, 'draft', $6)
+         RETURNING *`,
+        [name, startAddress, returnToStart || false, averageSpeedKmh || 30, notes || null, req.user!.id]
+      );
+      const route = routeRes.rows[0];
+
+      // Crear los stops en orden
+      for (let i = 0; i < stops.length; i++) {
+        const stop = stops[i];
+        await client.query(
+          `INSERT INTO route_stops (route_id, company_id, order_index, address, lat, lng, label)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            route.id,
+            stop.companyId || null,
+            i,
+            stop.address,
+            stop.lat || null,
+            stop.lng || null,
+            stop.label || stop.companyName || null,
+          ]
+        );
+      }
+
+      await client.query('COMMIT');
+      res.status(201).json({ id: route.id, name: route.name, status: route.status, createdAt: route.created_at });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('[Create Route Error]:', error);
+      res.status(500).json({ error: 'Error al crear ruta.' });
+    } finally {
+      client.release();
+    }
+  });
+
+  // GET /api/routes/:id — obtener detalle de una ruta
+  app.get('/api/routes/:id', requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const routeRes = await pool.query('SELECT * FROM routes WHERE id = $1', [id]);
+      if (routeRes.rows.length === 0) {
+        return res.status(404).json({ error: 'Ruta no encontrada.' });
+      }
+
+      const route = routeRes.rows[0];
+
+      const stopsRes = await pool.query(`
+        SELECT rs.id, rs.order_index, rs.address, rs.lat, rs.lng, rs.label,
+               rs.distance_from_previous_km, rs.status, rs.visited_at, rs.notes,
+               c.id AS company_id, c.name AS company_name
+        FROM route_stops rs
+        LEFT JOIN companies c ON rs.company_id = c.id
+        WHERE rs.route_id = $1
+        ORDER BY rs.order_index`,
+        [id]
+      );
+
+      res.json({ ...route, stops: stopsRes.rows });
+    } catch (error) {
+      console.error('[Route Detail Error]:', error);
+      res.status(500).json({ error: 'Error al obtener ruta.' });
+    }
+  });
+
+  // PATCH /api/routes/:id/status — cambiar estado de la ruta
+  app.patch('/api/routes/:id/status', requireAuth, requireRole('admin', 'editor'), async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
+
+      const validStatuses = ['draft', 'active', 'paused', 'completed', 'cancelled'];
+      if (!validStatuses.includes(status)) {
+        return res.status(400).json({ error: 'Estado inválido.' });
+      }
+
+      const updates: string[] = ['status = $2', 'updated_at = NOW()'];
+      const params: any[] = [id, status];
+
+      if (status === 'active') {
+        updates.push('started_at = NOW()');
+      } else if (status === 'paused') {
+        updates.push('paused_at = NOW()');
+      } else if (status === 'completed') {
+        updates.push('completed_at = NOW()');
+      }
+
+      const result = await pool.query(
+        `UPDATE routes SET ${updates.join(', ')} WHERE id = $1 RETURNING *`,
+        params
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Ruta no encontrada.' });
+      }
+
+      res.json(result.rows[0]);
+    } catch (error) {
+      console.error('[Update Route Status Error]:', error);
+      res.status(500).json({ error: 'Error al actualizar estado.' });
+    }
+  });
+
+  // PATCH /api/routes/:id/stops/:stopId — actualizar estado de un stop
+  app.patch('/api/routes/:id/stops/:stopId', requireAuth, async (req, res) => {
+    try {
+      const { stopId } = req.params;
+      const { status, notes } = req.body;
+
+      const validStatuses = ['pending', 'visited', 'skipped', 'failed'];
+      if (!validStatuses.includes(status)) {
+        return res.status(400).json({ error: 'Estado inválido.' });
+      }
+
+      const updates: string[] = ['status = $2'];
+      const params: any[] = [stopId, status];
+
+      if (status === 'visited') {
+        updates.push('visited_at = NOW()');
+      }
+      if (notes !== undefined) {
+        updates.push(`notes = $${updates.length + 1}`);
+        params.push(notes);
+      }
+
+      const result = await pool.query(
+        `UPDATE route_stops SET ${updates.join(', ')} WHERE id = $1 RETURNING *`,
+        params
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Parada no encontrada.' });
+      }
+
+      res.json(result.rows[0]);
+    } catch (error) {
+      console.error('[Update Stop Error]:', error);
+      res.status(500).json({ error: 'Error al actualizar parada.' });
+    }
+  });
+
+  // POST /api/routes/:id/reorder — reordenar stops
+  app.post('/api/routes/:id/reorder', requireAuth, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { stops } = req.body;
+
+      if (!Array.isArray(stops)) {
+        return res.status(400).json({ error: 'stops array requerido.' });
+      }
+
+      // Actualizar orden de cada stop
+      for (const stop of stops) {
+        await pool.query(
+          `UPDATE route_stops SET order_index = $2 WHERE id = $1 AND route_id = $3`,
+          [stop.id, stop.order, id]
+        );
+      }
+
+      // Recalcular distancias
+      await recalculateDistances(id);
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error('[Reorder Error]:', error);
+      res.status(500).json({ error: 'Error al reordenar paradas.' });
+    }
+  });
+
+  // Webhook genérico para notificaciones
+  app.post('/api/webhook/notify', async (req, res) => {
+    const secret = req.headers['x-webhook-secret'];
+    if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET) {
+      return res.status(401).json({ error: 'Webhook secret inválido.' });
+    }
+
+    const { event, data, url } = req.body;
+
+    if (!event || !url) {
+      return res.status(400).json({ error: 'event y url requeridos.' });
+    }
+
+    // Webhook payload estándar
+    const payload = {
+      event,
+      timestamp: new Date().toISOString(),
+      data,
+    };
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-Webhook-Secret': process.env.WEBHOOK_SECRET,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Webhook failed: ${response.status}`);
+      }
+
+      res.json({ success: true, event });
+    } catch (error: any) {
+      console.error('[Webhook error]:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // Helper: recalcular distancias después de reordenar
+async function recalculateDistances(routeId: string) {
+  const { rows: stops } = await pool.query(
+    `SELECT id, lat, lng FROM route_stops WHERE route_id = $1 ORDER BY order_index`,
+    [routeId]
+  );
+
+  // Haversine
+  const haversine = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng/2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  };
+
+  let totalDistance = 0;
+  for (let i = 1; i < stops.length; i++) {
+    if (stops[i-1].lat && stops[i].lat) {
+      const dist = haversine(stops[i-1].lat, stops[i-1].lng, stops[i].lat, stops[i].lng);
+      await pool.query(
+        `UPDATE route_stops SET distance_from_previous_km = $2 WHERE id = $1`,
+        [stops[i].id, dist]
+      );
+      totalDistance += dist;
+    }
+  }
+
+  // Actualizar distancia total de la ruta
+  await pool.query(
+    `UPDATE routes SET total_distance_km = $2, updated_at = NOW() WHERE id = $1`,
+    [routeId, totalDistance]
+  );
+}
+
+  // DELETE /api/routes/:id — eliminar una ruta
+  app.delete('/api/routes/:id', requireAuth, requireRole('admin', 'editor'), async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      const result = await pool.query(
+        `UPDATE routes SET status = 'cancelled', updated_at = NOW() WHERE id = $1 RETURNING id`,
+        [id]
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: 'Ruta no encontrada.' });
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error('[Delete Route Error]:', error);
+      res.status(500).json({ error: 'Error al eliminar ruta.' });
+    }
+  });
 
   // ── Vite / Static ────────────────────────────────────────────────────────────
   if (process.env.NODE_ENV !== 'production') {

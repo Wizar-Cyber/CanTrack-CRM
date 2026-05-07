@@ -80,10 +80,10 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
     setHasTemplate(false);
     try {
       // Fill template with company data
-      const data = await apiJson(`/api/service-templates/${serviceId}/fill`, {
+      const data = await apiJson<{ content?: string }>(`/api/service-templates/${serviceId}/fill`, {
         method: 'POST',
         body: JSON.stringify({ companyId: company.id }),
-      });
+      }) as { content?: string } | undefined;
       if (data?.content) {
         setTemplateContent(data.content);
         setHasTemplate(true);
@@ -108,7 +108,7 @@ export const SendOfferModal: React.FC<SendOfferModalProps> = ({ company, onClose
     if (!selectedType || !templateContent) return;
     setImprovingTemplate(true);
     try {
-      const data = await apiJson(`/api/service-templates/${selectedType.id}/ai-improve`, {
+      const data = await apiJson<{ improved?: string }>(`/api/service-templates/${selectedType.id}/ai-improve`, {
         method: 'POST',
         body: JSON.stringify({
           content: templateContent,

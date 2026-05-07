@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Briefcase, Building2, Settings as SettingsIcon, LogOut, Layers, ChevronLeft, ChevronRight, MapPin, Bot, Mail } from 'lucide-react';
+import { LayoutDashboard, Briefcase, Building2, Settings as SettingsIcon, LogOut, Layers, ChevronLeft, ChevronRight, MapPin, Bot, Mail, Route } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../contexts/AuthContext';
-import logoImg from '../../public/logo.jpg';
+import logoImg from '../public/logo.jpg';
 
 export const Sidebar: React.FC = () => {
   const location = useLocation();
@@ -16,7 +16,8 @@ export const Sidebar: React.FC = () => {
     { id: '/services', label: 'Services', icon: Layers },
     { id: '/companies', label: 'Companies', icon: Building2 },
     { id: '/campaigns', label: 'Campaigns', icon: Mail },
-    { id: '/visits', label: 'Visits', icon: MapPin },
+    { id: '/visits', label: 'Visit Planner', icon: MapPin },
+    { id: '/routes', label: 'Routes', icon: Route },
     { id: '/agent', label: 'AI Agent', icon: Bot },
   ];
 

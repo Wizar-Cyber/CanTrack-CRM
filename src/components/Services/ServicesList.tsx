@@ -125,12 +125,14 @@ export const ServicesList: React.FC = () => {
   useEffect(() => {
     api('/api/service-types')
       .then(r => r.json())
-      .then(d => setServices(d.data ?? []))
+      .then((d: { data?: ServiceType[] }) => setServices(d.data ?? []))
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
-  const categories = ['all', ...Array.from(new Set(services.map(s => s.category)))];
+  const categorySet = new Set<string>();
+  services.forEach((s: ServiceType) => categorySet.add(s.category));
+  const categories: string[] = ['all', ...Array.from(categorySet)];
 
   const filtered = services.filter(s => {
     const q = search.toLowerCase();
@@ -183,11 +185,11 @@ export const ServicesList: React.FC = () => {
         </div>
 
         <div className="flex gap-1.5 flex-wrap">
-          {categories.map(cat => {
+          {categories.map((cat: string) => {
             const s = getStyle(cat);
             const count = cat === 'all'
               ? services.length
-              : services.filter(x => x.category === cat).length;
+              : services.filter((x: ServiceType) => (x.category ?? '') === cat).length;
             const isActive = categoryFilter === cat;
             return (
               <button

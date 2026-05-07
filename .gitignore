@@ -4,7 +4,10 @@ dist/
 coverage/
 .DS_Store
 *.log
-.env*
+.env
 !.env.example
 .claude/
 __pycache__/
+*.test.ts
+tests/
+.vite/
