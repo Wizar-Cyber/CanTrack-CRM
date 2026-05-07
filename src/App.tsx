@@ -20,6 +20,7 @@ import { JobsView } from './components/Jobs/JobsView';
 import { VisitPlanner } from './components/Visits/VisitPlanner';
 import CampaignModule from './components/Campaigns/CampaignModule';
 import { ApplicationQueue } from './components/Jobs/ApplicationQueue';
+import { RouteManager } from './components/Routes/RouteManager';
 import { ToastContainer, useToasts } from './components/UI/Toast';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -307,6 +308,10 @@ const AppContent: React.FC = () => {
 
         <Route path="/visits" element={<ProtectedRoute><MainLayout>
           <VisitPlanner companies={companies} onSelectCompany={setSelectedCompany} />
+        </MainLayout></ProtectedRoute>} />
+
+        <Route path="/routes" element={<ProtectedRoute><MainLayout>
+          <RouteManager />
         </MainLayout></ProtectedRoute>} />
 
         <Route path="/agent" element={<ProtectedRoute><MainLayout>

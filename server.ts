@@ -551,6 +551,12 @@ app.use(cookieParser());
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
+  // Mapbox public token for frontend map rendering
+  app.get('/api/config/mapbox', requireAuth, (_req, res) => {
+    const token = process.env.MAPBOX_PUBLIC_TOKEN || process.env.MAPBOX_TOKEN || '';
+    res.json({ token });
+  });
+
   // ── Helpers ─────────────────────────────────────────────────────────────────
   function signToken(payload: object) {
     return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
@@ -2941,198 +2947,210 @@ Respond in ${language || 'English'} with JSON format:
     }
   });
 
-  // POST /api/routes/create-batch — crear múltiples rutas automáticas desde una ciudad
+  // POST /api/routes/create-batch — crear múltiples rutas automáticas desde una ciudad o pueblo
   app.post('/api/routes/create-batch', requireAuth, async (req: AuthRequest, res) => {
-    const { region, city, startLat, startLng, stopsPerRoute = 100, routePrefix = 'Route' } = req.body;
+    const {
+      region,
+      city,
+      town,
+      stopsPerRoute = 100,
+      routePrefix = 'Ruta',
+      averageSpeedKmh = 30,
+    } = req.body;
 
     if (!region) return res.status(400).json({ error: 'region es requerida.' });
 
-    const startCoords = startLat && startLng ? { lat: startLat, lng: startLng } : null;
+    // Haversine shared util
+    const haversine = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLng = (lng2 - lng1) * Math.PI / 180;
+      const a = Math.sin(dLat/2) ** 2 +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLng/2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    };
+
+    // Geographic nearest-neighbor clustering: groups companies into spatially coherent batches
+    const clusterByProximity = (companies: any[], batchSize: number): any[][] => {
+      const remaining = [...companies];
+      const batches: any[][] = [];
+
+      while (remaining.length > 0) {
+        // Centroid of remaining companies
+        const centLat = remaining.reduce((s, c) => s + c.lat, 0) / remaining.length;
+        const centLng = remaining.reduce((s, c) => s + c.lng, 0) / remaining.length;
+
+        // Seed: nearest company to centroid
+        let seedIdx = 0;
+        let minDist = Infinity;
+        remaining.forEach((c, i) => {
+          const d = haversine(centLat, centLng, c.lat, c.lng);
+          if (d < minDist) { minDist = d; seedIdx = i; }
+        });
+
+        const batch: any[] = [remaining.splice(seedIdx, 1)[0]];
+
+        // Grow batch greedily: always pick nearest to the last added stop
+        while (batch.length < batchSize && remaining.length > 0) {
+          const last = batch[batch.length - 1];
+          let nearIdx = 0;
+          let nearDist = Infinity;
+          remaining.forEach((c, i) => {
+            const d = haversine(last.lat, last.lng, c.lat, c.lng);
+            if (d < nearDist) { nearDist = d; nearIdx = i; }
+          });
+          batch.push(remaining.splice(nearIdx, 1)[0]);
+        }
+
+        batches.push(batch);
+      }
+      return batches;
+    };
 
     try {
-      let table = region === 'ontario' ? 'ontario_companies' : 'quebec_companies';
-      let cityFilter = city ? `AND TRIM(ciudad) = $1` : '';
-      let params: any[] = city ? [city] : [];
+      const table = region === 'ontario' ? 'ontario_companies' : 'quebec_companies';
+      const params: any[] = [];
+      const filters: string[] = [
+        `direccion IS NOT NULL AND TRIM(direccion) <> '' AND TRIM(direccion) <> 'null'`,
+        `lat IS NOT NULL AND lng IS NOT NULL`,
+      ];
 
-      // 1. Obtener empresas con dirección
+      if (town) {
+        params.push(town);
+        filters.push(`TRIM(pueblo) = $${params.length}`);
+      } else if (city) {
+        params.push(city);
+        filters.push(`TRIM(ciudad) = $${params.length}`);
+      }
+
+      // 1. Fetch companies that already have coordinates (skip geocoding for speed)
       const { rows: companies } = await pool.query(`
-        SELECT id, nombre, direccion, ciudad, telefono
+        SELECT id, nombre, direccion, ciudad, pueblo, telefono, lat, lng
         FROM ${table}
-        WHERE direccion IS NOT NULL AND TRIM(direccion) <> '' AND TRIM(direccion) <> 'null' ${cityFilter}
+        WHERE ${filters.join(' AND ')}
         ORDER BY nombre
-        LIMIT 500
+        LIMIT 2000
       `, params);
 
       if (companies.length === 0) {
-        return res.status(400).json({ error: 'No hay empresas con dirección en esta zona.' });
+        return res.status(400).json({ error: 'No hay empresas con coordenadas en esta zona. Ejecuta primero el proceso de geocodificación.' });
       }
 
-      // 2. Si tenemos coords iniciales, geocodificar empresas sin coords usando Haversine
-      const companiesWithCoords = await Promise.all(
-        companies.map(async (c: any) => {
-          // Si la empresa ya tiene lat/lng en la BD, usarlos
-          if (c.lat && c.lng) {
-            return { ...c, lat: c.lat, lng: c.lng };
-          }
-          
-          // Geocodificar usando Mapbox o Nominatim
-          try {
-            const encoded = encodeURIComponent(c.direccion + ', ' + c.ciudad + ', ' + region);
-            const geoRes = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encoded}&limit=1`, {
-              headers: { 'User-Agent': 'CanTrackCRM/1.0' }
-            });
-            const geoData = await geoRes.json();
-            if (geoData && geoData.length > 0) {
-              return { ...c, lat: parseFloat(geoData[0].lat), lng: parseFloat(geoData[0].lon) };
-            }
-          } catch (e) {
-            console.warn(`[Geocode] ${c.nombre}:`, e);
-          }
-          return { ...c, lat: null, lng: null, geocodeError: true };
-        })
-      );
-
-      // Filtrar empresas que no pudieron geocodificarse
-      const validCompanies = companiesWithCoords.filter(c => c.lat && c.lng);
-      const failedCompanies = companiesWithCoords.filter(c => !c.lat || !c.lng);
-      
-      if (validCompanies.length === 0) {
-        return res.status(400).json({ error: 'Aucune entreprise avec adresse valide.' });
-      }
-
-      // 3. Función Haversine para calcular distancia
-      const haversineDistance = (lat1: number, lng1: number, lat2: number, lng2: number) => {
-        const R = 6371;
-        const dLat = (lat2 - lat1) * Math.PI / 180;
-        const dLng = (lng2 - lng1) * Math.PI / 180;
-        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-                Math.sin(dLng/2) * Math.sin(dLng/2);
-        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-        return R * c;
-      };
-
-      // 4. Obtener punto de inicio (o usar la primera empresa válida si no hay GPS)
-      let startPoint = startCoords || (validCompanies[0] ? { lat: validCompanies[0].lat, lng: validCompanies[0].lng } : null);
-      
-      if (!startPoint) {
-        return res.status(400).json({ error: 'No se pudo determinar punto de inicio.' });
-      }
-
-      // 5. Ordenar por distancia al punto de inicio (nearest first)
-      validCompanies.sort((a, b) => {
-        const distA = haversineDistance(startPoint!.lat, startPoint!.lng, a.lat, a.lng);
-        const distB = haversineDistance(startPoint!.lat, startPoint!.lng, b.lat, b.lng);
-        return distA - distB;
-      });
-
-      // 6. Dividir en grupos de ~100 y crear rutas
+      // 2. Cluster companies geographically
+      const batchSize = Math.max(10, Math.min(stopsPerRoute, 150));
+      const batches = clusterByProximity(companies, batchSize);
+      const locationName = town || city || region;
       const routesCreated: any[] = [];
-      const batchSize = Math.min(stopsPerRoute, 100);
-      const numRoutes = Math.ceil(validCompanies.length / batchSize);
+      const numRoutes = batches.length;
 
       for (let i = 0; i < numRoutes; i++) {
-        const start = i * batchSize;
-        const end = Math.min(start + batchSize, validCompanies.length);
-        const batch = validCompanies.slice(start, end);
-
-        // Usar el último punto de la ruta anterior como inicio de la siguiente
-        if (i > 0 && batch.length > 0) {
-          startPoint = { lat: batch[0].lat, lng: batch[0].lng };
-          await new Promise(r => setTimeout(r, 100)); // small delay
-        }
-
+        const batch = batches[i];
         try {
-          // Intentar optimizar con Optimus si está disponible
-          const optimusRes = await fetch(`${OPTIMUS_URL}/api/routes`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              name: `${routePrefix} ${city || region} ${i + 1}`,
-              start_address: batch[0].direccion,
-              stops: batch.map((c: any) => c.direccion),
-              return_to_start: false,
-            }),
-          });
-
-          let optimizedOrder = batch.map((_: any, idx: number) => idx);
+          // 3. Try Optimus for optimized stop order within each batch
+          let orderedBatch = batch;
           let totalDistance = 0;
 
-          if (optimusRes.ok) {
-            const optData = await optimusRes.json();
-            optimizedOrder = optData.stops?.map((s: any) => s.order) || optimizedOrder;
-            totalDistance = optData.total_distance_km || 0;
-          } else {
-            // Fallback: calcular distancia total
-            for (let j = 1; j < batch.length; j++) {
-              totalDistance += haversineDistance(
-                batch[optimizedOrder[j-1]].lat, batch[optimizedOrder[j-1]].lng,
-                batch[optimizedOrder[j]].lat, batch[optimizedOrder[j]].lng
+          try {
+            const optimusRes = await fetch(`${OPTIMUS_URL}/api/routes`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              signal: AbortSignal.timeout(15000),
+              body: JSON.stringify({
+                name: `${routePrefix} ${locationName} ${i + 1}`,
+                start_address: batch[0].direccion + ', ' + batch[0].ciudad + ', Canada',
+                stops: batch.slice(1).map((c: any) => c.direccion + ', ' + (c.ciudad || '') + ', Canada'),
+                return_to_start: false,
+                average_speed_kmh: averageSpeedKmh,
+              }),
+            });
+
+            if (optimusRes.ok) {
+              const optData = await optimusRes.json();
+              if (optData.stops && optData.stops.length > 0) {
+                // Optimus returns stops in optimized order with indices
+                const optimizedIndices = optData.stops.map((s: any) => s.order ?? s.order_index ?? 0);
+                const allIndices = [0, ...optimizedIndices.map((idx: number) => idx + 1)];
+                orderedBatch = allIndices.map((idx: number) => batch[Math.min(idx, batch.length - 1)]).filter(Boolean);
+              }
+              totalDistance = optData.total_distance_km || 0;
+            }
+          } catch (optimusErr) {
+            // Fallback: calculate total distance from existing order
+            console.warn(`[Optimus] batch ${i + 1} failed, using proximity order:`, optimusErr);
+          }
+
+          // Calculate distances between consecutive stops using Haversine as fallback
+          if (totalDistance === 0) {
+            for (let j = 1; j < orderedBatch.length; j++) {
+              totalDistance += haversine(
+                orderedBatch[j-1].lat, orderedBatch[j-1].lng,
+                orderedBatch[j].lat, orderedBatch[j].lng
               );
             }
           }
 
-          // Reordenar según optimización
-          const optimizedBatch = optimizedOrder.map(idx => batch[idx]);
+          const estimatedTime = (totalDistance / averageSpeedKmh) * 60;
 
-          // Crear ruta en BD
+          // 4. Save route to DB
           const client = await pool.connect();
           try {
             await client.query('BEGIN');
 
             const routeRes = await client.query(
-              `INSERT INTO routes (name, start_address, return_to_start, average_speed_kmh, status, created_by)
-               VALUES ($1, $2, $3, $4, 'draft', $5)
+              `INSERT INTO routes (name, start_address, start_lat, start_lng, return_to_start, average_speed_kmh, total_distance_km, estimated_time_minutes, status, created_by)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'draft', $9)
                RETURNING *`,
               [
-                `${routePrefix} ${city || region} ${i + 1}/${numRoutes}`,
-                optimizedBatch[0].direccion,
+                `${routePrefix} ${locationName} ${i + 1}/${numRoutes}`,
+                orderedBatch[0].direccion,
+                orderedBatch[0].lat,
+                orderedBatch[0].lng,
                 false,
-                30,
-                req.user!.id
+                averageSpeedKmh,
+                Math.round(totalDistance * 10) / 10,
+                Math.round(estimatedTime),
+                req.user!.id,
               ]
             );
             const route = routeRes.rows[0];
 
-            // Crear stops
-            for (let j = 0; j < optimizedBatch.length; j++) {
-              const stop = optimizedBatch[j];
+            let prevLat = orderedBatch[0].lat;
+            let prevLng = orderedBatch[0].lng;
+
+            for (let j = 0; j < orderedBatch.length; j++) {
+              const stop = orderedBatch[j];
+              const distFromPrev = j === 0 ? 0 : haversine(prevLat, prevLng, stop.lat, stop.lng);
               await client.query(
-                `INSERT INTO route_stops (route_id, company_id, order_index, address, lat, lng, label)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-                [
-                  route.id,
-                  stop.id,
-                  j,
-                  stop.direccion,
-                  stop.lat,
-                  stop.lng,
-                  stop.nombre
-                ]
+                `INSERT INTO route_stops (route_id, company_id, order_index, address, lat, lng, label, distance_from_previous_km)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                [route.id, stop.id, j, stop.direccion, stop.lat, stop.lng, stop.nombre, Math.round(distFromPrev * 100) / 100]
               );
+              prevLat = stop.lat;
+              prevLng = stop.lng;
             }
 
             await client.query('COMMIT');
             routesCreated.push({
               id: route.id,
               name: route.name,
-              stops: optimizedBatch.length,
-              status: 'draft'
+              stops: orderedBatch.length,
+              totalDistanceKm: Math.round(totalDistance * 10) / 10,
+              estimatedTimeMin: Math.round(estimatedTime),
+              status: 'draft',
             });
           } finally {
             client.release();
           }
         } catch (e) {
-          console.error(`[Batch route ${i}] error:`, e);
-          // Continuar con la siguiente ruta
+          console.error(`[Batch route ${i + 1}] error:`, e);
         }
       }
 
       res.json({
         success: true,
+        location: locationName,
         totalCompanies: companies.length,
-        validCompanies: validCompanies.length,
-        failedCompanies: failedCompanies.length,
         routesCreated: routesCreated.length,
         routes: routesCreated,
       });
@@ -3146,26 +3164,56 @@ Respond in ${language || 'English'} with JSON format:
   app.get('/api/routes/cities', requireAuth, async (req, res) => {
     try {
       const region = (req.query.region as string) || 'quebec';
-      let table: string;
-
-      if (region === 'ontario') {
-        table = 'ontario_companies';
-      } else {
-        table = 'quebec_companies';
-      }
+      const table = region === 'ontario' ? 'ontario_companies' : 'quebec_companies';
 
       const { rows } = await pool.query(`
-        SELECT DISTINCT TRIM(ciudad) AS city
+        SELECT DISTINCT TRIM(ciudad) AS city,
+               COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE direccion IS NOT NULL AND TRIM(direccion) <> '' AND TRIM(direccion) <> 'null') AS with_address
         FROM ${table}
         WHERE ciudad IS NOT NULL AND TRIM(ciudad) <> '' AND TRIM(ciudad) <> 'null'
-        ORDER BY city
-        LIMIT 100
+        GROUP BY TRIM(ciudad)
+        HAVING COUNT(*) FILTER (WHERE direccion IS NOT NULL AND TRIM(direccion) <> '' AND TRIM(direccion) <> 'null') > 0
+        ORDER BY with_address DESC
+        LIMIT 200
       `);
 
-      res.json(rows.map(r => r.city));
+      res.json(rows.map(r => ({ name: r.city, total: parseInt(r.total), withAddress: parseInt(r.with_address) })));
     } catch (error) {
       console.error('[Cities Error]:', error);
       res.status(500).json({ error: 'Error al obtener ciudades.' });
+    }
+  });
+
+  // GET /api/routes/towns — devuelve pueblos únicos de empresas según región y ciudad opcional
+  app.get('/api/routes/towns', requireAuth, async (req, res) => {
+    try {
+      const region = (req.query.region as string) || 'quebec';
+      const city = req.query.city as string;
+      const table = region === 'ontario' ? 'ontario_companies' : 'quebec_companies';
+      const params: any[] = [];
+      let extraFilter = '';
+      if (city) {
+        params.push(city);
+        extraFilter = `AND TRIM(ciudad) = $${params.length}`;
+      }
+
+      const { rows } = await pool.query(`
+        SELECT DISTINCT TRIM(pueblo) AS town,
+               COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE direccion IS NOT NULL AND TRIM(direccion) <> '' AND TRIM(direccion) <> 'null') AS with_address
+        FROM ${table}
+        WHERE pueblo IS NOT NULL AND TRIM(pueblo) <> '' AND TRIM(pueblo) <> 'null' ${extraFilter}
+        GROUP BY TRIM(pueblo)
+        HAVING COUNT(*) FILTER (WHERE direccion IS NOT NULL AND TRIM(direccion) <> '' AND TRIM(direccion) <> 'null') > 0
+        ORDER BY with_address DESC
+        LIMIT 200
+      `, params);
+
+      res.json(rows.map(r => ({ name: r.town, total: parseInt(r.total), withAddress: parseInt(r.with_address) })));
+    } catch (error) {
+      console.error('[Towns Error]:', error);
+      res.status(500).json({ error: 'Error al obtener pueblos.' });
     }
   });
 
@@ -3269,40 +3317,38 @@ Respond in ${language || 'English'} with JSON format:
   app.get('/api/routes', requireAuth, async (req, res) => {
     try {
       const status = req.query.status as string;
-      const limit = Math.min(100, Math.max(10, parseInt(req.query.limit as string) || 50));
+      const limit = Math.min(200, Math.max(10, parseInt(req.query.limit as string) || 100));
       const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
 
-      let where = '';
       const params: any[] = [];
-      if (status) {
+      const filters: string[] = ["r.status != 'cancelled'"];
+
+      if (status && status !== 'all') {
         params.push(status);
-        where = `WHERE r.status = $${params.length}`;
+        filters.push(`r.status = $${params.length}`);
       }
 
-      const countRes = await pool.query(
-        `SELECT COUNT(*)::int FROM routes r ${where}`, params
-      );
+      const where = `WHERE ${filters.join(' AND ')}`;
+
+      const countRes = await pool.query(`SELECT COUNT(*)::int FROM routes r ${where}`, params);
       const total = parseInt(countRes.rows[0].count, 10);
 
-      const rows = await pool.query(`
-        SELECT r.id, r.name, r.start_address, r.status, r.total_distance_km,
-               r.estimated_time_minutes, r.notes, r.created_at, r.updated_at,
-               r.started_at, r.completed_at, r.paused_at,
+      const { rows } = await pool.query(`
+        SELECT r.id, r.name, r.start_address, r.start_lat, r.start_lng,
+               r.status, r.total_distance_km, r.estimated_time_minutes,
+               r.notes, r.created_at, r.updated_at, r.started_at, r.completed_at,
                (SELECT COUNT(*)::int FROM route_stops rs WHERE rs.route_id = r.id) AS stops_count,
-               (SELECT COUNT(*)::int FROM route_stops rs WHERE rs.route_id = r.id AND rs.status = 'visited') AS completed_stops
+               (SELECT COUNT(*)::int FROM route_stops rs WHERE rs.route_id = r.id AND rs.status = 'visited') AS visited_stops,
+               (SELECT COUNT(*)::int FROM route_stops rs WHERE rs.route_id = r.id AND rs.status = 'skipped') AS skipped_stops,
+               (SELECT COUNT(*)::int FROM route_stops rs WHERE rs.route_id = r.id AND rs.status = 'failed') AS failed_stops
         FROM routes r
-        ${where ? where + ' AND' : 'WHERE'} r.status != 'cancelled'
+        ${where}
         ORDER BY r.created_at DESC
         LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
         [...params, limit, offset]
       );
 
-      res.json({
-        items: rows.rows,
-        total,
-        limit,
-        offset,
-      });
+      res.json({ items: rows, total, limit, offset });
     } catch (error) {
       console.error('[Routes List Error]:', error);
       res.status(500).json({ error: 'Error al listar rutas.' });
@@ -3374,9 +3420,12 @@ Respond in ${language || 'English'} with JSON format:
       const stopsRes = await pool.query(`
         SELECT rs.id, rs.order_index, rs.address, rs.lat, rs.lng, rs.label,
                rs.distance_from_previous_km, rs.status, rs.visited_at, rs.notes,
-               c.id AS company_id, c.name AS company_name
+               rs.company_id,
+               COALESCE(oc.nombre, qc.nombre) AS company_name,
+               COALESCE(oc.telefono, qc.telefono) AS company_phone
         FROM route_stops rs
-        LEFT JOIN companies c ON rs.company_id = c.id
+        LEFT JOIN ontario_companies oc ON rs.company_id = oc.id
+        LEFT JOIN quebec_companies qc ON rs.company_id = qc.id
         WHERE rs.route_id = $1
         ORDER BY rs.order_index`,
         [id]
