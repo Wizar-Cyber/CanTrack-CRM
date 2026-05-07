@@ -8,13 +8,15 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
-      - DATABASE_URL=postgresql://casaos:casaos@host.docker.internal:5434/casaos
+      - DATABASE_URL=postgresql://casaos:casaos@host.docker.internal:5432/casaos
       - OPTIMUS_URL=http://optimus-rutas:8000
     env_file:
       - .env
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - cantrack-network
 
   # Optimus_rutas (Python - Route Optimization)
   optimus-rutas:
@@ -44,5 +46,7 @@ volumes:
   optimus-data:
 
 networks:
+  cantrack-network:
+    driver: bridge
   default:
     name: cantrack-network
