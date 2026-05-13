@@ -34,8 +34,13 @@ class Base(DeclarativeBase):
 
 
 class RouteStatus(str, enum.Enum):
+    # Optimus-native statuses
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
+    # CanTrack-compatible statuses
+    DRAFT = "draft"
+    ACTIVE = "active"
+    PAUSED = "paused"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
 
@@ -54,7 +59,7 @@ class Route(Base):
     user_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[RouteStatus] = mapped_column(
-        Enum(RouteStatus, native_enum=False, length=20),
+        Enum(RouteStatus, native_enum=False, values_callable=lambda obj: [e.value for e in obj], length=20),
         default=RouteStatus.PENDING,
         nullable=False,
         index=True,
@@ -106,7 +111,7 @@ class RouteStop(Base):
     label: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     distance_from_previous_km: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     status: Mapped[StopStatus] = mapped_column(
-        Enum(StopStatus, native_enum=False, length=20),
+        Enum(StopStatus, native_enum=False, values_callable=lambda obj: [e.value for e in obj], length=20),
         default=StopStatus.PENDING,
         nullable=False,
     )

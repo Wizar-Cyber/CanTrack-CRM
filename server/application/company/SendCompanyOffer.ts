@@ -23,7 +23,7 @@ export class SendCompanyOfferUseCase {
 
   async execute(input: SendOfferInput): Promise<{ messageId?: string }> {
     const company = await this.companies.findById(input.companyId);
-    if (!company) throw new NotFoundError('Empresa');
+    if (!company) throw new NotFoundError('Company');
 
     const htmlBody = this.email.buildOfferHtml({
       companyName:              company.name,
@@ -44,7 +44,7 @@ export class SendCompanyOfferUseCase {
       sentByUserId:    input.sentByUserId,
     });
 
-    if (!result.success) throw new DomainError(result.error ?? 'Error al enviar el correo.', 502);
+    if (!result.success) throw new DomainError(result.error ?? 'Error sending email.', 502);
 
     await this.companies.logEmail({
       ...input,

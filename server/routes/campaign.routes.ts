@@ -213,15 +213,36 @@ export function createCampaignRouter(pool: Pool) {
         });
       }
 
+      // Min-gap: don't re-email a company too soon (from config or body override)
+      const autoCfgRow = await pool.query(
+        `SELECT auto_min_gap_days FROM campaign_config LIMIT 1`,
+      );
+      const minGapDays: number = Number(req.body.minGapDays)
+        || autoCfgRow.rows[0]?.auto_min_gap_days
+        || 60;
+
       const params: unknown[] = [];
       let query = `
         SELECT id, nombre, correo, work
         FROM ${cfg.table}
         WHERE correo IS NOT NULL
           AND correo <> ''
-          AND correo LIKE '%@%'
+          AND correo ~ '^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$'
+          AND LENGTH(correo) BETWEEN 6 AND 254
           AND is_duplicate = FALSE
+          AND LOWER(correo) NOT LIKE 'noreply@%'
+          AND LOWER(correo) NOT LIKE 'no-reply@%'
+          AND LOWER(correo) NOT LIKE 'donotreply@%'
+          AND LOWER(correo) NOT LIKE 'postmaster@%'
+          AND LOWER(correo) NOT LIKE 'mailer-daemon@%'
+          AND LOWER(correo) NOT LIKE 'abuse@%'
+          AND COALESCE(LOWER(status), '') NOT IN ('closed','cerrada','inactive','inactiva','bloqueado','no contactar','desactivo')
+          AND COALESCE(email_status, 'unknown') NOT IN ('bounced','invalid','unsubscribed','blocked')
+          AND LOWER(correo) NOT IN (SELECT LOWER(email) FROM email_suppression WHERE email IS NOT NULL)
+          AND SPLIT_PART(LOWER(correo), '@', 2) NOT IN (SELECT LOWER(domain) FROM email_suppression WHERE domain IS NOT NULL)
+          AND (last_campaign_at IS NULL OR last_campaign_at < NOW() - ($${params.length + 1} || ' days')::INTERVAL)
       `;
+      params.push(minGapDays);
 
       if (workFilter) {
         params.push(workFilter);
@@ -237,7 +258,9 @@ export function createCampaignRouter(pool: Pool) {
       const companiesResult = await pool.query(query, params);
       const companies = companiesResult.rows;
       if (companies.length === 0) {
-        return res.status(400).json({ error: 'No hay empresas con email para esa región/filtro' });
+        return res.status(400).json({
+          error: `No hay empresas elegibles. Todas fueron contactadas en los últimos ${minGapDays} días.`,
+        });
       }
 
       const groups = new Map<string, typeof companies>();
@@ -281,16 +304,40 @@ export function createCampaignRouter(pool: Pool) {
             subscribed++;
           } catch (error: any) {
             errors.push(`${contact.correo}: ${error.message}`);
+            // Mark permanently invalid emails so they are excluded from future sends
+            const msg = (error.message || '').toLowerCase();
+            const isPermanent = msg.includes('invalid') || msg.includes('bounce') ||
+              msg.includes('bad') || msg.includes('rejected') || msg.includes('does not exist');
+            if (isPermanent) {
+              pool.query(
+                `UPDATE ${cfg.table}
+                 SET email_status = 'bounced', email_bounce_count = COALESCE(email_bounce_count,0)+1,
+                     email_blocked_at = NOW()
+                 WHERE id = $1`,
+                [contact.id],
+              ).catch(() => {});
+              pool.query(
+                `INSERT INTO email_suppression (email, reason, source, notes)
+                 VALUES (LOWER($1), 'bounce', 'mdirector', $2)
+                 ON CONFLICT DO NOTHING`,
+                [contact.correo, error.message.slice(0, 200)],
+              ).catch(() => {});
+            }
           }
         }
 
         try {
-          const campaignName = `${region.toUpperCase()}_${work.replace(/\s+/g, '_').slice(0, 36)}_${Date.now()}`;
+          const sendDate = new Date(scheduleDate);
+          const dd = String(sendDate.getDate()).padStart(2, '0');
+          const mm = String(sendDate.getMonth() + 1).padStart(2, '0');
+          const yyyy = sendDate.getFullYear();
+          const campaignName = `${work} ${region.toUpperCase()} ${dd}/${mm}/${yyyy}`;
+
           const delivery = await MDirectorService.createDeliveryFromTemplate({
             name: campaignName,
             campaignName,
             templateId,
-            subject: req.body.subject || templateName,
+            subject: req.body.subject || campaignName,
             segmentId,
             language: resolvedLanguage as 'fr' | 'en',
             scheduleDate,
@@ -307,15 +354,22 @@ export function createCampaignRouter(pool: Pool) {
             errors,
           });
 
-          await pool.query(
-            `INSERT INTO email_campaign_log
-              (company_id, company_name, company_email, work_label, mdirector_campaign_id, mdirector_list_id, status, sent_by_user_id)
-             SELECT id, nombre, correo, $1, $2, $3, 'scheduled', $4
-             FROM ${cfg.table}
-             WHERE id = ANY($5::uuid[])`,
-            [work, delivery.campaignId, cfg.listId, req.user!.id, contacts.map(c => c.id)],
-          ).catch((err) => {
-            console.warn('[Campaign] No se pudo registrar email_campaign_log:', err.message);
+          const ids = contacts.map(c => c.id);
+          await Promise.all([
+            pool.query(
+              `INSERT INTO email_campaign_log
+                (company_id, company_name, company_email, work_label, mdirector_campaign_id, mdirector_list_id, status, sent_by_user_id)
+               SELECT id, nombre, correo, $1, $2, $3, 'scheduled', $4
+               FROM ${cfg.table}
+               WHERE id = ANY($5::uuid[])`,
+              [work, delivery.campaignId, cfg.listId, req.user!.id, ids],
+            ),
+            pool.query(
+              `UPDATE ${cfg.table} SET last_campaign_at = NOW() WHERE id = ANY($1::uuid[])`,
+              [ids],
+            ),
+          ]).catch((err) => {
+            console.warn('[Campaign] Error registrando log/last_campaign_at:', err.message);
           });
         } catch (error: any) {
           results.push({
@@ -420,6 +474,268 @@ export function createCampaignRouter(pool: Pool) {
     } catch (error: any) {
       console.error('[Send Test Error]:', error);
       return res.status(500).json({ error: error.message || 'Error al enviar prueba' });
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // POST /api/campaign/webhook/bounce  — MDirector notifica un bounce/unsubscribe
+  // No requiere auth (MDirector llama desde fuera). Validar con ?secret=XXX.
+  // ---------------------------------------------------------------------------
+  router.post('/webhook/bounce', async (req, res) => {
+    const secret = process.env.CAMPAIGN_WEBHOOK_SECRET || '';
+    if (secret && req.query.secret !== secret) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    try {
+      // MDirector puede enviar distintos formatos; capturamos los campos más comunes
+      const email  = String(req.body.email || req.body.correo || '').toLowerCase().trim();
+      const type   = String(req.body.type  || req.body.reason || 'bounce').toLowerCase();
+      if (!email || !email.includes('@')) return res.json({ ok: false, reason: 'no email' });
+
+      const reason = type.includes('unsub') ? 'unsubscribed'
+                   : type.includes('complaint') || type.includes('spam') ? 'spam_complaint'
+                   : 'bounce';
+
+      const emailStatus = reason === 'unsubscribed' ? 'unsubscribed' : 'bounced';
+
+      await Promise.all([
+        // Insert into suppression list
+        pool.query(
+          `INSERT INTO email_suppression (email, reason, source, notes)
+           VALUES ($1, $2, 'mdirector_webhook', $3) ON CONFLICT DO NOTHING`,
+          [email, reason, JSON.stringify(req.body).slice(0, 300)],
+        ),
+        // Update in ontario_companies
+        pool.query(
+          `UPDATE ontario_companies
+           SET email_status=$1, email_bounce_count=COALESCE(email_bounce_count,0)+1, email_blocked_at=NOW()
+           WHERE LOWER(correo)=$2`,
+          [emailStatus, email],
+        ),
+        // Update in quebec_companies
+        pool.query(
+          `UPDATE quebec_companies
+           SET email_status=$1, email_bounce_count=COALESCE(email_bounce_count,0)+1, email_blocked_at=NOW()
+           WHERE LOWER(correo)=$2`,
+          [emailStatus, email],
+        ),
+      ]);
+
+      console.log(`[BounceWebhook] ${email} → ${reason}`);
+      return res.json({ ok: true, email, reason });
+    } catch (err: any) {
+      console.error('[BounceWebhook] Error:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/campaign/suppression — lista de supresión
+  router.get('/suppression', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res: Response) => {
+    try {
+      const r = await pool.query(
+        `SELECT id, email, domain, reason, source, notes, created_at
+         FROM email_suppression ORDER BY created_at DESC LIMIT 500`,
+      );
+      const stats = await pool.query(`
+        SELECT
+          (SELECT COUNT(*) FROM email_suppression)                                    AS total,
+          (SELECT COUNT(*) FROM email_suppression WHERE reason='bounce')              AS bounces,
+          (SELECT COUNT(*) FROM email_suppression WHERE reason='unsubscribed')        AS unsubscribes,
+          (SELECT COUNT(*) FROM email_suppression WHERE reason='spam_complaint')      AS spam,
+          (SELECT COUNT(*) FROM email_suppression WHERE reason='manual')              AS manual,
+          (SELECT COUNT(*) FROM ontario_companies WHERE email_status IN ('bounced','invalid','unsubscribed','blocked')) AS blocked_ontario,
+          (SELECT COUNT(*) FROM quebec_companies  WHERE email_status IN ('bounced','invalid','unsubscribed','blocked')) AS blocked_quebec
+      `);
+      return res.json({ list: r.rows, stats: stats.rows[0] });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/campaign/suppression — agregar manualmente
+  router.post('/suppression', requireAuth, requireRole('admin'), async (req: AuthRequest, res: Response) => {
+    const email  = String(req.body.email  || '').toLowerCase().trim() || null;
+    const domain = String(req.body.domain || '').toLowerCase().trim() || null;
+    const reason = String(req.body.reason || 'manual').toLowerCase();
+    if (!email && !domain) return res.status(400).json({ error: 'email o domain requerido' });
+    try {
+      await pool.query(
+        `INSERT INTO email_suppression (email, domain, reason, source, notes)
+         VALUES ($1, $2, $3, 'manual', $4) ON CONFLICT DO NOTHING`,
+        [email, domain, reason, req.body.notes || null],
+      );
+      if (email) {
+        for (const tbl of ['ontario_companies', 'quebec_companies']) {
+          await pool.query(
+            `UPDATE ${tbl} SET email_status='blocked', email_blocked_at=NOW() WHERE LOWER(correo)=$1`,
+            [email],
+          );
+        }
+      }
+      return res.json({ ok: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // DELETE /api/campaign/suppression/:id — quitar de la lista
+  router.delete('/suppression/:id', requireAuth, requireRole('admin'), async (req: AuthRequest, res: Response) => {
+    try {
+      const r = await pool.query(
+        `DELETE FROM email_suppression WHERE id=$1 RETURNING email, domain`, [req.params.id],
+      );
+      const row = r.rows[0];
+      if (row?.email) {
+        for (const tbl of ['ontario_companies', 'quebec_companies']) {
+          await pool.query(
+            `UPDATE ${tbl} SET email_status='unknown', email_blocked_at=NULL WHERE LOWER(correo)=$1 AND email_status='blocked'`,
+            [row.email],
+          );
+        }
+      }
+      return res.json({ ok: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/campaign/auto-config
+  router.get('/auto-config', requireAuth, requireRole('admin', 'editor'), async (_req: AuthRequest, res: Response) => {
+    try {
+      const r = await pool.query(
+        `SELECT auto_enabled, auto_ontario, auto_quebec,
+                auto_new_days, auto_resend_days, auto_min_gap_days,
+                auto_schedule_hour, auto_last_run_at
+         FROM campaign_config LIMIT 1`,
+      );
+      return res.json(r.rows[0] ?? {});
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // PATCH /api/campaign/auto-config
+  router.patch('/auto-config', requireAuth, requireRole('admin'), async (req: AuthRequest, res: Response) => {
+    const allowed = ['auto_enabled','auto_ontario','auto_quebec','auto_new_days','auto_resend_days','auto_min_gap_days','auto_schedule_hour'];
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    for (const key of allowed) {
+      if (req.body[key] !== undefined) {
+        vals.push(req.body[key]);
+        sets.push(`${key} = $${vals.length}`);
+      }
+    }
+    if (sets.length === 0) return res.status(400).json({ error: 'Sin campos a actualizar' });
+    vals.push('00000000-0000-0000-0000-000000000001');
+    try {
+      await pool.query(
+        `UPDATE campaign_config SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${vals.length}`,
+        vals,
+      );
+      return res.json({ ok: true });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/campaign/auto-run  (disparo manual de la automatización)
+  router.post('/auto-run', requireAuth, requireRole('admin'), async (req: AuthRequest, res: Response) => {
+    try {
+      const { runCampaignAutomation } = await import('../services/campaign-automation.service.js') as any;
+      const result = await runCampaignAutomation(pool, { forcedBy: req.user!.id });
+      return res.json(result);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/campaign/history
+  router.get('/history', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res: Response) => {
+    try {
+      const limit = Math.min(500, parseInt(req.query.limit as string) || 200);
+      const result = await pool.query(`
+        SELECT ecl.id, ecl.company_name, ecl.company_email, ecl.work_label,
+               ecl.mdirector_campaign_id, ecl.mdirector_list_id,
+               ecl.status, ecl.sent_at,
+               u.first_name || ' ' || u.last_name AS sent_by_name
+        FROM email_campaign_log ecl
+        LEFT JOIN users u ON u.id = ecl.sent_by_user_id
+        ORDER BY ecl.sent_at DESC
+        LIMIT $1
+      `, [limit]);
+      return res.json(result.rows);
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/campaign/distinct-work — distinct work types for filter
+  router.get('/distinct-work', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res: Response) => {
+    try {
+      const region = normalizeRegion(req.query.region);
+      if (!region) return res.status(400).json({ error: 'Invalid region.' });
+      const { table } = regionConfig(region);
+      const result = await pool.query(
+        `SELECT DISTINCT work FROM ${table} WHERE work IS NOT NULL AND work != '' AND is_duplicate = FALSE ORDER BY work`
+      );
+      return res.json(result.rows.map(r => r.work));
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/campaign/distinct-city — distinct cities for filter
+  router.get('/distinct-city', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res: Response) => {
+    try {
+      const region = normalizeRegion(req.query.region);
+      if (!region) return res.status(400).json({ error: 'Invalid region.' });
+      const { table } = regionConfig(region);
+      const result = await pool.query(
+        `SELECT DISTINCT ciudad FROM ${table} WHERE ciudad IS NOT NULL AND ciudad != '' AND is_duplicate = FALSE ORDER BY ciudad`
+      );
+      return res.json(result.rows.map(r => r.ciudad));
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/campaign/preview — preview recipients count
+  router.post('/preview', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res: Response) => {
+    try {
+      const region = normalizeRegion(req.body.region);
+      if (!region) return res.status(400).json({ error: 'Invalid region.' });
+      const { table } = regionConfig(region);
+      const work = String(req.body.work || '').trim().toUpperCase();
+      const city = String(req.body.city || '').trim();
+      const minGapDays = parseInt(String(req.body.minGapDays || '60'), 10);
+
+      const conditions: string[] = [
+        `is_duplicate = FALSE`,
+        `correo IS NOT NULL AND correo != ''`,
+        `LOWER(correo) NOT LIKE 'noreply@%' AND LOWER(correo) NOT LIKE 'no-reply@%'`,
+        `LOWER(correo) NOT LIKE 'donotreply@%' AND LOWER(correo) NOT LIKE 'postmaster@%'`,
+        `LOWER(correo) NOT LIKE 'mailer-daemon@%'`,
+      ];
+
+      if (work) conditions.push(`work = '${work.replace(/'/g, "''")}'`);
+      if (city) conditions.push(`ciudad ILIKE '%${city.replace(/'/g, "''")}%'`);
+
+      const where = conditions.join(' AND ');
+
+      const countResult = await pool.query(
+        `SELECT COUNT(*) FROM ${table} WHERE ${where}`
+      );
+
+      const sampleResult = await pool.query(
+        `SELECT correo FROM ${table} WHERE ${where} ORDER BY created_at DESC LIMIT 10`
+      );
+
+      return res.json({
+        total: parseInt(countResult.rows[0].count, 10),
+        emails: sampleResult.rows.map(r => r.correo),
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
     }
   });
 

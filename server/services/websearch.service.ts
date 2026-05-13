@@ -1,12 +1,12 @@
 /**
- * WebSearchService — Enriquecimiento básico sin LLMs usando:
- *   1. DuckDuckGo Instant Answer API (gratuito, sin clave)
- *   2. Wikipedia REST API (gratuito, sin clave)
+ * WebSearchService — Basic enrichment without LLMs using:
+ *   1. DuckDuckGo Instant Answer API (free, no API key)
+ *   2. Wikipedia REST API (free, no API key)
  *
- * No da datos tan estructurados como un LLM, pero sirve como último recurso
- * para obtener descripción, país y URL de empresas conocidas.
+ * Provides less structured data than an LLM, but serves as a last resort
+ * for obtaining descriptions, country, and URLs of known companies.
  *
- * No requiere ninguna env var.
+ * No env vars required.
  */
 
 import { EnrichmentData } from './groq.service.js';
@@ -28,8 +28,8 @@ interface WikiSummary {
 
 export class WebSearchService {
   /**
-   * Intenta obtener datos básicos de la empresa usando DuckDuckGo + Wikipedia.
-   * Devuelve confidence_score bajo (20-40) porque los datos son parciales.
+   * Attempts to get basic company data using DuckDuckGo + Wikipedia.
+   * Returns a low confidence_score (20-40) because data is partial.
    */
   static async enrichCompany(companyName: string): Promise<EnrichmentData> {
     const results = await Promise.allSettled([
@@ -50,11 +50,11 @@ export class WebSearchService {
       ddg?.AbstractURL ||
       '';
 
-    // Intentar inferir el país desde la descripción
+    // Attempt to infer country from description
     const hq_country = this.inferCountry(description);
 
     if (!description && !website) {
-      // Sin datos de ninguna fuente → confidence mínima
+      // No data from any source → minimum confidence
       return { confidence_score: 5, _provider: 'web_search_empty' };
     }
 
@@ -78,7 +78,7 @@ export class WebSearchService {
       });
       if (!res.ok) return null;
       const json: DDGResult = await res.json();
-      // Solo aceptar si DuckDuckGo devolvió un result concreto (no ambiguo)
+      // Only accept if DuckDuckGo returned a concrete result (not ambiguous)
       return json.Abstract ? json : null;
     } catch (error) {
       console.error('[WebSearch DDG Error]', (error as Error).message);
@@ -89,7 +89,7 @@ export class WebSearchService {
   // ── Wikipedia REST API ────────────────────────────────────────────────────
 
   private static async queryWikipedia(companyName: string): Promise<WikiSummary | null> {
-    // Prueba primero en español, luego en inglés
+    // Try Spanish first, then English
     for (const lang of ['es', 'en']) {
       try {
         const slug = encodeURIComponent(companyName.trim());
@@ -103,14 +103,14 @@ export class WebSearchService {
         });
         if (!res.ok) continue;
         const json: WikiSummary = await res.json();
-        // Descartar páginas de desambiguación
+        // Discard disambiguation pages
         if (json.extract && json.extract.length > 50) return json;
       } catch { /* continuar al siguiente idioma */ }
     }
     return null;
   }
 
-  // ── Inferencia básica de país ─────────────────────────────────────────────
+  // ── Basic Country Inference ───────────────────────────────────────────────
 
   private static inferCountry(text: string): string | undefined {
     if (!text) return undefined;

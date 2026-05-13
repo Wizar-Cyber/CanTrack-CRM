@@ -33,16 +33,15 @@ from app.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-# Transiciones legítimas. Cualquier otra es rechazada.
+# Transiciones legítimas. Cubre tanto los estados de Optimus como los de CanTrack.
 _VALID_TRANSITIONS = {
-    RouteStatus.PENDING: {RouteStatus.IN_PROGRESS, RouteStatus.CANCELLED},
-    RouteStatus.IN_PROGRESS: {
-        RouteStatus.PENDING,
-        RouteStatus.COMPLETED,
-        RouteStatus.CANCELLED,
-    },
-    RouteStatus.COMPLETED: set(),  # estado terminal
-    RouteStatus.CANCELLED: set(),  # estado terminal
+    RouteStatus.PENDING:     {RouteStatus.IN_PROGRESS, RouteStatus.ACTIVE, RouteStatus.CANCELLED},
+    RouteStatus.DRAFT:       {RouteStatus.PENDING, RouteStatus.IN_PROGRESS, RouteStatus.ACTIVE, RouteStatus.CANCELLED},
+    RouteStatus.IN_PROGRESS: {RouteStatus.PENDING, RouteStatus.PAUSED, RouteStatus.COMPLETED, RouteStatus.CANCELLED},
+    RouteStatus.ACTIVE:      {RouteStatus.PAUSED, RouteStatus.IN_PROGRESS, RouteStatus.COMPLETED, RouteStatus.CANCELLED},
+    RouteStatus.PAUSED:      {RouteStatus.ACTIVE, RouteStatus.IN_PROGRESS, RouteStatus.CANCELLED},
+    RouteStatus.COMPLETED:   set(),
+    RouteStatus.CANCELLED:   set(),
 }
 
 
@@ -196,7 +195,7 @@ class RouteService:
 
         now = datetime.now(timezone.utc)
         route.status = payload.status
-        if payload.status == RouteStatus.IN_PROGRESS:
+        if payload.status in (RouteStatus.IN_PROGRESS, RouteStatus.ACTIVE):
             if route.started_at is None:
                 route.started_at = now
             route.current_stop_index = payload.current_stop_index
@@ -232,7 +231,7 @@ class RouteService:
             stop.visited_at = datetime.now(timezone.utc)
 
         # Si todas las paradas están en estado terminal, mover ruta a completed
-        if route.status == RouteStatus.IN_PROGRESS and all(
+        if route.status in (RouteStatus.IN_PROGRESS, RouteStatus.ACTIVE) and all(
             s.status != StopStatus.PENDING for s in route.stops
         ):
             route.status = RouteStatus.COMPLETED

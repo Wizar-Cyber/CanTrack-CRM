@@ -39,7 +39,7 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onViewJob, onSelectCom
                     {job.serviceName && job.hasDirectServiceMatch && (
                       <span
                         className="px-1.5 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-bold rounded uppercase tracking-wider"
-                        title={`Vacante original: ${job.title}`}
+                        title={`Original vacancy: ${job.title}`}
                       >
                         {job.serviceName}
                       </span>
@@ -47,9 +47,9 @@ export const JobTable: React.FC<JobTableProps> = ({ jobs, onViewJob, onSelectCom
                     {!job.hasDirectServiceMatch && job.serviceTypeId == null && job.title && (
                       <span
                         className="px-1.5 py-0.5 bg-amber-50 text-amber-700 text-[10px] font-bold rounded uppercase tracking-wider"
-                        title="La IA no encontró un servicio CanTrack que coincida con esta vacante"
+                        title="AI did not find a CanTrack service matching this vacancy"
                       >
-                        Sin servicio directo
+                        No direct service
                       </span>
                     )}
                     {job.isEasyApply && (

@@ -15,7 +15,7 @@ export class EnrichCompanyUseCase {
 
   async execute(companyId: string, companyName: string): Promise<EnrichCompanyOutput> {
     if (!companyId || !companyName) {
-      throw new DomainError('companyId y companyName son requeridos.');
+      throw new DomainError('companyId and companyName are required.');
     }
 
     const existing = await this.companies.findById(companyId);

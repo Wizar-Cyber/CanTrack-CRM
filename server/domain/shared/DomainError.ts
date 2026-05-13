@@ -10,7 +10,7 @@ export class DomainError extends Error {
 
 export class NotFoundError extends DomainError {
   constructor(entity: string) {
-    super(`${entity} no encontrado.`, 404);
+    super(`${entity} not found.`, 404);
     this.name = 'NotFoundError';
   }
 }
@@ -23,14 +23,14 @@ export class ConflictError extends DomainError {
 }
 
 export class UnauthorizedError extends DomainError {
-  constructor(message = 'No autorizado.') {
+  constructor(message = 'Unauthorized.') {
     super(message, 401);
     this.name = 'UnauthorizedError';
   }
 }
 
 export class ForbiddenError extends DomainError {
-  constructor(message = 'Permisos insuficientes.') {
+  constructor(message = 'Insufficient permissions.') {
     super(message, 403);
     this.name = 'ForbiddenError';
   }

@@ -246,13 +246,13 @@ export const JobsView: React.FC<JobsViewProps> = ({ onViewJob, onSelectCompany }
                 <div className="flex items-center justify-between pt-3 mt-3 border-t border-slate-100">
                   {job.postedAt ? (
                     <span className="flex items-center gap-1 text-[11px] text-slate-400">
-                      <Calendar className="w-3 h-3" />{new Date(job.postedAt).toLocaleDateString('es', { day: '2-digit', month: 'short' })}
+                      <Calendar className="w-3 h-3" />{new Date(job.postedAt).toLocaleDateString('en-CA', { day: '2-digit', month: 'short' })}
                     </span>
                   ) : <span />}
                   <div className="flex items-center gap-1">
                     {job.status && <StatusBadge status={job.status} />}
                     <a href={job.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
-                      className="p-1.5 text-slate-300 hover:text-lime-600 hover:bg-lime-50 rounded-lg transition-all" title="Abrir vacante">
+                      className="p-1.5 text-slate-300 hover:text-lime-600 hover:bg-lime-50 rounded-lg transition-all" title="Open vacancy">
                       <ExternalLink className="w-3.5 h-3.5" />
                     </a>
                   </div>
@@ -307,7 +307,7 @@ export const JobsView: React.FC<JobsViewProps> = ({ onViewJob, onSelectCompany }
                             {job.titleDisplay || job.serviceName || job.title}
                           </p>
                           {job.serviceName && job.hasDirectServiceMatch && (
-                            <span className="inline-flex px-1.5 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-bold rounded uppercase tracking-wide shrink-0" title={`Vacante original: ${job.title}`}>
+                            <span className="inline-flex px-1.5 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-bold rounded uppercase tracking-wide shrink-0" title={`Original vacancy: ${job.title}`}>
                               {job.serviceName}
                             </span>
                           )}
@@ -336,7 +336,7 @@ export const JobsView: React.FC<JobsViewProps> = ({ onViewJob, onSelectCompany }
                         <span className="flex items-center gap-1 text-[11px] text-lime-600 font-medium"><Building2 className="w-3 h-3" />{job.companyHqCity}</span>
                       )}
                       {job.postedAt && (
-                        <span className="flex items-center gap-1 text-[11px] text-slate-400"><Calendar className="w-3 h-3" />{new Date(job.postedAt).toLocaleDateString('es', { day: '2-digit', month: 'short' })}</span>
+                        <span className="flex items-center gap-1 text-[11px] text-slate-400"><Calendar className="w-3 h-3" />{new Date(job.postedAt).toLocaleDateString('en-CA', { day: '2-digit', month: 'short' })}</span>
                       )}
                       {isEnriched && job.companyWebsite && (
                         <a href={job.companyWebsite} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
@@ -345,7 +345,7 @@ export const JobsView: React.FC<JobsViewProps> = ({ onViewJob, onSelectCompany }
                     </div>
                   </div>
                   <a href={job.url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
-                    className="p-2 text-slate-300 hover:text-lime-600 hover:bg-lime-50 rounded-lg transition-all shrink-0 mt-0.5 opacity-0 group-hover:opacity-100" title="Abrir">
+                    className="p-2 text-slate-300 hover:text-lime-600 hover:bg-lime-50 rounded-lg transition-all shrink-0 mt-0.5 opacity-0 group-hover:opacity-100" title="Open">
                     <ExternalLink className="w-4 h-4" />
                   </a>
                 </div>

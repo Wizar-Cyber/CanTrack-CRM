@@ -1,1161 +1,673 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { apiJson } from '../../services/apiClient';
 import {
-  Mail, Send, Eye, Settings, Clock, CheckCircle, XCircle,
-  AlertTriangle, RefreshCw, ChevronDown, ChevronUp, Building2,
-  Calendar, BarChart3, Loader2, Filter, Phone, MapPin, Globe,
+  Mail, Send, Zap, Clock, CheckCircle, AlertCircle,
+  Loader2, Calendar, Users, Eye, Search, Filter,
+  Play, Square, Settings, RotateCcw, BarChart3,
+  Globe, MapPin, ChevronDown, ChevronUp,
 } from 'lucide-react';
 
-// ── Tipos ─────────────────────────────────────────────────────────────────────
-
-interface SheetCompany {
-  empresa:         string;
-  work:            string;
-  tipo:            string | null;
-  email:           string | null;
-  hasEmail:        boolean;
-  phone:           string | null;
-  exactAddress:    string | null;
-  ciudad:          string | null;
-  provincia:       string | null;
-  pueblo:          string | null;
-  dominio:         string | null;
-  descripcion:     string | null;
-  addedToSheetAt:  string | null;
-  lastCampaignAt:  string | null;
-  enrichmentStatus: string;
-}
-
-interface CampaignContact {
-  companyId: string | null;
-  companyName: string;
-  email: string;
-  work: string;
-  templateId: string | null;
-  direccion: string;
-  isNew: boolean;
-  lastSentAt: string | null;
-  addedToSheetAt: string | null;
-  tipo: string | null;
-}
-
-interface CampaignPreview {
-  toSend: CampaignContact[];
-  skipped: Array<{ name: string; reason: string }>;
-  byWork: Record<string, number>;
-  totalNew: number;
-  totalOld: number;
-}
-
-interface CampaignConfig {
-  newCompanyDays: number;
-  resendIntervalDays: number;
-  mdirectorConfigured: boolean;
-  mdirectorFromEmail: string;
-  mdirectorFromName: string;
-  serviceTemplateMap: Record<string, string>;
+interface MDSendResult {
+  success: boolean; region: string;
+  template: { id: string; name: string };
+  scheduleDate: string;
+  totalCompanies: number; totalSubscribed: number; totalCampaigns: number;
+  skipped: Array<{ name: string; email: string; reason: string }>;
+  results: Array<{
+    work: string; segmentId: string; contactCount: number;
+    subscribed: number; campaignId?: string; envId?: string;
+    status: 'success' | 'failed'; errors: string[];
+  }>;
 }
 
 interface HistoryEntry {
-  id: string;
-  company_name: string;
-  company_email: string;
-  work_label: string;
-  mdirector_campaign_id: string;
-  status: string;
-  sent_at: string;
-  sent_by_name: string;
+  id: string; company_name: string; company_email: string;
+  work_label: string; mdirector_campaign_id: string;
+  mdirector_list_id: string; status: string;
+  sent_at: string; sent_by_name: string;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function daysAgo(dateStr: string | null): string {
-  if (!dateStr) return '—';
-  const d = Math.round((Date.now() - new Date(dateStr).getTime()) / 86_400_000);
-  if (d === 0) return 'hoy';
-  if (d === 1) return 'ayer';
-  return `hace ${d}d`;
+interface MDTemplateMapping {
+  id: string; region: string; work_label: string;
+  template_id: string; template_name: string;
 }
 
-function statusBadge(status: string) {
-  const map: Record<string, string> = {
-    scraped: 'bg-blue-100 text-blue-700',
-    db_matched: 'bg-purple-100 text-purple-700',
-    verified: 'bg-green-100 text-green-700',
-    failed: 'bg-red-100 text-red-700',
-    pending: 'bg-yellow-100 text-yellow-700',
-    unknown: 'bg-gray-100 text-gray-500',
-  };
-  return map[status] ?? 'bg-gray-100 text-gray-500';
+interface AutoConfig {
+  auto_enabled: boolean; auto_ontario: boolean; auto_quebec: boolean;
+  auto_new_days: number; auto_resend_days: number;
+  auto_min_gap_days: number; auto_schedule_hour: number;
+  auto_last_run_at: string | null;
+  new_company_days: number; resend_interval_days: number;
 }
 
-// Usa el cliente centralizado que lee el token via getStoredToken()
 async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
   return apiJson<T>(`/api${path}`, opts);
 }
 
-// ── Componente principal ──────────────────────────────────────────────────────
+type Tab = 'mass' | 'schedule' | 'history';
 
 export default function CampaignModule() {
-  const [tab, setTab] = useState<'companies' | 'preview' | 'history' | 'config' | 'mdirector'>('mdirector');
+  const [tab, setTab] = useState<Tab>('mass');
 
   return (
-    <div className="flex flex-col h-full bg-gray-50">
-      {/* Header */}
-      <div className="bg-white border-b border-gray-200 px-6 py-4">
-        <div className="flex items-center gap-3 mb-4">
-          <div className="p-2 bg-blue-50 rounded-lg">
-            <Mail className="w-5 h-5 text-blue-600" />
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="flex items-center gap-3 mb-2">
+            <div className="p-2.5 bg-lime-50 rounded-lg border border-lime-200">
+              <Mail className="w-5 h-5 text-lime-600" />
+            </div>
+            <h2 className="text-2xl font-bold text-slate-900">Email Campaigns</h2>
           </div>
-          <div>
-            <h1 className="text-xl font-semibold text-gray-900">Email Campaigns</h1>
-            <p className="text-sm text-gray-500">Ontario &amp; Quebec → MDirector</p>
-          </div>
+          <p className="text-sm text-slate-500">Ontario & Quebec — MDirector</p>
         </div>
+      </div>
 
-        {/* Tabs */}
-        <nav className="flex gap-1 flex-wrap">
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="flex border-b border-slate-200">
           {([
-            { key: 'mdirector', label: 'Ontario / Quebec', icon: Globe },
-            { key: 'companies', label: 'Sheet Companies',  icon: Building2 },
-            { key: 'preview',   label: 'Preview',          icon: Eye },
-            { key: 'history',   label: 'History',          icon: Clock },
-            { key: 'config',    label: 'Settings',         icon: Settings },
-          ] as const).map(({ key, label, icon: Icon }) => (
-            <button
-              key={key}
-              onClick={() => setTab(key)}
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+            { key: 'mass' as Tab,    label: 'Mass Send',       icon: Send,    desc: 'Send to all or filtered companies' },
+            { key: 'schedule' as Tab, label: 'Auto Schedule',  icon: Zap,     desc: 'Configure recurring automated campaigns' },
+            { key: 'history' as Tab, label: 'Campaign Log',    icon: BarChart3, desc: 'View send history and stats' },
+          ]).map(({ key, label, icon: Icon, desc }) => (
+            <button key={key} onClick={() => setTab(key)}
+              className={`flex-1 px-6 py-4 border-b-2 transition-colors text-sm font-medium ${
                 tab === key
-                  ? 'bg-blue-50 text-blue-700'
-                  : 'text-gray-600 hover:bg-gray-100'
-              }`}
-            >
-              <Icon className="w-4 h-4" />
-              {label}
+                  ? 'border-lime-600 text-lime-700 bg-lime-50/50'
+                  : 'border-transparent text-slate-600 hover:bg-slate-50'
+              }`} title={desc}>
+              <div className="flex items-center gap-2 justify-center">
+                <Icon className="w-4 h-4" /><span>{label}</span>
+              </div>
             </button>
           ))}
-        </nav>
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 overflow-auto p-6">
-        {tab === 'mdirector' && <MDirectorTab />}
-        {tab === 'companies' && <CompaniesTab />}
-        {tab === 'preview'   && <PreviewTab onGoHistory={() => setTab('history')} />}
-        {tab === 'history'   && <HistoryTab />}
-        {tab === 'config'    && <ConfigTab />}
+        </div>
+        <div className="p-6 bg-slate-50/50">
+          {tab === 'mass'     && <MassSendTab />}
+          {tab === 'schedule' && <AutoScheduleTab />}
+          {tab === 'history'  && <CampaignHistoryTab />}
+        </div>
       </div>
     </div>
   );
 }
 
-// ── Tab: Empresas del Sheet ───────────────────────────────────────────────────
+// ── Mass Send Tab ────────────────────────────────────────────────────────────────
 
-const TIPO_BADGES: Record<string, { emoji: string; label: string; cls: string }> = {
-  verde:   { emoji: '🟢', label: 'Visita',   cls: 'bg-green-100 text-green-800 border-green-200' },
-  naranja: { emoji: '🟠', label: 'Llamada',  cls: 'bg-orange-100 text-orange-800 border-orange-200' },
-  morado:  { emoji: '🟣', label: 'Casa',     cls: 'bg-purple-100 text-purple-800 border-purple-200' },
-  rojo:    { emoji: '🔴', label: 'Cerrada',  cls: 'bg-red-100 text-red-700 border-red-200' },
-};
+function MassSendTab() {
+  const [region, setRegion] = useState<'ontario' | 'quebec'>('ontario');
+  const [work, setWork] = useState('');
+  const [city, setCity] = useState('');
+  const [mappings, setMappings] = useState<MDTemplateMapping[]>([]);
+  const [workOptions, setWorkOptions] = useState<string[]>([]);
+  const [cityOptions, setCityOptions] = useState<string[]>([]);
+  const [loadingMap, setLoadingMap] = useState(true);
+  const [searching, setSearching] = useState(false);
+  const [preview, setPreview] = useState<{ total: number; emails: string[] } | null>(null);
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<MDSendResult | null>(null);
+  const [error, setError] = useState('');
+  const [confirming, setConfirming] = useState(false);
 
-function CompaniesTab() {
-  const [companies, setCompanies] = useState<SheetCompany[]>([]);
-  const [loading, setLoading]     = useState(true);
-  const [error, setError]         = useState('');
-  const [filter, setFilter]       = useState('');
-  const [workFilter, setWorkFilter] = useState('');
-  const [tipoFilter, setTipoFilter] = useState<string>('all');
-
-  const load = useCallback(async () => {
-    setLoading(true); setError('');
+  const loadData = useCallback(async (r: 'ontario' | 'quebec') => {
+    setLoadingMap(true); setWork(''); setCity(''); setError(''); setPreview(null); setResult(null);
     try {
-      const d = await apiFetch<{ total: number; companies: SheetCompany[] }>('/campaigns/sheet-companies');
-      setCompanies(d.companies);
-    } catch (e: any) { setError(e.message); }
-    finally { setLoading(false); }
+      const [mapData, workData, cityData] = await Promise.all([
+        apiFetch<{ mappings: MDTemplateMapping[] }>(`/campaign/template-map?region=${r}`),
+        apiFetch<string[]>(`/campaign/distinct-work?region=${r}`).catch(() => []),
+        apiFetch<string[]>(`/campaign/distinct-city?region=${r}`).catch(() => []),
+      ]);
+      setMappings(mapData.mappings ?? []);
+      setWorkOptions(Array.isArray(workData) ? workData.sort() : []);
+      setCityOptions(Array.isArray(cityData) ? cityData.sort() : []);
+    } catch (e: any) {
+      setError(e.message);
+    } finally { setLoadingMap(false); }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { loadData(region); }, [region, loadData]);
 
-  const works = Array.from(new Set(companies.map(c => c.work))).sort();
-  const filtered = companies.filter(c => {
-    const q = filter.toLowerCase();
-    const matchSearch = !q || c.empresa.toLowerCase().includes(q) || (c.work || '').toLowerCase().includes(q);
-    const matchWork   = !workFilter || c.work === workFilter;
-    const matchTipo   = tipoFilter === 'all' || c.tipo === tipoFilter || (tipoFilter === 'sin' && !c.tipo);
-    return matchSearch && matchWork && matchTipo;
-  });
-
-  const withEmail    = filtered.filter(c => c.hasEmail).length;
-  const withCampaign = filtered.filter(c => c.lastCampaignAt).length;
-  const rojoCount    = companies.filter(c => c.tipo === 'rojo').length;
-
-  return (
-    <div className="space-y-4">
-      {/* Stats rápidas */}
-      <div className="grid grid-cols-4 gap-4">
-        {[
-          { label: 'Total en Sheet', value: companies.length, color: 'text-gray-900' },
-          { label: 'Con email',      value: withEmail,        color: 'text-green-700' },
-          { label: 'Sin email',      value: companies.length - withEmail, color: 'text-red-600' },
-          { label: 'Ya enviado',     value: withCampaign,     color: 'text-blue-700' },
-        ].map(s => (
-          <div key={s.label} className="bg-white rounded-xl border border-gray-200 p-4">
-            <p className="text-xs text-gray-500 mb-1">{s.label}</p>
-            <p className={`text-2xl font-bold ${s.color}`}>{s.value}</p>
-          </div>
-        ))}
-      </div>
-
-      {/* Tipo filter pills */}
-      <div className="flex flex-wrap gap-2 items-center">
-        <span className="text-xs text-gray-500 font-medium mr-1">Tipo:</span>
-        {([
-          { key: 'all',    label: 'Todos',    cls: tipoFilter === 'all'    ? 'bg-gray-800 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200' },
-          { key: 'verde',   label: '🟢 Visita',  cls: tipoFilter === 'verde'   ? 'bg-green-600 text-white' : 'bg-green-50 text-green-700 border border-green-200 hover:bg-green-100' },
-          { key: 'naranja', label: '🟠 Llamadas', cls: tipoFilter === 'naranja' ? 'bg-orange-500 text-white' : 'bg-orange-50 text-orange-700 border border-orange-200 hover:bg-orange-100' },
-          { key: 'morado',  label: '🟣 Casa',    cls: tipoFilter === 'morado'  ? 'bg-purple-600 text-white' : 'bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100' },
-          { key: 'rojo',    label: '🔴 Cerradas', cls: tipoFilter === 'rojo'    ? 'bg-red-600 text-white' : 'bg-red-50 text-red-700 border border-red-200 hover:bg-red-100' },
-          { key: 'sin',     label: '○ Sin tipo',  cls: tipoFilter === 'sin'    ? 'bg-gray-500 text-white' : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100' },
-        ]).map(({ key, label, cls }) => (
-          <button
-            key={key}
-            onClick={() => setTipoFilter(key)}
-            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${cls}`}
-          >
-            {label}{key === 'rojo' && rojoCount > 0 ? ` (${rojoCount} excluidas)` : ''}
-          </button>
-        ))}
-      </div>
-
-      {/* Filtros */}
-      <div className="flex gap-3">
-        <input
-          type="text"
-          placeholder="Buscar empresa..."
-          value={filter}
-          onChange={e => setFilter(e.target.value)}
-          className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-        <select
-          value={workFilter}
-          onChange={e => setWorkFilter(e.target.value)}
-          className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">Todos los servicios</option>
-          {works.map(w => <option key={w} value={w}>{w}</option>)}
-        </select>
-        <button onClick={load} className="p-2 border border-gray-200 rounded-lg hover:bg-gray-50">
-          <RefreshCw className="w-4 h-4 text-gray-500" />
-        </button>
-      </div>
-
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{error}</div>
-      )}
-
-      {loading ? (
-        <div className="flex justify-center py-12">
-          <Loader2 className="w-6 h-6 animate-spin text-blue-500" />
-        </div>
-      ) : (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Empresa</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Servicio (WORK)</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Contacto</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Agregada</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Último envío</th>
-                <th className="text-left px-4 py-3 font-medium text-gray-600">Estado</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {filtered.length === 0 && (
-                <tr><td colSpan={6} className="text-center py-8 text-gray-400">Sin resultados</td></tr>
-              )}
-              {filtered.map((c, i) => {
-                const tipoCfg = c.tipo ? TIPO_BADGES[c.tipo] : null;
-                const isRojo  = c.tipo === 'rojo';
-                return (
-                <tr key={i} className={`hover:bg-gray-50 ${isRojo ? 'bg-red-50/40 opacity-60' : ''}`}>
-                  {/* Empresa + tipo + dirección */}
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <p className="font-medium text-gray-900 truncate max-w-[180px]">{c.empresa}</p>
-                      {tipoCfg && (
-                        <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[10px] font-semibold ${tipoCfg.cls}`}>
-                          {tipoCfg.emoji} {tipoCfg.label}
-                        </span>
-                      )}
-                    </div>
-                    {c.exactAddress && (
-                      <p className="text-xs text-gray-400 flex items-center gap-1 mt-0.5">
-                        <MapPin className="w-3 h-3 shrink-0" />
-                        <span className="truncate max-w-[180px]">{c.exactAddress}</span>
-                      </p>
-                    )}
-                    {c.phone && (
-                      <p className="text-xs text-gray-400 flex items-center gap-1 mt-0.5">
-                        <Phone className="w-3 h-3 shrink-0" />
-                        {c.phone}
-                      </p>
-                    )}
-                  </td>
-                  {/* Servicio WORK */}
-                  <td className="px-4 py-3">
-                    {c.work
-                      ? <span className="px-2 py-0.5 bg-lime-50 text-lime-700 border border-lime-100 rounded text-xs font-medium">{c.work}</span>
-                      : <span className="text-xs text-gray-300 italic">Sin categoría</span>
-                    }
-                  </td>
-                  {/* Email */}
-                  <td className="px-4 py-3">
-                    {c.hasEmail ? (
-                      <span className="text-xs text-green-700 flex items-center gap-1">
-                        <CheckCircle className="w-3 h-3" /> {c.email}
-                      </span>
-                    ) : (
-                      <span className="text-xs text-gray-300 flex items-center gap-1">
-                        <XCircle className="w-3 h-3" /> Sin email
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-gray-500">{daysAgo(c.addedToSheetAt)}</td>
-                  <td className="px-4 py-3 text-xs text-gray-500">{daysAgo(c.lastCampaignAt)}</td>
-                  <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${statusBadge(c.enrichmentStatus)}`}>
-                      {c.enrichmentStatus}
-                    </span>
-                  </td>
-                </tr>
-              );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Tab: Vista previa + Enviar ────────────────────────────────────────────────
-
-function PreviewTab({ onGoHistory }: { onGoHistory: () => void }) {
-  const [preview, setPreview]       = useState<CampaignPreview | null>(null);
-  const [loading, setLoading]       = useState(false);
-  const [sending, setSending]       = useState(false);
-  const [error, setError]           = useState('');
-  const [result, setResult]         = useState<any>(null);
-  const [showSkipped, setShowSkipped] = useState(false);
+  const selectedMapping = work ? mappings.find(m => m.work_label === work) ?? null : null;
 
   const loadPreview = async () => {
-    setLoading(true); setError(''); setResult(null);
+    setSearching(true); setError('');
     try {
-      const d = await apiFetch<CampaignPreview>('/campaigns/preview');
+      const body: Record<string, unknown> = { region };
+      if (work) body.work = work;
+      if (city) body.city = city;
+      const d = await apiFetch<{ total: number; emails: string[] }>('/campaign/preview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
       setPreview(d);
     } catch (e: any) { setError(e.message); }
-    finally { setLoading(false); }
+    finally { setSearching(false); }
   };
 
-  const send = async () => {
-    if (!preview || preview.toSend.length === 0) return;
-    if (!confirm(`¿Confirmas el envío a ${preview.toSend.length} empresas en MDirector?`)) return;
-    setSending(true); setError('');
+  const sendCampaign = async () => {
+    setSending(true); setError(''); setResult(null); setConfirming(false);
     try {
-      const r = await apiFetch<any>('/campaigns/send', {
-        method: 'POST',
-        body: JSON.stringify({ contacts: preview.toSend }),
+      const body: Record<string, unknown> = { region };
+      if (work) body.work = work;
+      if (city) body.city = city;
+      const d = await apiFetch<MDSendResult>('/campaign/send-template', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
-      setResult(r);
-      setPreview(null);
+      setResult(d);
     } catch (e: any) { setError(e.message); }
     finally { setSending(false); }
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex gap-3">
-        <button
-          onClick={loadPreview}
-          disabled={loading}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm font-medium"
-        >
-          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Eye className="w-4 h-4" />}
-          Generar Vista Previa
-        </button>
-        {preview && preview.toSend.length > 0 && (
-          <button
-            onClick={send}
-            disabled={sending}
-            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 text-sm font-medium"
-          >
-            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-            Enviar a MDirector ({preview.toSend.length})
+    <div className="space-y-6 max-w-4xl">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {(['ontario', 'quebec'] as const).map(r => (
+          <button key={r} onClick={() => { setRegion(r); setPreview(null); }}
+            className={`p-4 rounded-lg border-2 text-center transition-all ${
+              region === r ? 'border-lime-500 bg-lime-50 shadow-sm' : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}>
+            <p className="text-lg font-bold text-slate-900">{r === 'ontario' ? 'Ontario' : 'Quebec'}</p>
+            <p className="text-xs text-slate-500 mt-1">List {r === 'ontario' ? '28' : '30'}</p>
           </button>
-        )}
+        ))}
       </div>
 
-      {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700 flex items-start gap-2">
-          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-          {error}
-        </div>
-      )}
+      {!loadingMap && (
+        <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-5">
+          <h3 className="font-bold text-slate-900 flex items-center gap-2">
+            <Send className="w-4 h-4 text-lime-600" /> Campaign Filters
+          </h3>
 
-      {/* Resultado del envío */}
-      {result && (
-        <div className="bg-green-50 border border-green-200 rounded-xl p-5">
-          <div className="flex items-center gap-2 mb-3">
-            <CheckCircle className="w-5 h-5 text-green-600" />
-            <h3 className="font-semibold text-green-800">Campaña enviada</h3>
-          </div>
-          <div className="grid grid-cols-3 gap-4 mb-3">
-            <div className="text-center"><p className="text-2xl font-bold text-green-700">{result.sent}</p><p className="text-xs text-green-600">Enviados</p></div>
-            <div className="text-center"><p className="text-2xl font-bold text-red-600">{result.failed}</p><p className="text-xs text-red-500">Fallidos</p></div>
-            <div className="text-center"><p className="text-2xl font-bold text-gray-500">{result.skipped}</p><p className="text-xs text-gray-400">Omitidos</p></div>
-          </div>
-          <button onClick={onGoHistory} className="text-sm text-green-700 underline">Ver historial →</button>
-        </div>
-      )}
-
-      {/* Preview cards */}
-      {preview && (
-        <div className="space-y-4">
-          {/* Summary */}
-          <div className="grid grid-cols-3 gap-4">
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <p className="text-xs text-gray-500">A enviar</p>
-              <p className="text-2xl font-bold text-gray-900">{preview.toSend.length}</p>
-              <p className="text-xs text-gray-400">{preview.totalNew} nuevas · {preview.totalOld} antiguas</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Work Type</label>
+              <select value={work} onChange={e => setWork(e.target.value)}
+                className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-lime-400 focus:border-lime-400 outline-none transition bg-white">
+                <option value="">All work types</option>
+                {workOptions.map(w => <option key={w} value={w}>{w}</option>)}
+              </select>
             </div>
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <p className="text-xs text-gray-500">Omitidas</p>
-              <p className="text-2xl font-bold text-amber-600">{preview.skipped.length}</p>
-            </div>
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <p className="text-xs text-gray-500">Servicios distintos</p>
-              <p className="text-2xl font-bold text-blue-700">{Object.keys(preview.byWork).length}</p>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">City</label>
+              <select value={city} onChange={e => setCity(e.target.value)}
+                className="w-full px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-lime-400 focus:border-lime-400 outline-none transition bg-white">
+                <option value="">All cities</option>
+                {cityOptions.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
             </div>
           </div>
 
-          {/* Por servicio */}
-          {Object.keys(preview.byWork).length > 0 && (
-            <div className="bg-white rounded-xl border border-gray-200 p-4">
-              <h3 className="text-sm font-semibold text-gray-700 mb-3 flex items-center gap-2">
-                <BarChart3 className="w-4 h-4" /> Por servicio WORK
-              </h3>
-              <div className="grid grid-cols-2 gap-2">
-                {Object.entries(preview.byWork).sort((a,b) => (b[1] as number)-(a[1] as number)).map(([work, n]) => (
-                  <div key={work} className="flex justify-between items-center px-3 py-1.5 bg-gray-50 rounded-lg">
-                    <span className="text-sm text-gray-700">{work}</span>
-                    <span className="text-sm font-semibold text-blue-700">{n}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
+          {selectedMapping && (
+            <p className="text-xs text-lime-700 bg-lime-50 p-2.5 rounded-lg flex items-center gap-2">
+              <CheckCircle className="w-3.5 h-3.5" />
+              Template: <strong>{selectedMapping.template_name}</strong>
+            </p>
           )}
 
-          {/* Lista a enviar */}
-          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-            <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-gray-700">Empresas a contactar</h3>
-              <span className="text-xs text-gray-400">{preview.toSend.length} registros</span>
-            </div>
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Empresa</th>
-                  <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Email</th>
-                  <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">WORK</th>
-                  <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Tipo</th>
-                  <th className="text-left px-4 py-2 text-xs font-medium text-gray-500">Estado</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {preview.toSend.map((c, i) => {
-                  const tc = c.tipo ? TIPO_BADGES[c.tipo] : null;
-                  return (
-                  <tr key={i} className="hover:bg-gray-50">
-                    <td className="px-4 py-2 font-medium text-gray-900 truncate max-w-[180px]">{c.companyName}</td>
-                    <td className="px-4 py-2 text-gray-500 text-xs">{c.email}</td>
-                    <td className="px-4 py-2">
-                      <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-xs">{c.work}</span>
-                    </td>
-                    <td className="px-4 py-2">
-                      {tc
-                        ? <span className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[10px] font-semibold ${tc.cls}`}>{tc.emoji} {tc.label}</span>
-                        : <span className="text-xs text-gray-300">—</span>
-                      }
-                    </td>
-                    <td className="px-4 py-2">
-                      <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                        c.isNew ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
-                      }`}>
-                        {c.isNew ? '🆕 Nueva' : '🔄 Reenvío'}
-                      </span>
-                    </td>
-                  </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          {/* Preview */}
+          <div className="flex gap-3">
+            <button onClick={loadPreview} disabled={searching}
+              className="flex-1 px-4 py-2.5 bg-slate-200 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-300 transition-colors flex items-center justify-center gap-2 disabled:opacity-50">
+              {searching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Eye className="w-4 h-4" />}
+              Preview Recipients
+            </button>
+            <button onClick={() => setConfirming(true)} disabled={!selectedMapping || sending}
+              className="flex-1 px-4 py-2.5 bg-lime-600 text-white rounded-lg text-sm font-medium hover:bg-lime-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50">
+              <Send className="w-4 h-4" /> Send Campaign
+            </button>
           </div>
 
-          {/* Omitidas */}
-          {preview.skipped.length > 0 && (
-            <div className="bg-white rounded-xl border border-amber-200 overflow-hidden">
-              <button
-                onClick={() => setShowSkipped(s => !s)}
-                className="w-full px-4 py-3 flex items-center justify-between text-sm font-medium text-amber-700"
-              >
-                <span className="flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4" />
-                  {preview.skipped.length} empresas omitidas
-                </span>
-                {showSkipped ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-              </button>
-              {showSkipped && (
-                <div className="border-t border-amber-100 divide-y divide-amber-50">
-                  {preview.skipped.map((s, i) => (
-                    <div key={i} className="px-4 py-2 flex justify-between text-xs">
-                      <span className="text-gray-700">{s.name}</span>
-                      <span className="text-amber-600">{s.reason}</span>
-                    </div>
-                  ))}
-                </div>
+          {preview && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-medium text-blue-900">
+                  <Users className="w-4 h-4 inline mr-1" />
+                  {preview.total.toLocaleString()} companies match your filters
+                </p>
+                <button onClick={() => setPreview(null)} className="text-xs text-blue-600 hover:underline">Clear</button>
+              </div>
+              {preview.emails.length > 0 && (
+                <details>
+                  <summary className="text-xs text-blue-700 cursor-pointer hover:text-blue-900">
+                    Show sample emails ({preview.emails.length} shown)
+                  </summary>
+                  <div className="mt-2 space-y-0.5 max-h-24 overflow-y-auto">
+                    {preview.emails.map((e, i) => (
+                      <p key={i} className="text-xs text-blue-700">{e}</p>
+                    ))}
+                  </div>
+                </details>
               )}
             </div>
           )}
+
+          {error && (
+            <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 flex gap-2">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+              <p className="text-sm text-rose-700">{error}</p>
+            </div>
+          )}
+
+          {confirming && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 space-y-3">
+              <p className="text-sm font-medium text-amber-900">Confirm mass send?</p>
+              <p className="text-sm text-amber-800">
+                {work ? `Work: ${work}` : 'All work types'} · {city || 'All cities'} · {region}
+              </p>
+              <div className="flex gap-2">
+                <button onClick={sendCampaign} disabled={sending}
+                  className="flex-1 px-4 py-2 bg-lime-600 text-white rounded-lg text-sm font-medium hover:bg-lime-700 flex items-center justify-center gap-2 disabled:opacity-50">
+                  {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Confirm
+                </button>
+                <button onClick={() => setConfirming(false)}
+                  className="flex-1 px-4 py-2 bg-slate-200 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-300">Cancel</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      {!preview && !loading && !result && (
-        <div className="text-center py-16 text-gray-400">
-          <Eye className="w-10 h-10 mx-auto mb-3 opacity-40" />
-          <p className="text-sm">Haz clic en "Generar Vista Previa" para ver qué empresas recibirían email</p>
+      {loadingMap && (
+        <div className="bg-white rounded-lg border border-slate-200 p-8 flex justify-center">
+          <Loader2 className="w-6 h-6 animate-spin text-slate-400" />
+        </div>
+      )}
+
+      {result && (
+        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+          <div className="bg-lime-50 border-b border-lime-200 p-4">
+            <h3 className="font-bold text-lime-900 flex items-center gap-2">
+              <CheckCircle className="w-5 h-5 text-lime-600" /> Campaign Sent
+            </h3>
+          </div>
+          <div className="p-4 space-y-4">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="bg-slate-50 p-3 rounded-lg">
+                <p className="text-xs text-slate-500">Recipients</p>
+                <p className="text-xl font-bold text-slate-900">{result.totalCompanies}</p>
+              </div>
+              <div className="bg-slate-50 p-3 rounded-lg">
+                <p className="text-xs text-slate-500">Subscribed</p>
+                <p className="text-xl font-bold text-lime-600">{result.totalSubscribed}</p>
+              </div>
+              <div className="bg-slate-50 p-3 rounded-lg">
+                <p className="text-xs text-slate-500">Campaigns Created</p>
+                <p className="text-xl font-bold text-slate-900">{result.totalCampaigns}</p>
+              </div>
+            </div>
+            {result.skipped.length > 0 && (
+              <details>
+                <summary className="text-sm font-medium text-amber-700 cursor-pointer">
+                  {result.skipped.length} skipped
+                </summary>
+                <div className="mt-2 space-y-1 max-h-32 overflow-y-auto">
+                  {result.skipped.map((s, i) => (
+                    <p key={i} className="text-xs p-1.5 bg-amber-50 text-amber-800 rounded">
+                      <strong>{s.name}</strong> ({s.email}): {s.reason}
+                    </p>
+                  ))}
+                </div>
+              </details>
+            )}
+            <button onClick={() => setResult(null)} className="w-full px-4 py-2 bg-slate-200 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-300">Done</button>
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-// ── Tab: Historial ────────────────────────────────────────────────────────────
+// ── Auto Schedule Tab ────────────────────────────────────────────────────────────
 
-function HistoryTab() {
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
+function AutoScheduleTab() {
+  const [config, setConfig] = useState<AutoConfig | null>(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState('');
+  const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Editable fields
+  const [enabled, setEnabled] = useState(false);
+  const [ontario, setOntario] = useState(true);
+  const [quebec, setQuebec] = useState(true);
+  const [hour, setHour] = useState('8');
+  const [newDays, setNewDays] = useState('15');
+  const [resendDays, setResendDays] = useState('90');
+  const [minGapDays, setMinGapDays] = useState('60');
 
   useEffect(() => {
-    apiFetch<HistoryEntry[]>('/campaigns/history')
-      .then(setHistory)
-      .catch(e => setError(e.message))
-      .finally(() => setLoading(false));
-  }, []);
-
-  return (
-    <div>
-      {error && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700 mb-4">{error}</div>}
-      {loading ? (
-        <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-blue-500" /></div>
-      ) : history.length === 0 ? (
-        <div className="text-center py-16 text-gray-400">
-          <Clock className="w-10 h-10 mx-auto mb-3 opacity-40" />
-          <p className="text-sm">Sin envíos registrados</p>
-        </div>
-      ) : (
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 border-b border-gray-200">
-              <tr>
-                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Empresa</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Email</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">WORK</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Campaña ID</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Enviado</th>
-                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500">Por</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {history.map(h => (
-                <tr key={h.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-gray-900">{h.company_name}</td>
-                  <td className="px-4 py-3 text-xs text-gray-500">{h.company_email}</td>
-                  <td className="px-4 py-3">
-                    <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-xs">{h.work_label}</span>
-                  </td>
-                  <td className="px-4 py-3 text-xs font-mono text-gray-400">{h.mdirector_campaign_id || '—'}</td>
-                  <td className="px-4 py-3 text-xs text-gray-500">
-                    {new Date(h.sent_at).toLocaleDateString('es-CA', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' })}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-gray-500">{h.sent_by_name || '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Tab: Configuración ────────────────────────────────────────────────────────
-
-function ConfigTab() {
-  const [cfg, setCfg]       = useState<Partial<CampaignConfig>>({});
-  const [apiKey, setApiKey] = useState('');
-  const [apiSecret, setApiSecret] = useState('');
-  const [loading, setLoading]     = useState(true);
-  const [saving, setSaving]       = useState(false);
-  const [saved, setSaved]         = useState(false);
-  const [error, setError]         = useState('');
-
-  useEffect(() => {
-    apiFetch<CampaignConfig>('/campaigns/config')
-      .then(d => { setCfg(d); setLoading(false); })
-      .catch(e => { setError(e.message); setLoading(false); });
+    const load = async () => {
+      try {
+        const d = await apiFetch<AutoConfig>('/campaign/auto-config');
+        setConfig(d);
+        setEnabled(d.auto_enabled ?? false);
+        setOntario(d.auto_ontario ?? true);
+        setQuebec(d.auto_quebec ?? true);
+        setHour(String(d.auto_schedule_hour ?? 8));
+        setNewDays(String(d.auto_new_days ?? 15));
+        setResendDays(String(d.auto_resend_days ?? 90));
+        setMinGapDays(String(d.auto_min_gap_days ?? 60));
+      } catch (e: any) { setError(e.message); }
+      finally { setLoading(false); }
+    };
+    load();
   }, []);
 
   const save = async () => {
-    setSaving(true); setError(''); setSaved(false);
+    setSaving(true); setError(''); setSuccess('');
     try {
-      await apiFetch('/campaigns/config', {
+      await apiFetch('/campaign/auto-config', {
         method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ...cfg,
-          ...(apiKey    ? { mdirectorApiKey:    apiKey }    : {}),
-          ...(apiSecret ? { mdirectorApiSecret: apiSecret } : {}),
+          auto_enabled: enabled, auto_ontario: ontario, auto_quebec: quebec,
+          auto_schedule_hour: Number(hour), auto_new_days: Number(newDays),
+          auto_resend_days: Number(resendDays), auto_min_gap_days: Number(minGapDays),
         }),
       });
-      setSaved(true);
-      setApiKey(''); setApiSecret('');
-      setTimeout(() => setSaved(false), 3000);
+      setConfig(prev => prev ? { ...prev, auto_enabled: enabled, auto_schedule_hour: Number(hour) } : prev);
+      setSuccess('Settings saved successfully.');
+      setTimeout(() => setSuccess(''), 4000);
     } catch (e: any) { setError(e.message); }
     finally { setSaving(false); }
   };
 
-  if (loading) return <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-blue-500" /></div>;
-
-  return (
-    <div className="max-w-2xl space-y-6">
-      {error && <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">{error}</div>}
-
-      {/* Intervalos */}
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <h2 className="font-semibold text-gray-800 mb-4 flex items-center gap-2">
-          <Calendar className="w-4 h-4 text-blue-500" /> Intervalos de envío
-        </h2>
-        <div className="grid grid-cols-2 gap-4">
-          <label className="block">
-            <span className="text-sm font-medium text-gray-700">Empresa "nueva" si llegó en los últimos</span>
-            <div className="flex items-center gap-2 mt-1">
-              <input
-                type="number" min={1} max={365}
-                value={cfg.newCompanyDays ?? 15}
-                onChange={e => setCfg(c => ({ ...c, newCompanyDays: +e.target.value }))}
-                className="w-20 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <span className="text-sm text-gray-500">días</span>
-            </div>
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-gray-700">Reenviar a antiguas cada</span>
-            <div className="flex items-center gap-2 mt-1">
-              <input
-                type="number" min={1} max={365}
-                value={cfg.resendIntervalDays ?? 90}
-                onChange={e => setCfg(c => ({ ...c, resendIntervalDays: +e.target.value }))}
-                className="w-20 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              <span className="text-sm text-gray-500">días</span>
-            </div>
-          </label>
-        </div>
-      </div>
-
-      {/* MDirector */}
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <h2 className="font-semibold text-gray-800 mb-1 flex items-center gap-2">
-          <Mail className="w-4 h-4 text-blue-500" /> MDirector
-        </h2>
-        <p className="text-xs text-gray-400 mb-4">
-          Estado: {cfg.mdirectorConfigured
-            ? <span className="text-green-600 font-medium">✓ Configurado ({cfg.mdirectorFromEmail})</span>
-            : <span className="text-red-500 font-medium">No configurado</span>}
-        </p>
-        <div className="space-y-3">
-          <input
-            type="password" placeholder="API Key (dejar vacío para no cambiar)"
-            value={apiKey}
-            onChange={e => setApiKey(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <input
-            type="password" placeholder="API Secret"
-            value={apiSecret}
-            onChange={e => setApiSecret(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <input
-            type="email" placeholder="Email remitente"
-            value={cfg.mdirectorFromEmail ?? ''}
-            onChange={e => setCfg(c => ({ ...c, mdirectorFromEmail: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-          <input
-            type="text" placeholder="Nombre remitente"
-            value={cfg.mdirectorFromName ?? ''}
-            onChange={e => setCfg(c => ({ ...c, mdirectorFromName: e.target.value }))}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          />
-        </div>
-      </div>
-
-      {/* Mapeo plantillas */}
-      <div className="bg-white rounded-xl border border-gray-200 p-5">
-        <h2 className="font-semibold text-gray-800 mb-1 flex items-center gap-2">
-          <Filter className="w-4 h-4 text-blue-500" /> Plantillas MDirector por servicio
-        </h2>
-        <p className="text-xs text-gray-400 mb-4">
-          Ingresa el ID numérico de la plantilla de MDirector para cada servicio.
-          Puedes obtenerlos en MDirector → Campañas.
-        </p>
-        <TemplateMapEditor
-          value={cfg.serviceTemplateMap ?? {}}
-          onChange={m => setCfg(c => ({ ...c, serviceTemplateMap: m }))}
-        />
-      </div>
-
-      <button
-        onClick={save}
-        disabled={saving}
-        className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium text-sm"
-      >
-        {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-        {saved ? '✓ Guardado' : 'Guardar cambios'}
-      </button>
-    </div>
-  );
-}
-
-// ── Sub-componente: editor de mapeo plantillas ────────────────────────────────
-// Los 52 servicios exactamente como aparecen en el campo WORK del Sheet
-// y como se nombran las cartas PDF (en el mismo orden que los PDFs)
-
-const SERVICE_NAMES: string[] = [
-  'EMPACADORES',
-  'OPERADORES DE MONTEACARGA',
-  'CONDUCTORES DE VEHICULOS DE CARGA',
-  'RECEPCIONISTA',
-  'ELECTRICISTA',
-  'MESEROS',
-  'CARGA Y DESCARGA',
-  'RECOLECTORES DE FRUTAS Y VEGETALES',
-  'TRABAJADORES DE INVERNADEROS',
-  'OPERARIO AGRICOLA',
-  'PERSONAL DE SEGURIDAD',
-  'EMPLEADA DOMESTICA',
-  'REPARADORES DE REFRIGERADORAS',
-  'MECANICO FORK LIFT',
-  'TECNICO EN REPARACION DE ELEVADORES',
-  'BARTENDERS',
-  'CARNICERIA',
-  'ALMACEN',
-  'CARROCERIA',
-  'EBANISTA',
-  'TIENDA DE COMESTIBLES',
-  'SUPERMERCADO',
-  'SOLDADOR',
-  'RESTAURANTE',
-  'REMOCION DE NIEVE',
-  'PLOMERO',
-  'PINTOR',
-  'PANADERIA',
-  'PAISAJISMO',
-  'OPERARIO DE PRODUCCION',
-  'OPERARIO DE MAQUINARIA',
-  'MUDANZAS',
-  'MECANICO',
-  'MANTENIMIENTO',
-  'LAVANDERIA',
-  'HOTEL',
-  'EXCAVACION',
-  'CONSTRUCCION',
-  'DISEÑADOR DE INTERIORES',
-  'DOMICILIARIO',
-  'MECANICO INDUSTRIAL',
-  'OPERADOR LASER',
-  'LIMPIEZA INDUSTRIAL',
-  'LIMPIEZA',
-  'MUCAMA',
-  'AGRICULTOR',
-  'MATADERO',
-  'ASISTENTE DE COCINA',
-  'CHEF',
-  'PIZZERO',
-  'GENERAL',
-  'CARPINTERO',
-];
-
-function TemplateMapEditor({
-  value, onChange,
-}: { value: Record<string, string>; onChange: (m: Record<string, string>) => void }) {
-  const [local, setLocal] = useState<Record<string, string>>(value);
-
-  useEffect(() => { setLocal(value); }, [value]);
-
-  const update = (serviceName: string, templateId: string) => {
-    const next = { ...local, [serviceName]: templateId };
-    if (!templateId) delete next[serviceName];
-    setLocal(next);
-    onChange(next);
+  const triggerRun = async () => {
+    setRunning(true); setError('');
+    try {
+      await apiFetch('/campaign/auto-run', { method: 'POST' });
+      setSuccess('Campaign automation triggered!');
+      setTimeout(() => setSuccess(''), 4000);
+    } catch (e: any) { setError(e.message); }
+    finally { setRunning(false); }
   };
 
-  const configured = SERVICE_NAMES.filter(s => local[s]).length;
+  if (loading) return <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-slate-400" /></div>;
 
   return (
-    <div>
-      <p className="text-xs text-gray-400 mb-3">
-        {configured}/{SERVICE_NAMES.length} plantillas configuradas
-      </p>
-      <div className="grid grid-cols-2 gap-2 max-h-96 overflow-y-auto pr-1">
-        {SERVICE_NAMES.map((name, i) => (
-          <div key={name} className="flex items-center gap-2">
-            <span className="text-xs text-gray-500 w-4 shrink-0 text-right">{i + 1}.</span>
-            <span className="text-xs text-gray-700 w-40 shrink-0 truncate font-medium" title={name}>{name}</span>
-            <input
-              type="text"
-              placeholder="Template ID"
-              value={local[name] ?? ''}
-              onChange={e => update(name, e.target.value)}
-              className={`flex-1 min-w-0 px-2 py-1 border rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-400 ${
-                local[name] ? 'border-green-300 bg-green-50' : 'border-gray-200'
-              }`}
-            />
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-// ── MDirector Tab (Ontario / Quebec bulk campaigns) ───────────────────────────
-
-interface MDTemplateMapping {
-  id: string;
-  region: string;
-  work_label: string;
-  template_id: string;
-  template_name: string | null;
-  language: string;
-  active: boolean;
-}
-
-interface MDSendResult {
-  success: boolean;
-  region: string;
-  language: string;
-  listId: string;
-  template: { id: string; name: string };
-  scheduleDate: string;
-  totalCompanies: number;
-  totalSubscribed: number;
-  totalCampaigns: number;
-  skipped: Array<{ name: string; email: string; reason: string }>;
-  results: Array<{
-    work: string;
-    segmentId: string;
-    contactCount: number;
-    subscribed: number;
-    campaignId?: string;
-    envId?: string;
-    status: 'success' | 'failed';
-    errors: string[];
-  }>;
-}
-
-function MDirectorTab() {
-  const [region, setRegion]           = useState<'ontario' | 'quebec'>('ontario');
-  const [work, setWork]               = useState<string>('');
-  const [mappings, setMappings]       = useState<MDTemplateMapping[]>([]);
-  const [loadingMap, setLoadingMap]   = useState(false);
-  const [subject, setSubject]         = useState('');
-  const [limit, setLimit]             = useState('');
-  const [sending, setSending]         = useState(false);
-  const [sendResult, setSendResult]   = useState<MDSendResult | null>(null);
-  const [error, setError]             = useState('');
-  const [confirm, setConfirm]         = useState(false);
-
-  const loadMappings = useCallback(async (r: 'ontario' | 'quebec') => {
-    setLoadingMap(true); setError(''); setMappings([]); setWork('');
-    try {
-      const d = await apiFetch<{ mappings: MDTemplateMapping[] }>(`/campaign/template-map?region=${r}`);
-      setMappings(d.mappings ?? []);
-    } catch (e: any) { setError(e.message); }
-    finally { setLoadingMap(false); }
-  }, []);
-
-  useEffect(() => { loadMappings(region); }, [region, loadMappings]);
-
-  const selectedMapping = work
-    ? mappings.find(m => m.work_label === work) ?? null
-    : null;
-
-  const workOptions = [...new Set(mappings.map(m => m.work_label))].sort();
-
-  const sendCampaign = async () => {
-    setSending(true); setError(''); setSendResult(null); setConfirm(false);
-    try {
-      const body: Record<string, unknown> = { region };
-      if (work)    body.work    = work;
-      if (subject) body.subject = subject;
-      if (limit && Number(limit) > 0) body.limit = Number(limit);
-      const d = await apiFetch<MDSendResult>('/campaign/send-template', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(body),
-      });
-      setSendResult(d);
-    } catch (e: any) { setError(e.message); }
-    finally { setSending(false); }
-  };
-
-  const templateLabel = selectedMapping
-    ? selectedMapping.template_name || selectedMapping.template_id
-    : work === ''
-      ? `${mappings.length} templates (one per work type)`
-      : 'No template registered for this work type';
-
-  return (
-    <div className="space-y-5 max-w-4xl">
-
-      {/* Config panel */}
-      <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-5">
-        <h2 className="font-semibold text-gray-800 flex items-center gap-2">
-          <Send className="w-4 h-4 text-blue-500" /> Mass campaign — mDirector
-        </h2>
-
-        {/* Region */}
-        <div>
-          <label className="block text-xs font-medium text-gray-500 mb-2">Region</label>
-          <div className="flex gap-3">
-            {(['ontario', 'quebec'] as const).map(r => (
-              <button
-                key={r}
-                onClick={() => { setRegion(r); setSendResult(null); setConfirm(false); }}
-                className={`px-5 py-2.5 rounded-lg font-medium text-sm transition-all ${
-                  region === r
-                    ? 'bg-blue-600 text-white shadow'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-              >
-                {r === 'ontario' ? '🍁 Ontario (FR)' : '❄️ Quebec (EN)'}
-              </button>
-            ))}
-          </div>
-          <p className="text-xs text-gray-400 mt-1">
-            {region === 'ontario'
-              ? 'Ontario companies → French templates · MDirector list 28'
-              : 'Quebec companies → English templates · MDirector list 30'}
-          </p>
-        </div>
-
-        {/* Work type */}
-        <div>
-          <label className="block text-xs font-medium text-gray-500 mb-1">
-            Work type <span className="text-gray-400 font-normal">(leave blank to send all work types)</span>
-          </label>
-          {loadingMap ? (
-            <div className="flex items-center gap-2 text-xs text-gray-400">
-              <Loader2 className="w-3 h-3 animate-spin" /> Loading templates…
+    <div className="space-y-6 max-w-3xl">
+      {/* Status card */}
+      <div className={`rounded-xl border-2 p-5 ${enabled ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-slate-200'}`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${enabled ? 'bg-emerald-100' : 'bg-slate-100'}`}>
+              <Zap className={`w-6 h-6 ${enabled ? 'text-emerald-600' : 'text-slate-400'}`} />
             </div>
-          ) : (
-            <select
-              value={work}
-              onChange={e => { setWork(e.target.value); setSendResult(null); setConfirm(false); }}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 bg-white"
-            >
-              <option value="">— All work types ({workOptions.length} templates) —</option>
-              {workOptions.map(w => (
-                <option key={w} value={w}>{w}</option>
-              ))}
-            </select>
-          )}
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="font-bold text-slate-900">Automated Campaigns</h3>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                  enabled ? 'bg-emerald-200 text-emerald-800' : 'bg-slate-200 text-slate-600'
+                }`}>{enabled ? 'ACTIVE' : 'INACTIVE'}</span>
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                {enabled
+                  ? `Runs daily at ${String(hour).padStart(2, '0')}:00 UTC · New: ${newDays}d · Resend: ${resendDays}d · Min gap: ${minGapDays}d`
+                  : 'Automation is disabled. Enable it to send campaigns automatically.'}
+              </p>
+            </div>
+          </div>
+          <button onClick={() => setEnabled(!enabled)}
+            className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${
+              enabled ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-lime-600 text-white hover:bg-lime-700'
+            }`}>
+            {enabled ? <><Square className="w-3.5 h-3.5 inline mr-1" />Disable</> : <><Play className="w-3.5 h-3.5 inline mr-1" />Enable</>}
+          </button>
         </div>
+      </div>
 
-        {/* Template badge */}
-        {!loadingMap && (
-          <div className={`rounded-lg border px-4 py-3 text-sm ${
-            selectedMapping || work === ''
-              ? 'border-green-200 bg-green-50'
-              : 'border-amber-200 bg-amber-50'
-          }`}>
-            <div className="flex items-start gap-2">
-              {selectedMapping || work === ''
-                ? <CheckCircle className="w-4 h-4 text-green-500 mt-0.5 shrink-0" />
-                : <AlertTriangle className="w-4 h-4 text-amber-500 mt-0.5 shrink-0" />}
-              <div>
-                <span className="font-medium text-gray-800">Template: </span>
-                <span className="text-gray-600">{templateLabel}</span>
-                {selectedMapping && (
-                  <p className="text-xs text-gray-400 mt-0.5 font-mono">{selectedMapping.template_id}</p>
-                )}
+      {/* Configuration */}
+      <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
+        {/* Schedule */}
+        <div className="p-5 space-y-4">
+          <h4 className="font-semibold text-slate-900 flex items-center gap-2">
+            <Calendar className="w-4 h-4 text-lime-600" /> Schedule
+          </h4>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Daily Run Time (UTC)</label>
+              <select value={hour} onChange={e => setHour(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-lime-400 outline-none bg-white">
+                {Array.from({ length: 24 }, (_, i) => (
+                  <option key={i} value={String(i)}>{String(i).padStart(2, '0')}:00 UTC</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">New Company Window</label>
+              <div className="flex items-center gap-2">
+                <input type="number" min={1} value={newDays} onChange={e => setNewDays(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-lime-400 outline-none" />
+                <span className="text-xs text-slate-500">days</span>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1">Resend Interval</label>
+              <div className="flex items-center gap-2">
+                <input type="number" min={1} value={resendDays} onChange={e => setResendDays(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-lime-400 outline-none" />
+                <span className="text-xs text-slate-500">days</span>
               </div>
             </div>
           </div>
-        )}
+        </div>
 
-        {/* Optional fields */}
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">
-              Subject <span className="text-gray-400 font-normal">(optional — uses template name if blank)</span>
-            </label>
-            <input
-              type="text"
-              placeholder={region === 'ontario' ? 'Services de personnel — …' : 'Staffing services — …'}
-              value={subject}
-              onChange={e => setSubject(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1">
-              Limit <span className="text-gray-400 font-normal">(optional — max companies to contact)</span>
-            </label>
-            <input
-              type="number"
-              min="1"
-              max="1000"
-              placeholder="No limit"
-              value={limit}
-              onChange={e => setLimit(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-400"
-            />
+        {/* Regions */}
+        <div className="p-5 space-y-4">
+          <h4 className="font-semibold text-slate-900 flex items-center gap-2">
+            <Globe className="w-4 h-4 text-lime-600" /> Regions
+          </h4>
+          <div className="flex gap-4">
+            {(['ontario', 'quebec'] as const).map(r => {
+              const checked = r === 'ontario' ? ontario : quebec;
+              const toggle = r === 'ontario' ? () => setOntario(!ontario) : () => setQuebec(!quebec);
+              return (
+                <label key={r} className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={checked} onChange={toggle}
+                    className="w-4 h-4 rounded border-slate-300 text-lime-600 focus:ring-lime-500" />
+                  <span className="text-sm font-medium text-slate-700 capitalize">{r}</span>
+                </label>
+              );
+            })}
           </div>
         </div>
 
-        {/* Confirm + Send */}
-        {!confirm ? (
-          <button
-            onClick={() => setConfirm(true)}
-            disabled={loadingMap || (!selectedMapping && work !== '') || workOptions.length === 0}
-            className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 transition-colors"
-          >
-            <Send className="w-4 h-4" />
-            Prepare campaign
+        {/* Advanced */}
+        <div className="p-5 space-y-4">
+          <button onClick={() => setShowAdvanced(!showAdvanced)}
+            className="flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors">
+            <Settings className="w-4 h-4" /> Advanced Settings
+            {showAdvanced ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
           </button>
-        ) : (
-          <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
-            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
-            <span className="text-sm text-amber-800 flex-1">
-              This will subscribe and email {work ? `all <strong>${work}</strong>` : 'all'} {region} companies with a valid email.
-              {limit ? ` Limited to ${limit}.` : ''} Are you sure?
-            </span>
-            <button
-              onClick={sendCampaign}
-              disabled={sending}
-              className="flex items-center gap-2 px-4 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 transition-colors shrink-0"
-            >
-              {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-              {sending ? 'Sending…' : 'Yes, send'}
-            </button>
-            <button
-              onClick={() => setConfirm(false)}
-              className="text-sm text-gray-500 hover:text-gray-700 shrink-0"
-            >
-              Cancel
-            </button>
-          </div>
-        )}
+          {showAdvanced && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Minimum Gap Between Sends</label>
+                <div className="flex items-center gap-2">
+                  <input type="number" min={1} value={minGapDays} onChange={e => setMinGapDays(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-lime-400 outline-none" />
+                  <span className="text-xs text-slate-500">days</span>
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1">Prevents sending to the same company more than once within this period</p>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Last Automated Run</label>
+                <p className="text-sm text-slate-900 py-2">
+                  {config?.auto_last_run_at
+                    ? new Date(config.auto_last_run_at).toLocaleString()
+                    : 'Never run'}
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Error */}
       {error && (
-        <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-xl p-4 text-red-700 text-sm">
-          <XCircle className="w-4 h-4 shrink-0" /> {error}
+        <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 flex gap-2">
+          <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+          <p className="text-sm text-rose-700">{error}</p>
+        </div>
+      )}
+      {success && (
+        <div className="bg-lime-50 border border-lime-200 rounded-lg p-3 flex gap-2">
+          <CheckCircle className="w-4 h-4 text-lime-600 shrink-0 mt-0.5" />
+          <p className="text-sm text-lime-700">{success}</p>
         </div>
       )}
 
-      {/* Send result */}
-      {sendResult && (
-        <div className="bg-white rounded-xl border border-gray-200 p-5 space-y-4">
-          <div className="flex items-center gap-2">
-            <CheckCircle className="w-5 h-5 text-green-500" />
-            <h2 className="font-semibold text-gray-800">
-              Campaign launched — {sendResult.totalSubscribed} contacts · {sendResult.totalCampaigns} deliveries created
-            </h2>
-          </div>
+      <div className="flex gap-3">
+        <button onClick={save} disabled={saving}
+          className="flex-1 px-4 py-2.5 bg-lime-600 text-white rounded-lg text-sm font-medium hover:bg-lime-700 transition-colors flex items-center justify-center gap-2 disabled:opacity-50">
+          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+          Save Settings
+        </button>
+        <button onClick={triggerRun} disabled={running}
+          className="px-4 py-2.5 bg-slate-200 text-slate-700 rounded-lg text-sm font-medium hover:bg-slate-300 transition-colors flex items-center justify-center gap-2 disabled:opacity-50">
+          {running ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+          Run Now
+        </button>
+      </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
-            {[
-              { label: 'Companies', value: sendResult.totalCompanies },
-              { label: 'Subscribed', value: sendResult.totalSubscribed },
-              { label: 'Campaigns', value: sendResult.totalCampaigns },
-              { label: 'Skipped', value: sendResult.skipped.length },
-            ].map(({ label, value }) => (
-              <div key={label} className="bg-gray-50 rounded-lg px-3 py-2">
-                <div className="text-lg font-bold text-gray-800">{value}</div>
-                <div className="text-xs text-gray-400">{label}</div>
-              </div>
-            ))}
-          </div>
+      {/* Info box */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 space-y-1.5">
+        <p className="text-sm font-medium text-blue-900">How automation works</p>
+        <ul className="text-xs text-blue-800 space-y-1">
+          <li>• Runs daily at the configured UTC hour</li>
+          <li>• Sends to companies marked as <strong>new</strong> (created within the new window)</li>
+          <li>• Re-sends to companies after the <strong>resend interval</strong> has passed</li>
+          <li>• <strong>Min gap</strong> ensures no company receives more than one email within that period</li>
+          <li>• Bounced, unsubscribed, and invalid emails are automatically suppressed</li>
+          <li>• Use <strong>Run Now</strong> to trigger an immediate campaign outside the schedule</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
 
-          <div className="text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2">
-            Template: <span className="font-medium">{sendResult.template.name}</span>
-            <span className="text-gray-400 ml-2 font-mono">{sendResult.template.id}</span>
-          </div>
+// ── Campaign History Tab ─────────────────────────────────────────────────────────
 
-          <div className="space-y-2">
-            {sendResult.results.map((r, i) => (
-              <div
-                key={i}
-                className={`rounded-lg border px-4 py-3 ${
-                  r.status === 'success' ? 'border-green-200 bg-green-50' : 'border-red-100 bg-red-50'
-                }`}
-              >
-                <div className="flex items-center justify-between text-sm flex-wrap gap-2">
-                  <span className="font-medium text-gray-800">{r.work}</span>
-                  <div className="flex gap-4 text-xs flex-wrap">
-                    <span className="text-gray-500">{r.contactCount} companies</span>
-                    <span className="text-green-700">{r.subscribed} subscribed</span>
-                    {r.envId
-                      ? <span className="text-blue-600 font-medium">envId: {r.envId}</span>
-                      : <span className="text-red-500">Delivery failed</span>}
-                  </div>
-                </div>
-                {r.errors.length > 0 && (
-                  <ul className="mt-1.5 text-xs text-red-600 space-y-0.5">
-                    {r.errors.slice(0, 5).map((e, j) => <li key={j}>• {e}</li>)}
-                    {r.errors.length > 5 && <li>… and {r.errors.length - 5} more</li>}
-                  </ul>
-                )}
-              </div>
-            ))}
-          </div>
+function CampaignHistoryTab() {
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<'all' | 'sent' | 'pending' | 'failed'>('all');
 
-          {sendResult.skipped.length > 0 && (
-            <details className="text-xs text-gray-500">
-              <summary className="cursor-pointer hover:text-gray-700 flex items-center gap-1">
-                <ChevronDown className="w-3 h-3" /> {sendResult.skipped.length} companies skipped
-              </summary>
-              <ul className="mt-2 space-y-0.5 pl-4">
-                {sendResult.skipped.map((s, i) => (
-                  <li key={i}>• <strong>{s.name}</strong> — {s.reason}</li>
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const d = await apiFetch<HistoryEntry[]>('/campaign/history');
+        setHistory(Array.isArray(d) ? d : []);
+      } catch { setHistory([]); }
+      finally { setLoading(false); }
+    };
+    load();
+  }, []);
+
+  const stats = useMemo(() => ({
+    total: history.length,
+    sent: history.filter(h => h.status === 'sent').length,
+    pending: history.filter(h => h.status === 'pending').length,
+    failed: history.filter(h => h.status === 'failed').length,
+  }), [history]);
+
+  const filtered = useMemo(() => {
+    let result = history;
+    const q = search.toLowerCase();
+    if (q) result = result.filter(h =>
+      h.company_name.toLowerCase().includes(q) ||
+      h.company_email.toLowerCase().includes(q) ||
+      h.work_label.toLowerCase().includes(q)
+    );
+    if (filter !== 'all') result = result.filter(h => h.status === filter);
+    return result;
+  }, [history, search, filter]);
+
+  if (loading) return <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-slate-400" /></div>;
+
+  return (
+    <div className="space-y-4 max-w-5xl">
+      {/* Stats */}
+      <div className="grid grid-cols-4 gap-3">
+        {[
+          { label: 'Total', value: stats.total, color: 'text-slate-900 bg-slate-50' },
+          { label: 'Sent', value: stats.sent, color: 'text-emerald-600 bg-emerald-50' },
+          { label: 'Pending', value: stats.pending, color: 'text-amber-600 bg-amber-50' },
+          { label: 'Failed', value: stats.failed, color: 'text-red-600 bg-red-50' },
+        ].map(s => (
+          <div key={s.label} className={`rounded-lg p-3 ${s.color}`}>
+            <p className="text-2xl font-black">{s.value}</p>
+            <p className="text-xs font-medium opacity-75">{s.label}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <input type="text" placeholder="Search by company, email, or work..." value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="w-full pl-10 pr-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-lime-400 outline-none transition" />
+        </div>
+        <div className="flex gap-2">
+          {(['all', 'sent', 'pending', 'failed'] as const).map(f => (
+            <button key={f} onClick={() => setFilter(f)}
+              className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                filter === f ? 'bg-lime-600 text-white' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'
+              }`}>
+              <Filter className="w-3.5 h-3.5 inline mr-1" />
+              {f.charAt(0).toUpperCase() + f.slice(1)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="text-center py-12 bg-slate-50 rounded-lg border border-slate-200">
+          <Mail className="w-10 h-10 mx-auto text-slate-300 mb-2" />
+          <p className="text-slate-500 font-medium">No campaigns found</p>
+        </div>
+      ) : (
+        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+          <div className="overflow-x-auto max-h-[60vh] overflow-y-auto">
+            <table className="w-full">
+              <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
+                <tr className="text-xs font-semibold text-slate-700 text-left">
+                  <th className="px-4 py-3">Company</th>
+                  <th className="px-4 py-3">Work</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Sent At</th>
+                  <th className="px-4 py-3">Campaign ID</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filtered.map(h => (
+                  <tr key={h.id} className="hover:bg-slate-50 transition-colors">
+                    <td className="px-4 py-3">
+                      <p className="text-sm font-medium text-slate-900">{h.company_name}</p>
+                      <p className="text-xs text-slate-500">{h.company_email}</p>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-700">{h.work_label}</td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${
+                        h.status === 'sent' ? 'bg-lime-50 text-lime-700' :
+                        h.status === 'pending' ? 'bg-amber-50 text-amber-700' : 'bg-rose-50 text-rose-700'
+                      }`}>
+                        {h.status === 'sent' && <CheckCircle className="w-3 h-3" />}
+                        {h.status === 'pending' && <Clock className="w-3 h-3" />}
+                        {h.status === 'failed' && <AlertCircle className="w-3 h-3" />}
+                        {h.status.charAt(0).toUpperCase() + h.status.slice(1)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{new Date(h.sent_at).toLocaleString()}</td>
+                    <td className="px-4 py-3 text-xs text-slate-400 font-mono">{h.mdirector_campaign_id?.slice(0, 12)}...</td>
+                  </tr>
                 ))}
-              </ul>
-            </details>
-          )}
-
-          <button
-            onClick={() => setSendResult(null)}
-            className="text-sm text-blue-600 hover:underline"
-          >
-            ← Send another campaign
-          </button>
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

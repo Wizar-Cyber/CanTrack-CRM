@@ -9,9 +9,9 @@ export class DeleteCompanyUseCase {
       await this.companies.delete(id);
     } catch (err: unknown) {
       const dbErr = err as { code?: string; statusCode?: number };
-      if (dbErr.statusCode === 404) throw new NotFoundError('Empresa');
+      if (dbErr.statusCode === 404) throw new NotFoundError('Company');
       if (dbErr.code === '23503') {
-        throw new ConflictError('No se puede eliminar: la empresa tiene vacantes asociadas.');
+        throw new ConflictError('Cannot delete: company has associated job vacancies.');
       }
       throw err;
     }

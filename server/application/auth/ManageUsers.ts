@@ -26,11 +26,11 @@ export class CreateUserUseCase {
   }): Promise<User> {
     const { email, password, firstName, lastName, role } = input;
     if (!email || !password || !firstName || !lastName || !role) {
-      throw new DomainError('Todos los campos son requeridos.');
+      throw new DomainError('All fields are required.');
     }
-    if (password.length < 8)           throw new DomainError('Contraseña mínimo 8 caracteres.');
-    if (!ALLOWED_ROLES.includes(role as UserRole)) throw new DomainError('Rol inválido.');
-    if (!EMAIL_RE.test(email))          throw new DomainError('Email inválido.');
+    if (password.length < 8)           throw new DomainError('Password must be at least 8 characters.');
+    if (!ALLOWED_ROLES.includes(role as UserRole)) throw new DomainError('Invalid role.');
+    if (!EMAIL_RE.test(email))          throw new DomainError('Invalid email.');
 
     const passwordHash = await bcrypt.hash(password, 12);
     try {
@@ -43,7 +43,7 @@ export class CreateUserUseCase {
       });
     } catch (err: unknown) {
       const dbErr = err as { code?: string };
-      if (dbErr.code === '23505') throw new ConflictError('Email ya registrado.');
+      if (dbErr.code === '23505') throw new ConflictError('Email already registered.');
       throw err;
     }
   }
@@ -54,8 +54,8 @@ export class UpdateUserRoleUseCase {
   constructor(private readonly users: IUserRepository) {}
 
   async execute(requesterId: string, targetId: string, role: string): Promise<User> {
-    if (requesterId === targetId) throw new DomainError('No puedes cambiar tu propio rol.');
-    if (!ALLOWED_ROLES.includes(role as UserRole)) throw new DomainError('Rol inválido.');
+    if (requesterId === targetId) throw new DomainError('You cannot change your own role.');
+    if (!ALLOWED_ROLES.includes(role as UserRole)) throw new DomainError('Invalid role.');
     const updated = await this.users.updateRole(targetId, role as UserRole);
     if (!updated) throw new NotFoundError('Usuario');
     return updated;
@@ -67,7 +67,7 @@ export class DeactivateUserUseCase {
   constructor(private readonly users: IUserRepository) {}
 
   async execute(requesterId: string, targetId: string): Promise<void> {
-    if (requesterId === targetId) throw new DomainError('No puedes eliminar tu propia cuenta.');
+    if (requesterId === targetId) throw new DomainError('You cannot delete your own account.');
     const ok = await this.users.deactivate(targetId);
     if (!ok) throw new NotFoundError('Usuario');
   }

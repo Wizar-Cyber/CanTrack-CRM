@@ -1,9 +1,9 @@
 /**
- * VisitPlanner — Vista de planificación de visitas
- * - Lista de empresas con checkboxes para seleccionar
- * - Filtros: tamaño, industria, ciudad, con / sin dirección
- * - Búsqueda en tiempo real
- * - Exportar seleccionadas (o todas) a Excel
+ * VisitPlanner — Visit planning view
+ * - Company list with checkboxes to select
+ * - Filters: size, industry, city, with / without address
+ * - Real-time search
+ * - Export selected (or all) to Excel
  */
 import React, { useState, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';

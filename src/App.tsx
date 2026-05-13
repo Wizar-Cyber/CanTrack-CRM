@@ -10,18 +10,18 @@ import { Dashboard } from './components/Dashboard/Dashboard';
 import { JobTable } from './components/Jobs/JobTable';
 import { JobDetail } from './components/Jobs/JobDetail';
 import { CompanyDetail } from './components/Companies/CompanyDetail';
-import { CompaniesHub } from './components/Companies/CompaniesHub';
+import { OntarioCompanies } from './components/Ontario/OntarioCompanies';
 import { Settings } from './components/Settings/Settings';
 import { Job, DashboardStats, Candidate, Company } from './types';
 import { AnimatePresence } from 'framer-motion';
 import { Loader2 } from 'lucide-react';
-import { ServicesList } from './components/Services/ServicesList';
+// import { ServicesList } from './components/Services/ServicesList'; // hidden
 import { JobsView } from './components/Jobs/JobsView';
-import { VisitPlanner } from './components/Visits/VisitPlanner';
 import CampaignModule from './components/Campaigns/CampaignModule';
-import { ApplicationQueue } from './components/Jobs/ApplicationQueue';
+// import { ApplicationQueue } from './components/Jobs/ApplicationQueue';
 import { RouteManager } from './components/Routes/RouteManager';
 import { ToastContainer, useToasts } from './components/UI/Toast';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { currentUser, loading } = useAuth();
@@ -189,13 +189,20 @@ const AppContent: React.FC = () => {
     enrichmentRunningRef.current = true;
 
     const runQueue = async () => {
-      while (true) {
+      let consecutiveErrors = 0;
+      const MAX_CONSECUTIVE_ERRORS = 5;
+
+      while (consecutiveErrors < MAX_CONSECUTIVE_ERRORS) {
         try {
           const res = await api('/api/enrichment/process-next', { method: 'POST' });
-          if (!res.ok) break;
+          if (!res.ok) {
+            consecutiveErrors++;
+            await new Promise(r => setTimeout(r, 5000 * consecutiveErrors));
+            continue;
+          }
+          consecutiveErrors = 0;
           const json = await res.json();
 
-          // Actualizar estado en frontend
           if (json.companyId) {
             setCompanies(prev => prev.map(c => {
               if (c.id !== json.companyId) return c;
@@ -217,14 +224,12 @@ const AppContent: React.FC = () => {
                 contactEmail: json.data?.contact_email ?? c.contactEmail,
                 needsManualReview: (json.data?.confidence_score ?? 100) < 60,
                 enrichedAt: new Date().toISOString(),
-                // Auto-rojo: si el modelo detectó empresa cerrada
                 tipo: autoRojo ? 'rojo' : c.tipo,
               };
-              // Notificación toast
               addToast({
                 type: autoRojo ? 'error' : (json.source === 'db_matched' ? 'info' : 'success'),
-                title: autoRojo ? `🔴 Empresa cerrada detectada` : `Empresa enriquecida`,
-                message: `${updated.name || 'Empresa'}${autoRojo ? ' — marcada como ROJO automáticamente' : ` — ${updated.industry || json.source}`}`,
+                title: autoRojo ? `🔴 Closed company detected` : `Company enriched`,
+                message: `${updated.name || 'Company'}${autoRojo ? ' — marked as ROJO' : ` — ${updated.industry || json.source}`}`,
               });
               return updated;
             }));
@@ -232,10 +237,11 @@ const AppContent: React.FC = () => {
 
           if (json.done) break;
 
-          // Pausa entre llamadas para no saturar la API de Gemini (1.5s)
           await new Promise(r => setTimeout(r, 1500));
-        } catch {
-          break;
+        } catch (err) {
+          consecutiveErrors++;
+          console.warn(`[EnrichmentQueue] Error (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}):`, err);
+          await new Promise(r => setTimeout(r, 5000 * consecutiveErrors));
         }
       }
       enrichmentRunningRef.current = false;
@@ -270,11 +276,7 @@ const AppContent: React.FC = () => {
         <Route path="/login" element={<Login />} />
         <Route path="/setup" element={<Setup />} />
         
-        <Route path="/" element={<ProtectedRoute><MainLayout><Dashboard stats={stats} recentJobs={jobs.slice(0, 4)} onSelectCompany={(name) => {
-          const company = companies.find(c => c.name === name);
-          if (company) setSelectedCompany(company);
-          else setSelectedCompany({ id: 'temp', name } as Company);
-        }} /></MainLayout></ProtectedRoute>} />
+        <Route path="/" element={<ProtectedRoute><MainLayout><Dashboard stats={stats} /></MainLayout></ProtectedRoute>} />
         
         <Route path="/jobs" element={<ProtectedRoute><MainLayout>
           <JobsView
@@ -287,36 +289,26 @@ const AppContent: React.FC = () => {
           />
         </MainLayout></ProtectedRoute>} />
 
-        <Route path="/services" element={<ProtectedRoute><MainLayout>
-          <ServicesList />
-        </MainLayout></ProtectedRoute>} />
+        {/* /services hidden — uncomment to restore */}
+        <Route path="/visits" element={<Navigate to="/routes" replace />} />
 
         <Route path="/companies" element={<ProtectedRoute><MainLayout>
-          <CompaniesHub
-            companies={companies} 
-            jobs={jobs} 
-            onSelectCompany={setSelectedCompany} 
-            onUpdateCompany={handleUpdateCompany}
-            enrichingIds={enrichingIds}
-            onEnrichmentReset={refreshCompanies}
-          />
+          <OntarioCompanies />
         </MainLayout></ProtectedRoute>} />
 
         <Route path="/campaigns" element={<ProtectedRoute><MainLayout>
           <CampaignModule />
         </MainLayout></ProtectedRoute>} />
 
-        <Route path="/visits" element={<ProtectedRoute><MainLayout>
-          <VisitPlanner companies={companies} onSelectCompany={setSelectedCompany} />
-        </MainLayout></ProtectedRoute>} />
-
         <Route path="/routes" element={<ProtectedRoute><MainLayout>
           <RouteManager />
         </MainLayout></ProtectedRoute>} />
 
+        {/*
         <Route path="/agent" element={<ProtectedRoute><MainLayout>
           <ApplicationQueue />
         </MainLayout></ProtectedRoute>} />
+        */}
 
         <Route path="/settings" element={<ProtectedRoute><MainLayout><Settings /></MainLayout></ProtectedRoute>} />
         
@@ -364,7 +356,9 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <AppContent />
+        <ErrorBoundary>
+          <AppContent />
+        </ErrorBoundary>
       </AuthProvider>
     </BrowserRouter>
   );

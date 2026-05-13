@@ -6,10 +6,13 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
+      - COOKIE_SECURE=false
       - OPTIMUS_URL=http://optimus-rutas:8000
+      - MAPBOX_TOKEN=${MAPBOX_TOKEN}
     env_file:
       - .env
     restart: unless-stopped
+    dns_search: []
     depends_on:
       optimus-rutas:
         condition: service_started
@@ -26,14 +29,31 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql+asyncpg://casaos:casaos@postgresql:5432/casaos
-      - MAPBOX_TOKEN=MAPBOX_TOKEN_REMOVED
+      - MAPBOX_TOKEN=${MAPBOX_TOKEN}
     restart: unless-stopped
+    dns_search: []
     networks:
       - cantrack-network
       - postgresql_default
 
+  # Ollama — LLM local (fallback cuando Gemini/Groq no están disponibles)
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    restart: unless-stopped
+    networks:
+      - cantrack-network
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+
 volumes:
   optimus-data:
+  ollama-data:
 
 networks:
   cantrack-network:

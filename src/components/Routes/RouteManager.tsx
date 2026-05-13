@@ -77,12 +77,12 @@ const stopStatusColor: Record<string, string> = {
 };
 
 const statusLabel: Record<string, string> = {
-  draft: 'Borrador', active: 'Activa', paused: 'Pausada',
-  completed: 'Completada', cancelled: 'Cancelada',
+  draft: 'Draft', active: 'Active', paused: 'Paused',
+  completed: 'Completed', cancelled: 'Cancelled',
 };
 
 const stopStatusLabel: Record<string, string> = {
-  pending: 'Pendiente', visited: 'Visitada', skipped: 'Omitida', failed: 'Fallida',
+  pending: 'Pending', visited: 'Visited', skipped: 'Skipped', failed: 'Failed',
 };
 
 const fmtMin = (m: number | null) => {
@@ -158,7 +158,7 @@ const RouteDetail: React.FC<{
     }
   }, [route.id, route.stops]);
 
-  const markStop = async (stopId: string, status: 'visited' | 'skipped' | 'failed') => {
+  const markStop = async (stopId: string, status: 'visited' | 'skipped' | 'failed' | 'pending') => {
     setUpdatingStop(stopId);
     try {
       const updated = await api(`/api/routes/${route.id}/stops/${stopId}`, {
@@ -211,10 +211,10 @@ const RouteDetail: React.FC<{
       {/* Stats row */}
       <div className="grid grid-cols-4 gap-3">
         {[
-          { label: 'Paradas', value: stops.length },
-          { label: 'Visitadas', value: visitedCount },
-          { label: 'Distancia', value: route.total_distance_km ? `${route.total_distance_km} km` : '—' },
-          { label: 'Tiempo est.', value: fmtMin(route.estimated_time_minutes) },
+          { label: 'Stops', value: stops.length },
+          { label: 'Visited', value: visitedCount },
+          { label: 'Distance', value: route.total_distance_km ? `${route.total_distance_km} km` : '—' },
+          { label: 'Est. time', value: fmtMin(route.estimated_time_minutes) },
         ].map(s => (
           <div key={s.label} className="bg-white border border-slate-200 rounded-xl p-3 text-center">
             <div className="text-lg font-bold text-slate-900">{s.value}</div>
@@ -227,7 +227,7 @@ const RouteDetail: React.FC<{
       {stops.length > 0 && (
         <div className="bg-white border border-slate-200 rounded-xl p-4">
           <div className="flex justify-between text-sm mb-2">
-            <span className="text-slate-600">Progreso</span>
+            <span className="text-slate-600">Progress</span>
             <span className="font-semibold text-slate-900">{progress}%</span>
           </div>
           <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
@@ -237,9 +237,9 @@ const RouteDetail: React.FC<{
             />
           </div>
           <div className="flex gap-4 mt-2 text-xs text-slate-500">
-            <span className="text-green-600">{visitedCount} visitadas</span>
-            <span className="text-amber-600">{stops.filter(s => s.status === 'skipped').length} omitidas</span>
-            <span className="text-slate-500">{pendingCount} pendientes</span>
+            <span className="text-green-600">{visitedCount} visited</span>
+            <span className="text-amber-600">{stops.filter(s => s.status === 'skipped').length} skipped</span>
+            <span className="text-slate-500">{pendingCount} pending</span>
           </div>
         </div>
       )}
@@ -257,7 +257,7 @@ const RouteDetail: React.FC<{
             disabled={statusUpdating}
             className="flex items-center gap-2 px-4 py-2 bg-lime-600 text-white rounded-lg text-sm font-medium hover:bg-lime-700 disabled:opacity-50 transition-colors"
           >
-            <Play className="w-4 h-4" /> Iniciar ruta
+            <Play className="w-4 h-4" /> Start route
           </button>
         )}
         {route.status === 'active' && (
@@ -267,14 +267,14 @@ const RouteDetail: React.FC<{
               disabled={statusUpdating}
               className="flex items-center gap-2 px-4 py-2 bg-amber-500 text-white rounded-lg text-sm font-medium hover:bg-amber-600 disabled:opacity-50 transition-colors"
             >
-              Pausar
+              Pause
             </button>
             <button
               onClick={() => changeRouteStatus('completed')}
               disabled={statusUpdating}
               className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
             >
-              <CheckCircle2 className="w-4 h-4" /> Completar
+              <CheckCircle2 className="w-4 h-4" /> Complete
             </button>
           </>
         )}
@@ -284,7 +284,7 @@ const RouteDetail: React.FC<{
             disabled={statusUpdating}
             className="flex items-center gap-2 px-4 py-2 bg-lime-600 text-white rounded-lg text-sm font-medium hover:bg-lime-700 disabled:opacity-50 transition-colors"
           >
-            <Play className="w-4 h-4" /> Reanudar
+            <Play className="w-4 h-4" /> Resume
           </button>
         )}
         {statusUpdating && <Loader2 className="w-5 h-5 animate-spin text-slate-400 self-center" />}
@@ -322,10 +322,10 @@ const RouteDetail: React.FC<{
                 </div>
 
                 <div className="flex-1 min-w-0">
-                  <p className="font-medium text-slate-900 truncate text-sm">{stop.label || stop.company_name || `Parada ${idx + 1}`}</p>
+                  <p className="font-medium text-slate-900 truncate text-sm">{stop.label || stop.company_name || `Stop ${idx + 1}`}</p>
                   <p className="text-xs text-slate-500 truncate">{stop.address}</p>
                   {stop.distance_from_previous_km > 0 && (
-                    <p className="text-xs text-slate-400">{stop.distance_from_previous_km} km desde anterior</p>
+                    <p className="text-xs text-slate-400">{stop.distance_from_previous_km} km from previous</p>
                   )}
                 </div>
 
@@ -371,21 +371,21 @@ const RouteDetail: React.FC<{
                         className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 text-white rounded-lg text-xs font-medium hover:bg-green-700 disabled:opacity-50 transition-colors"
                       >
                         {updatingStop === stop.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
-                        Visitada
+                        Visited
                       </button>
                       <button
                         onClick={() => markStop(stop.id, 'skipped')}
                         disabled={updatingStop === stop.id}
                         className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-100 text-amber-700 rounded-lg text-xs font-medium hover:bg-amber-200 disabled:opacity-50 transition-colors"
                       >
-                        <SkipForward className="w-3.5 h-3.5" /> Omitir
+                        <SkipForward className="w-3.5 h-3.5" /> Skip
                       </button>
                       <button
                         onClick={() => markStop(stop.id, 'failed')}
                         disabled={updatingStop === stop.id}
                         className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-medium hover:bg-red-100 disabled:opacity-50 transition-colors"
                       >
-                        <XCircle className="w-3.5 h-3.5" /> Fallida
+                        <XCircle className="w-3.5 h-3.5" /> Failed
                       </button>
                     </div>
                   )}
@@ -395,7 +395,7 @@ const RouteDetail: React.FC<{
                       disabled={updatingStop === stop.id}
                       className="text-xs text-slate-500 hover:text-slate-700 underline"
                     >
-                      Resetear a pendiente
+                      Reset to pending
                     </button>
                   )}
                 </div>
@@ -434,7 +434,7 @@ const RouteCard: React.FC<{
       <div className="flex items-center gap-4 text-xs text-slate-500 mb-3">
         <span className="flex items-center gap-1">
           <MapPin className="w-3.5 h-3.5" />
-          {route.stops_count} paradas
+          {route.stops_count} stops
         </span>
         {route.total_distance_km && (
           <span>{route.total_distance_km} km</span>
@@ -457,7 +457,7 @@ const RouteCard: React.FC<{
             />
           </div>
           <div className="flex justify-between text-xs text-slate-400 mt-1">
-            <span>{route.visited_stops}/{route.stops_count} visitadas</span>
+            <span>{route.visited_stops}/{route.stops_count} visited</span>
             <span>{progress}%</span>
           </div>
         </div>
@@ -468,14 +468,14 @@ const RouteCard: React.FC<{
           onClick={onView}
           className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-slate-50 text-slate-700 rounded-lg text-xs font-medium hover:bg-slate-100 transition-colors"
         >
-          <Route className="w-3.5 h-3.5" /> Ver ruta
+          <Route className="w-3.5 h-3.5" /> View route
         </button>
         {route.status === 'draft' && (
           <button
             onClick={() => onStatusChange('active')}
             className="flex items-center gap-1.5 px-3 py-1.5 bg-lime-600 text-white rounded-lg text-xs font-medium hover:bg-lime-700 transition-colors"
           >
-            <Play className="w-3.5 h-3.5" /> Iniciar
+            <Play className="w-3.5 h-3.5" /> Start
           </button>
         )}
         <button
@@ -499,6 +499,7 @@ const CreateRoutesForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) =>
   const [selectedLocation, setSelectedLocation] = useState('');
   const [stopsPerRoute, setStopsPerRoute] = useState(100);
   const [routePrefix, setRoutePrefix] = useState('Ruta');
+  const [startAddress, setStartAddress] = useState('');
   const [loading, setLoading] = useState(false);
   const [loadingLocations, setLoadingLocations] = useState(false);
   const [result, setResult] = useState<any>(null);
@@ -526,7 +527,7 @@ const CreateRoutesForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) =>
   const options = filterType === 'city' ? cities : towns;
 
   const handleCreate = async () => {
-    if (!selectedLocation) return setError('Selecciona una ciudad o pueblo.');
+    if (!selectedLocation) return setError('Select a city or town.');
     setLoading(true);
     setError('');
     setResult(null);
@@ -534,6 +535,7 @@ const CreateRoutesForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) =>
       const body: any = { region, stopsPerRoute, routePrefix };
       if (filterType === 'city') body.city = selectedLocation;
       else body.town = selectedLocation;
+      if (startAddress.trim()) body.startAddress = startAddress.trim();
 
       const data = await api('/api/routes/create-batch', {
         method: 'POST',
@@ -551,7 +553,7 @@ const CreateRoutesForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) =>
   return (
     <div className="space-y-5">
       <div>
-        <h2 className="text-lg font-bold text-slate-900">Crear rutas por ubicación</h2>
+        <h2 className="text-lg font-bold text-slate-900">Create routes by location</h2>
         <p className="text-sm text-slate-500 mt-1">
           Selecciona una ciudad o pueblo y el sistema agrupará automáticamente las empresas más cercanas entre sí en rutas de hasta {stopsPerRoute} paradas.
         </p>
@@ -559,7 +561,7 @@ const CreateRoutesForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) =>
 
       {/* Region */}
       <div>
-        <label className="block text-sm font-medium text-slate-700 mb-2">Región</label>
+        <label className="block text-sm font-medium text-slate-700 mb-2">Region</label>
         <div className="flex gap-2">
           {(['ontario', 'quebec'] as const).map(r => (
             <button
@@ -579,9 +581,9 @@ const CreateRoutesForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) =>
 
       {/* Filter type */}
       <div>
-        <label className="block text-sm font-medium text-slate-700 mb-2">Filtrar por</label>
+        <label className="block text-sm font-medium text-slate-700 mb-2">Filter by</label>
         <div className="flex gap-2">
-          {[{ v: 'city', l: 'Ciudad' }, { v: 'town', l: 'Pueblo/Municipio' }].map(opt => (
+          {[{ v: 'city', l: 'City' }, { v: 'town', l: 'Town/Municipality' }].map(opt => (
             <button
               key={opt.v}
               onClick={() => { setFilterType(opt.v as any); setSelectedLocation(''); }}
@@ -600,7 +602,7 @@ const CreateRoutesForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) =>
       {/* Location selector */}
       <div>
         <label className="block text-sm font-medium text-slate-700 mb-2">
-          {filterType === 'city' ? 'Ciudad' : 'Pueblo'} {loadingLocations && <Loader2 className="w-3.5 h-3.5 inline animate-spin ml-1" />}
+          {filterType === 'city' ? 'City' : 'Town'} {loadingLocations && <Loader2 className="w-3.5 h-3.5 inline animate-spin ml-1" />}
         </label>
         <select
           value={selectedLocation}
@@ -608,10 +610,10 @@ const CreateRoutesForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) =>
           className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-lime-500"
           disabled={loadingLocations}
         >
-          <option value="">— Seleccionar —</option>
+          <option value="">— Select —</option>
           {options.map(opt => (
             <option key={opt.name} value={opt.name}>
-              {opt.name} ({opt.withAddress} con dirección)
+                {opt.name} ({opt.withAddress} with address)
             </option>
           ))}
         </select>
@@ -620,7 +622,7 @@ const CreateRoutesForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) =>
       {/* Stops per route */}
       <div>
         <label className="block text-sm font-medium text-slate-700 mb-2">
-          Paradas por ruta: <span className="text-lime-600 font-bold">{stopsPerRoute}</span>
+          Stops per route: <span className="text-lime-600 font-bold">{stopsPerRoute}</span>
         </label>
         <input
           type="range" min={20} max={150} step={10}
@@ -633,14 +635,31 @@ const CreateRoutesForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) =>
         </div>
       </div>
 
+      {/* Starting address */}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-1">
+          Starting address <span className="text-slate-400 font-normal">(your base / depot)</span>
+        </label>
+        <p className="text-xs text-slate-400 mb-2">
+          The route will be optimized starting from here. If left empty, the center of the selected area will be used.
+        </p>
+        <input
+          type="text"
+          value={startAddress}
+          onChange={e => setStartAddress(e.target.value)}
+          placeholder="Eg: 20 Wellington St E, Toronto, ON"
+          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-lime-500"
+        />
+      </div>
+
       {/* Route prefix */}
       <div>
-        <label className="block text-sm font-medium text-slate-700 mb-2">Prefijo de nombre</label>
+        <label className="block text-sm font-medium text-slate-700 mb-2">Name prefix</label>
         <input
           type="text"
           value={routePrefix}
           onChange={e => setRoutePrefix(e.target.value)}
-          placeholder="Ruta"
+          placeholder="Route"
           className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-lime-500"
         />
       </div>
@@ -656,7 +675,7 @@ const CreateRoutesForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) =>
         <div className="p-4 bg-lime-50 border border-lime-200 rounded-xl">
           <div className="flex items-center gap-2 mb-2">
             <CheckCircle2 className="w-5 h-5 text-lime-600" />
-            <span className="font-semibold text-lime-800">¡Rutas creadas!</span>
+            <span className="font-semibold text-lime-800">Routes created!</span>
           </div>
           <p className="text-sm text-lime-700">
             <strong>{result.routesCreated}</strong> rutas creadas para <strong>{result.location}</strong> con{' '}
@@ -667,7 +686,7 @@ const CreateRoutesForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) =>
               {result.routes.map((r: any) => (
                 <div key={r.id} className="flex items-center justify-between text-xs text-lime-800 bg-lime-100 rounded-lg px-3 py-2">
                   <span className="font-medium truncate">{r.name}</span>
-                  <span className="shrink-0 ml-2">{r.stops} paradas · {r.totalDistanceKm} km</span>
+                  <span className="shrink-0 ml-2">{r.stops} stops · {r.totalDistanceKm} km</span>
                 </div>
               ))}
             </div>
@@ -681,9 +700,9 @@ const CreateRoutesForm: React.FC<{ onCreated: () => void }> = ({ onCreated }) =>
         className="w-full flex items-center justify-center gap-2 py-3 bg-lime-600 text-white rounded-xl font-semibold text-sm hover:bg-lime-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         {loading ? (
-          <><Loader2 className="w-4 h-4 animate-spin" /> Creando rutas...</>
+          <><Loader2 className="w-4 h-4 animate-spin" /> Creating routes...</>
         ) : (
-          <><Zap className="w-4 h-4" /> Crear rutas automáticamente</>
+          <><Zap className="w-4 h-4" /> Create routes automatically</>
         )}
       </button>
     </div>
@@ -726,7 +745,7 @@ export const RouteManager: React.FC = () => {
   };
 
   const handleDelete = async (routeId: string) => {
-    if (!confirm('¿Eliminar esta ruta?')) return;
+    if (!confirm('Delete this route?')) return;
     try {
       await api(`/api/routes/${routeId}`, { method: 'DELETE' });
       setRoutes(prev => prev.filter(r => r.id !== routeId));
@@ -756,11 +775,11 @@ export const RouteManager: React.FC = () => {
   };
 
   const filterTabs = [
-    { v: 'all', l: 'Todas' },
-    { v: 'draft', l: 'Borrador' },
-    { v: 'active', l: 'Activas' },
-    { v: 'paused', l: 'Pausadas' },
-    { v: 'completed', l: 'Completadas' },
+    { v: 'all', l: 'All' },
+    { v: 'draft', l: 'Draft' },
+    { v: 'active', l: 'Active' },
+    { v: 'paused', l: 'Paused' },
+    { v: 'completed', l: 'Completed' },
   ];
 
   if (selectedRoute) {
@@ -781,21 +800,21 @@ export const RouteManager: React.FC = () => {
       {/* Page header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Rutas de visita</h1>
-          <p className="text-sm text-slate-500 mt-1">Gestiona y optimiza las rutas de visita a empresas</p>
+          <h1 className="text-2xl font-bold text-slate-900">Visit routes</h1>
+          <p className="text-sm text-slate-500 mt-1">Manage and optimize company visit routes</p>
         </div>
         <div className="flex gap-2">
           <button
             onClick={() => setTab('list')}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === 'list' ? 'bg-slate-900 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
           >
-            Mis rutas
+            My routes
           </button>
           <button
             onClick={() => setTab('create')}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${tab === 'create' ? 'bg-lime-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
           >
-            + Crear rutas
+            + Create routes
           </button>
         </div>
       </div>
@@ -831,13 +850,13 @@ export const RouteManager: React.FC = () => {
           ) : routes.length === 0 ? (
             <div className="text-center py-16 bg-white border border-slate-200 rounded-2xl">
               <Route className="w-10 h-10 text-slate-300 mx-auto mb-3" />
-              <p className="text-slate-500 font-medium">No hay rutas</p>
-              <p className="text-slate-400 text-sm mt-1">Crea rutas automáticas desde "Crear rutas"</p>
+              <p className="text-slate-500 font-medium">No routes</p>
+              <p className="text-slate-400 text-sm mt-1">Create automatic routes from "Create routes"</p>
               <button
                 onClick={() => setTab('create')}
                 className="mt-4 px-4 py-2 bg-lime-600 text-white rounded-lg text-sm font-medium hover:bg-lime-700 transition-colors"
               >
-                Crear mi primera ruta
+                Create my first route
               </button>
             </div>
           ) : (

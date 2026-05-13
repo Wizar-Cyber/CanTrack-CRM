@@ -9,15 +9,15 @@ export function errorHandler(
 ): void {
   if (err instanceof DatabaseError) {
     if (err.code === '23505') {
-      res.status(409).json({ error: 'Recurso duplicado.' });
+      res.status(409).json({ error: 'Duplicate resource.' });
       return;
     }
     if (err.code === '23503') {
-      res.status(409).json({ error: 'Referencia inválida o recurso con dependencias.' });
+      res.status(409).json({ error: 'Invalid reference or resource has dependencies.' });
       return;
     }
   }
 
   console.error('[Unhandled Error]', err);
-  res.status(500).json({ error: 'Error interno del servidor.' });
+  res.status(500).json({ error: 'Internal server error.' });
 }

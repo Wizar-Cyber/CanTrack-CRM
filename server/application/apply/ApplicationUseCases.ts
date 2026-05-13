@@ -35,7 +35,7 @@ export class AutoApplyUseCase {
   ) {}
 
   async execute(job: AutomationJobInput, candidate: AutomationCandidateInput): Promise<AutomationResult> {
-    if (!job?.id || !candidate?.id) throw new DomainError('job.id y candidate.id son requeridos.');
+    if (!job?.id || !candidate?.id) throw new DomainError('job.id and candidate.id are required.');
     const result = await this.automation.execute(job, candidate);
     const status: ApplicationStatus = result.success ? 'Applied' : 'Saved';
     await this.applications.upsert({ jobId: job.id, candidateId: candidate.id, status });
@@ -47,7 +47,7 @@ export class RecordApplicationUseCase {
   constructor(private readonly applications: IApplicationRepository) {}
 
   async execute(jobId: string, candidateId: string): Promise<void> {
-    if (!jobId || !candidateId) throw new DomainError('jobId y candidateId requeridos.');
+    if (!jobId || !candidateId) throw new DomainError('jobId and candidateId are required.');
     try {
       await this.applications.upsert({ jobId, candidateId, status: 'Applied' });
     } catch (err: unknown) {
@@ -63,10 +63,10 @@ export class UpdateApplicationStatusUseCase {
 
   async execute(jobId: string, candidateId: string, status: string): Promise<void> {
     if (!VALID_STATUSES.includes(status as ApplicationStatus)) {
-      throw new DomainError('Estado inválido.');
+      throw new DomainError('Invalid status.');
     }
     const ok = await this.applications.updateStatus(jobId, candidateId, status as ApplicationStatus);
-    if (!ok) throw new NotFoundError('Aplicación');
+    if (!ok) throw new NotFoundError('Application');
   }
 }
 
@@ -74,7 +74,7 @@ export class GetApplicationStatusUseCase {
   constructor(private readonly applications: IApplicationRepository) {}
 
   async execute(jobId: string, candidateId: string): Promise<Application | null> {
-    if (!jobId || !candidateId) throw new DomainError('Faltan jobId o candidateId.');
+    if (!jobId || !candidateId) throw new DomainError('Missing jobId or candidateId.');
     return this.applications.findByJobAndCandidate(jobId, candidateId);
   }
 }

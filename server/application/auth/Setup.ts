@@ -23,13 +23,13 @@ export class SetupUseCase {
 
   async execute(input: SetupInput): Promise<SetupOutput> {
     if (!input.email || !input.password || !input.firstName || !input.lastName) {
-      throw new DomainError('Todos los campos son requeridos.');
+      throw new DomainError('All fields are required.');
     }
-    if (input.password.length < 8) throw new DomainError('Contraseña mínimo 8 caracteres.');
-    if (!EMAIL_RE.test(input.email))  throw new DomainError('Email inválido.');
+    if (input.password.length < 8) throw new DomainError('Password must be at least 8 characters.');
+    if (!EMAIL_RE.test(input.email))  throw new DomainError('Invalid email.');
 
     const existing = await this.users.countAll();
-    if (existing > 0) throw new ConflictError('Ya existe un usuario. Usa el login.');
+    if (existing > 0) throw new ConflictError('A user already exists. Use login.');
 
     const passwordHash = await bcrypt.hash(input.password, 12);
     try {
@@ -50,7 +50,7 @@ export class SetupUseCase {
       return { token, user };
     } catch (err: unknown) {
       const dbErr = err as { code?: string };
-      if (dbErr.code === '23505') throw new ConflictError('Email ya registrado.');
+      if (dbErr.code === '23505') throw new ConflictError('Email already registered.');
       throw err;
     }
   }

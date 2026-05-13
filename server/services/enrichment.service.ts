@@ -1,40 +1,39 @@
 /**
- * EnrichmentService — Orquestador con merge campo-por-campo entre proveedores.
+ * EnrichmentService — Orchestrator with field-by-field merge across providers.
  *
- * Orden de preferencia:
- *   1. Groq API        (GROQ_API_KEY configurado)
- *   2. Google Gemini   (GEMINI_API_KEY configurado)
- *   3. Ollama local    (localhost:11434 responde)
- *   4. Web Search      (DuckDuckGo + Wikipedia, siempre disponible)
+ * Provider priority:
+ *   1. Google Gemini   (requires GEMINI_API_KEY)
+ *   2. Groq API        (requires GROQ_API_KEY)
+ *   3. Web Search      (DuckDuckGo + Wikipedia, always available)
  *
- * Cuando un proveedor devuelve datos incompletos (campos vacíos/null), se
- * continúa con el siguiente proveedor y se rellena SOLO los campos que
- * siguen sin valor. Si todos conocen un campo, se queda el del primero.
- * Solo se para antes si todos los campos requeridos están completos.
+ * When a provider returns incomplete data (empty/null fields), the next
+ * provider is queried and ONLY fills in the fields still missing values.
+ * If all providers know a field, the first provider's value is kept.
+ * Early exit if all required fields are already complete.
  */
 
 import { GeminiService }    from './gemini.service.js';
 import { GroqService }      from './groq.service.js';
-import { OllamaService }    from './ollama.service.js';
 import { WebSearchService } from './websearch.service.js';
-import { EnrichmentData }   from './groq.service.js';
+import type { EnrichmentData } from './groq.service.js';
+import { OllamaService } from './ollama.service.js';
 
 export type { EnrichmentData };
 
-// Campos que se intentan completar con la cadena de fallback
+// Fields to fill using the fallback chain
 const FIELDS: (keyof EnrichmentData)[] = [
   'industry', 'company_size', 'hq_city', 'hq_province', 'hq_region', 'hq_town', 'hq_country',
   'exact_address', 'phone', 'contact_email', 'website', 'description',
 ];
 
-/** Devuelve true si el valor tiene contenido real (no nulo, vacío ni 0). */
+/** Returns true if the value has real content (not null, empty, or 0). */
 function filled(val: unknown): boolean {
   if (val === undefined || val === null) return false;
   const s = String(val).trim();
   return s !== '' && s !== '0';
 }
 
-/** Copia hacia `base` todos los campos de `patch` que `base` aún no tiene. */
+/** Copies all fields from `patch` into `base` that `base` doesn't already have. */
 function mergeInto(base: Partial<EnrichmentData>, patch: Partial<EnrichmentData>): void {
   for (const key of FIELDS) {
     if (!filled((base as any)[key]) && filled((patch as any)[key])) {
@@ -43,15 +42,15 @@ function mergeInto(base: Partial<EnrichmentData>, patch: Partial<EnrichmentData>
   }
 }
 
-/** Devuelve la lista de campos que aún están vacíos. */
+/** Returns the list of fields that are still empty/null. */
 function missing(data: Partial<EnrichmentData>): string[] {
   return FIELDS.filter(f => !filled((data as any)[f]));
 }
 
 /**
- * Verifica que una URL responde realmente (HEAD request, timeout 5 s).
- * Sigue hasta 2 redirecciones. Devuelve false si la URL es inválida,
- * no responde o devuelve un error HTTP (4xx/5xx).
+ * Verifies that a URL actually responds (HEAD request, 5s timeout).
+ * Follows up to 2 redirects. Returns false if the URL is invalid,
+ * unresponsive, or returns an HTTP error (4xx/5xx).
  */
 async function verifyUrl(url: string): Promise<boolean> {
   try {
@@ -64,8 +63,8 @@ async function verifyUrl(url: string): Promise<boolean> {
       signal: AbortSignal.timeout(5_000),
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; CanTrackBot/1.0)' },
     });
-    // Algunos servidores devuelven 405 para HEAD pero responden bien a GET.
-    // Consideramos válidos 2xx, 3xx finales y 405.
+    // Some servers return 405 for HEAD but respond fine to GET.
+    // We consider 2xx, final 3xx, and 405 as valid.
     return res.ok || res.status === 405 || (res.status >= 300 && res.status < 400);
   } catch {
     return false;
@@ -74,29 +73,29 @@ async function verifyUrl(url: string): Promise<boolean> {
 
 export class EnrichmentService {
   /**
-   * Enriquece una empresa usando todos los proveedores disponibles.
-   * Cada proveedor solo aporta los campos que los anteriores dejaron vacíos.
-   * El resultado final incluye `_provider` con todos los que contribuyeron.
+   * Enriches a company using all available providers.
+   * Each provider only contributes fields left empty by previous ones.
+   * The final result includes `_provider` listing all contributors.
    */
   static async enrichCompany(companyName: string): Promise<EnrichmentData> {
     const merged: Partial<EnrichmentData> = {};
     const usedProviders: string[] = [];
 
-    // ── Devuelve el resultado final verificando el website ───────────────────
+    // ── Finalize result, verifying the website URL ──────────────────────────
     async function finalize(): Promise<EnrichmentData> {
       if (merged.website) {
         const alive = await verifyUrl(merged.website);
         if (!alive) {
-          console.warn(`[Enrichment] Website no responde (posible alucinación), descartado: ${merged.website}`);
+          console.warn(`[Enrichment] Website not responding (possible hallucination), discarding: ${merged.website}`);
           delete merged.website;
         } else {
-          console.info(`[Enrichment] Website verificado: ${merged.website}`);
+          console.info(`[Enrichment] Website verified: ${merged.website}`);
         }
       }
       return { ...merged, _provider: usedProviders.join('+') };
     }
 
-    // ── Helper: llama a un proveedor, mergea campos faltantes ────────────────
+    // ── Helper: calls a provider, merges missing fields ──────────────────────
     async function tryProvider(
       name: string,
       call: () => Promise<Partial<EnrichmentData>>,
@@ -108,39 +107,30 @@ export class EnrichmentService {
         const filled_count = before - missing(merged).length;
         if (filled_count > 0) {
           usedProviders.push(name);
-          console.info(`[Enrichment] ${name} aportó ${filled_count} campo(s) para: ${companyName}`);
+          console.info(`[Enrichment] ${name} contributed ${filled_count} field(s) for: ${companyName}`);
         }
       } catch (err) {
         console.warn(`[Enrichment] ${name} error: ${(err as Error).message}`);
       }
     }
 
-    // 1. Groq ─────────────────────────────────────────────────────────────────
-    if (GroqService.isConfigured()) {
-      await tryProvider('groq', () => GroqService.enrichCompany(companyName));
-      if (missing(merged).length === 0) return finalize();
-      console.info(`[Enrichment] Groq dejó vacíos: ${missing(merged).join(', ')} — continuando…`);
-    }
-
-    // 2. Gemini ───────────────────────────────────────────────────────────────
+    // 1. Gemini ───────────────────────────────────────────────────────────────
     if (process.env.GEMINI_API_KEY) {
       await tryProvider('gemini', () => GeminiService.enrichCompany(companyName));
       if (missing(merged).length === 0) return finalize();
-      if (missing(merged).length < FIELDS.length) {
-        console.info(`[Enrichment] Gemini dejó vacíos: ${missing(merged).join(', ')} — continuando…`);
-      }
+        if (missing(merged).length < FIELDS.length) {
+          console.info(`[Enrichment] Gemini left empty: ${missing(merged).join(', ')} — continuing…`);
+        }
     }
 
-    // 3. Ollama (local) ───────────────────────────────────────────────────────
-    if (await OllamaService.isAvailable()) {
-      await tryProvider('ollama', () => OllamaService.enrichCompany(companyName));
+    // 2. Groq ─────────────────────────────────────────────────────────────────
+    if (GroqService.isConfigured()) {
+      await tryProvider('groq', () => GroqService.enrichCompany(companyName));
       if (missing(merged).length === 0) return finalize();
-      if (missing(merged).length < FIELDS.length) {
-        console.info(`[Enrichment] Ollama dejó vacíos: ${missing(merged).join(', ')} — continuando…`);
-      }
+      console.info(`[Enrichment] Groq left empty: ${missing(merged).join(', ')} — continuing…`);
     }
 
-    // 4. Web Search (DuckDuckGo + Wikipedia) ──────────────────────────────────
+    // 3. Web Search (DuckDuckGo + Wikipedia) ──────────────────────────────────
     await tryProvider('web_search', async () => {
       const result = await WebSearchService.enrichCompany(companyName);
       return result;
@@ -148,35 +138,34 @@ export class EnrichmentService {
 
     // ── Resultado final ───────────────────────────────────────────────────────
     if (usedProviders.length === 0) {
-      console.warn(`[Enrichment] Todos los proveedores fallaron para: ${companyName}`);
+      console.warn(`[Enrichment] All providers failed for: ${companyName}`);
       return { _provider: 'none' };
     }
 
     const stillMissing = missing(merged);
     if (stillMissing.length > 0) {
-      console.info(`[Enrichment] Campos que quedaron vacíos para "${companyName}": ${stillMissing.join(', ')}`);
+      console.info(`[Enrichment] Empty fields remaining for "${companyName}": ${stillMissing.join(', ')}`);
     }
 
     return finalize();
   }
 
   /**
-   * Genera una carta de presentación. Delega siempre a Gemini ya que
-   * esta funcionalidad requiere generación de texto de calidad.
-   * Si Gemini no está disponible lanza un error descriptivo.
+   * Generates a cover letter using Gemini AI.
+   * Falls back to a simple template if Gemini is unavailable.
    */
   static async generateCoverLetter(candidate: any, job: any): Promise<string> {
     if (!process.env.GEMINI_API_KEY) {
       throw new Error(
-        'La generación de cartas de presentación requiere GEMINI_API_KEY. ' +
-        'Configura la variable de entorno y reinicia el servidor.'
+        'Cover letter generation requires GEMINI_API_KEY. ' +
+        'Set the environment variable and restart the server.'
       );
     }
     return GeminiService.generateCoverLetter(candidate, job);
   }
 
   /**
-   * Devuelve una descripción del proveedor activo (útil para logs/UI).
+   * Returns the name of the currently active provider (useful for logs/UI).
    */
   static async activeProvider(): Promise<string> {
     if (process.env.GEMINI_API_KEY)    return 'gemini';

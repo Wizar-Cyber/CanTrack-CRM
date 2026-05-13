@@ -1,7 +1,7 @@
 /**
- * MDirectorService — OAuth2 + Campaign API
+ * MDirectorService — OAuth2 + Campaign API integration.
  *
- * Configure in .env:
+ * Configuration via .env:
  *   MDIRECTOR_USERNAME=107843
  *   MDIRECTOR_PASSWORD=<your_password_hash>
  *   MDIRECTOR_FROM_EMAIL=noreply@yourcompany.com
@@ -36,8 +36,8 @@ export class MDirectorService {
   private static _token: string | null = null;
   private static _tokenExpiresAt = 0;
 
-  static get username()  { return process.env.MDIRECTOR_USERNAME  || '107843'; }
-  static get password()  { return process.env.MDIRECTOR_PASSWORD  || ''; }
+  static get username()  { return process.env.MDIRECTOR_USERNAME  || process.env.MDIRECTOR_API_KEY    || '107843'; }
+  static get password()  { return process.env.MDIRECTOR_PASSWORD  || process.env.MDIRECTOR_API_SECRET || ''; }
   static get fromEmail() { return process.env.MDIRECTOR_FROM_EMAIL || ''; }
   static get fromName()  { return process.env.MDIRECTOR_FROM_NAME  || 'VSM Services'; }
   static get replyTo()   { return process.env.MDIRECTOR_REPLY_TO   || process.env.MDIRECTOR_FROM_EMAIL || ''; }
@@ -461,15 +461,15 @@ export class MDirectorService {
     senderName: string;
   }): string {
     const greeting = opts.contactName
-      ? `Estimado/a ${opts.contactName}`
-      : `Estimado/a equipo de ${opts.companyName}`;
+      ? `Dear ${opts.contactName}`
+      : `Dear ${opts.companyName} Team`;
 
     return `<!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Oferta de Personal — ${opts.employeeTypeName}</title>
+  <title>Staffing Offer — ${opts.employeeTypeName}</title>
 </head>
 <body style="margin:0;padding:0;background:#f8fafc;font-family:'Segoe UI',Arial,sans-serif;">
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:32px 0;">
@@ -478,14 +478,14 @@ export class MDirectorService {
         <tr>
           <td style="background:linear-gradient(135deg,#1e3a5f 0%,#2563eb 100%);padding:32px 40px;">
             <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:700;">VSM Services</h1>
-            <p style="margin:4px 0 0;color:#bfdbfe;font-size:13px;">Soluciones de Personal Especializado</p>
+            <p style="margin:4px 0 0;color:#bfdbfe;font-size:13px;">Specialized Staffing Solutions</p>
           </td>
         </tr>
         <tr>
           <td style="padding:40px;">
             <p style="margin:0 0 20px;color:#1e293b;font-size:16px;">${greeting},</p>
             <p style="margin:0 0 20px;color:#475569;font-size:15px;line-height:1.7;">
-              Nos ponemos en contacto para presentarles nuestro perfil de
+              We are reaching out to present our profile for
               <strong style="color:#2563eb;">${opts.employeeTypeName}</strong>.
             </p>
             <table width="100%" cellpadding="0" cellspacing="0" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;margin:24px 0;">
@@ -498,7 +498,7 @@ export class MDirectorService {
             </table>
             ${opts.customMessage ? `<p style="margin:0 0 20px;color:#475569;font-size:15px;line-height:1.7;">${opts.customMessage.replace(/\n/g, '<br>')}</p>` : ''}
             <p style="margin:0;color:#64748b;font-size:14px;line-height:1.7;">
-              Cordialmente,<br>
+              Best regards,<br>
               <strong style="color:#1e293b;">${opts.senderName}</strong><br>
               <span style="color:#94a3b8;font-size:13px;">VSM Services</span>
             </p>

@@ -125,7 +125,9 @@ export const ApplicationQueue: React.FC = () => {
       if (agentRes.ok)  setAgent(await agentRes.json());
       if (queueRes.ok)  setQueue(await queueRes.json());
       if (statsRes.ok)  setStats(await statsRes.json());
-    } catch { /* silent */ } finally {
+    } catch (err) {
+      console.warn('[ApplicationQueue] Fetch error:', err);
+    } finally {
       setLoading(false);
     }
   }, []);
@@ -472,7 +474,7 @@ export const ApplicationQueue: React.FC = () => {
                           <button
                             onClick={() => removeItem(item.id)}
                             className="p-1.5 hover:bg-red-50 text-red-400 rounded-lg transition-colors"
-                            title="Eliminar de cola"
+                            title="Remove from queue"
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>

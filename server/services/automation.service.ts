@@ -1,5 +1,3 @@
-import axios from 'axios';
-import FormData from 'form-data';
 import { GoogleGenAI } from "@google/genai";
 import { detectPortalFromUrl, PortalType } from './portal-detector.js';
 import { GreenhouseService } from './greenhouse.service.js';
@@ -178,27 +176,27 @@ export class AutomationService {
   /**
    * Layer 2/3: Browser Stealth Application using Playwright-Extra
    *
-   * Si AUTOMATION_SUBMIT_ENABLED=true en .env, rellena Y envía el formulario.
-   * Por defecto (false) sólo rellena los campos para previsualización segura.
+    * If AUTOMATION_SUBMIT_ENABLED=true in .env, fills AND submits the form.
+    * By default (false) only fills fields for safe preview.
    */
   private static async applyViaBrowserStealth(job: any, candidate: any, addLog: Function): Promise<Omit<AutomationResult, 'logs' | 'verification'>> {
     let browser: any = null;
     try {
-      addLog('Iniciando navegador Playwright stealth...', 'info');
+      addLog('Starting Playwright stealth browser...', 'info');
 
-      // Importación dinámica para no romper el arranque si playwright no está
+      // Dynamic import so startup doesn't break if playwright is not installed
       const { chromium } = await import('playwright-extra').catch(() => {
-        throw new Error('playwright-extra no está instalado. Ejecutar: npm install playwright-extra playwright');
+        throw new Error('playwright-extra is not installed. Run: npm install playwright-extra playwright');
       });
 
-      // Intentar cargar stealth plugin
+      // Try loading stealth plugin
       try {
         // @ts-ignore — no type declarations for this package
         const StealthPlugin = await import('puppeteer-extra-plugin-stealth');
         (chromium as any).use(StealthPlugin.default());
-        addLog('Plugin anti-detección activo.', 'info');
+        addLog('Anti-detection plugin active.', 'info');
       } catch {
-        addLog('Stealth plugin no disponible; continuando sin él.', 'warning');
+        addLog('Stealth plugin not available; continuing without it.', 'warning');
       }
 
       browser = await chromium.launch({
@@ -223,9 +221,9 @@ export class AutomationService {
       const page = await context.newPage();
       page.setDefaultTimeout(15_000);
 
-      addLog(`Navegando a: ${job.url}`, 'info');
+      addLog(`Navigating to: ${job.url}`, 'info');
       await page.goto(job.url, { waitUntil: 'domcontentloaded', timeout: 30_000 });
-      addLog('Página cargada. Analizando campos del formulario...', 'info');
+      addLog('Page loaded. Analyzing form fields...', 'info');
 
       const filled: string[] = [];
 
@@ -236,7 +234,7 @@ export class AutomationService {
         filled.push('email');
       }
 
-      // —— Nombre (first + last separados) ——
+      // —— Name (first + last separate) ——
       const firstEl = await page.$(
         'input[name="firstName" i], input[id*="first_name" i], input[name="first-name" i],' +
         'input[placeholder*="First" i], input[aria-label*="first name" i]',
@@ -253,7 +251,7 @@ export class AutomationService {
         await lastEl.fill(candidate.name.split(' ').slice(1).join(' ') || '');
         filled.push('lastName');
       }
-      // —— Nombre como campo único ——
+      // —— Single name field ——
       if (!firstEl && !lastEl) {
         const nameEl = await page.$(
           'input[name="name" i], input[id*="full_name" i], input[placeholder*="Full name" i]',
@@ -264,7 +262,7 @@ export class AutomationService {
         }
       }
 
-      // —— Teléfono ——
+      // —— Phone ——
       const phoneEl = await page.$(
         'input[type="tel"], input[name="phone" i], input[id*="phone" i], input[placeholder*="phone" i]',
       );
@@ -275,8 +273,8 @@ export class AutomationService {
 
       addLog(
         filled.length > 0
-          ? `Campos completados: [${filled.join(', ')}]`
-          : 'No se detectaron campos autocompletables. El portal puede requerir autenticación.',
+          ? `Fields completed: [${filled.join(', ')}]`
+          : 'No auto-fillable fields detected. The portal may require authentication.',
         filled.length > 0 ? 'success' : 'warning',
       );
 
@@ -284,14 +282,14 @@ export class AutomationService {
         return {
           success: false,
           strategy: AutomationStrategy.BROWSER_STEALTH,
-          message: 'No se encontró formulario de aplicación accesible.',
+          message: 'No accessible application form found.',
           requiresExtension: true,
           portal: 'other' as any,
           jobUrl: job.url,
         };
       }
 
-      // —— Botón de submit ——
+        // —— Submit button ——
       const submitEl = await page.$(
         'button[type="submit"], input[type="submit"],' +
         'button:has-text("Apply"), button:has-text("Submit"),' +
@@ -299,30 +297,30 @@ export class AutomationService {
       );
 
       if (!submitEl) {
-        addLog('Formulario rellenado pero no se encontró botón de envío. Requiere revisión manual.', 'warning');
+        addLog('Form filled but no submit button found. Manual review required.', 'warning');
       } else if (process.env.AUTOMATION_SUBMIT_ENABLED === 'true') {
-        addLog('Enviando aplicación...', 'info');
+        addLog('Submitting application...', 'info');
         await submitEl.click();
         await page.waitForTimeout(2000);
-        // Detectar señal de éxito en el DOM
+        // Detect success signal in DOM
         const successEl = await page.$(
           '[role="alert"]:has-text("success"), [role="alert"]:has-text("submitted"),' +
           '[role="status"], .success-message, .confirmation',
         );
-        if (successEl) addLog('Señal de confirmación detectada en DOM.', 'success');
-        else addLog('Aplicación enviada (sin señal DOM visible).', 'info');
+        if (successEl) addLog('Confirmation signal detected in DOM.', 'success');
+        else addLog('Application submitted (no visible DOM signal).', 'info');
       } else {
-        addLog('Modo previsualización — formulario rellenado pero NO enviado (AUTOMATION_SUBMIT_ENABLED != true).', 'warning');
+        addLog('Preview mode — form filled but NOT submitted (AUTOMATION_SUBMIT_ENABLED != true).', 'warning');
       }
 
       const applicationId = `REF-${Math.random().toString(36).substring(2, 9).toUpperCase()}`;
-      addLog(`ID de referencia: ${applicationId}`, 'success');
+      addLog(`Reference ID: ${applicationId}`, 'success');
 
       return {
         success: true,
         strategy: AutomationStrategy.BROWSER_STEALTH,
         applicationId,
-        message: `Automatización completada. ${filled.length} campo(s) rellenado(s).`,
+        message: `Automation completed. ${filled.length} field(s) filled.`,
         details: {
           fieldsCompleted: filled,
           submitted: process.env.AUTOMATION_SUBMIT_ENABLED === 'true',
@@ -330,16 +328,16 @@ export class AutomationService {
       };
     } catch (error: any) {
       const msg = error instanceof Error ? error.message : String(error);
-      addLog(`Error de automatización: ${msg}`, 'error');
+      addLog(`Automation error: ${msg}`, 'error');
 
       if (msg.includes('Cannot find module') || msg.includes('not found') || msg.includes('no está instalado')) {
-        addLog('Para instalar: npm install playwright-extra playwright && npx playwright install chromium', 'error');
+        addLog('To install: npm install playwright-extra playwright && npx playwright install chromium', 'error');
       }
 
       return {
         success: false,
         strategy: AutomationStrategy.BROWSER_STEALTH,
-        message: `Error en automatización: ${msg}`,
+        message: `Automation error: ${msg}`,
       };
     } finally {
       if (browser) await browser.close().catch(() => {});

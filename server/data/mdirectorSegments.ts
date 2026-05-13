@@ -66,6 +66,58 @@ export const QUEBEC_SEGMENTS: Record<string, string> = {
   'ASISTENTE DE COCINA':                       '736', // chef
   'CHEF':                                      '736', // chef
   'PIZZERO':                                   '759', // Pizza
+  // ── English/Scraper work types ──
+  'RETAIL':                                    '773', // General
+  'MANUFACTURING':                             '753', // Mechanic
+  'TECHNOLOGY':                                '773', // General
+  'DEFENSE':                                   '773', // General
+  'GOVERNMENT':                                '773', // General
+  'FINANCIERO':                                '773', // General
+  'HOSPITALITY':                               '748', // Hotel
+  'HEALTHCARE':                                '773', // General
+  'TRANSPORT':                                 '689', // Driver
+  'HEALTH AND WELLNESS':                       '773', // General
+  'STAFFING':                                  '773', // General
+  'CONSTRUCTION':                              '742', // Construction
+  'FACILITIES SERVICES':                       '685', // Limpeza
+  'FOOD SERVICE':                              '710', // Restaurant
+  'TELECOMMUNICATIONS':                        '773', // General
+  'FOOD DISTRIBUTION':                         '670', // Carnicero
+  'CLEANING SERVICES':                         '685', // Limpeza
+  'SECURITY':                                  '773', // General
+  'TRANSPORTATION & LOGISTICS':                '689', // Driver
+  'DAIRY MANUFACTURING':                       '670', // Carnicero
+  'INSURANCE':                                 '773', // General
+  'FINANCIAL SERVICES':                        '773', // General
+  'REAL ESTATE BROKERAGE':                     '773', // General
+  'LEASING':                                   '773', // General
+  'CONSUMER PRODUCTS':                         '773', // General
+  'DISTRIBUTION':                              '773', // General
+  'FORESTRY':                                  '663', // Agricultura
+  'EDUCATION':                                 '773', // General
+  'ENGINEERING & CONSTRUCTION':                '742', // Construction
+  'FOOD PROCESSING':                           '670', // Carnicero
+  'CANNABIS CULTIVATION AND PROCESSING':       '663', // Agricultura
+  'ENVIRONMENTAL SERVICES':                    '699', // Landscape
+  'AGRICULTURE':                               '663', // Agricultura
+  'FOOD AND BEVERAGE':                         '710', // Restaurant
+  'CHILD DAY CARE SERVICES':                   '773', // General
+  'ENERGY & UTILITIES':                        '773', // General
+  'AEROSPACE & MANUFACTURING':                 '753', // Mechanic
+  'WHOLESALE':                                 '773', // General
+  'AUTOMOTIVE':                                '773', // General
+  'LANDSCAPING':                               '699', // Landscape
+  'IMMIGRATION SERVICES':                      '773', // General
+  // ── Typo variants ──
+  'VALIDAR':                                   '773', // General (typo of GENERAL)
+  'RECOLECTORESS Y VEGETALES':                 '663', // Agricultura (typo)
+  'TRABAJADORES DE IVERNADEROS':               '663', // Agricultura (typo)
+  'ASISTENTE SE COCINA':                       '736', // chef (typo)
+  'CONDUCTORES VEHICULOS DE CARGA':            '689', // Driver (typo)
+  'TECNICO EN ELEVADORES':                     '694', // entretien (typo)
+  'REPARADORES DE REFRIGERADOES':              '694', // entretien (typo)
+  'VALIDAR CARGO':                             '773', // General
+  'RETAIL GROCERY':                            '681', // Supermarket
   'GENERAL':                                   '773', // General
 };
 
@@ -124,5 +176,57 @@ export const ONTARIO_SEGMENTS: Record<string, string> = {
   'ASISTENTE DE COCINA':                       '677', // chef
   'CHEF':                                      '677', // chef
   'PIZZERO':                                   '710', // Restaurant
+  // ── English/Scraper work types ──
+  'RETAIL':                                    '712', // General
+  'MANUFACTURING':                             '703', // Mechanic
+  'TECHNOLOGY':                                '712', // General
+  'DEFENSE':                                   '712', // General
+  'GOVERNMENT':                                '712', // General
+  'FINANCIERO':                                '712', // General
+  'HOSPITALITY':                               '695', // Hotel
+  'HEALTHCARE':                                '712', // General
+  'TRANSPORT':                                 '689', // Driver
+  'HEALTH AND WELLNESS':                       '712', // General
+  'STAFFING':                                  '712', // General
+  'CONSTRUCTION':                              '673', // Construccion
+  'FACILITIES SERVICES':                       '685', // Limpeza
+  'FOOD SERVICE':                              '710', // Restaurant
+  'TELECOMMUNICATIONS':                        '712', // General
+  'FOOD DISTRIBUTION':                         '670', // Carnicero
+  'CLEANING SERVICES':                         '685', // Limpeza
+  'SECURITY':                                  '712', // General
+  'TRANSPORTATION & LOGISTICS':                '689', // Driver
+  'DAIRY MANUFACTURING':                       '670', // Carnicero
+  'INSURANCE':                                 '712', // General
+  'FINANCIAL SERVICES':                        '712', // General
+  'REAL ESTATE BROKERAGE':                     '712', // General
+  'LEASING':                                   '712', // General
+  'CONSUMER PRODUCTS':                         '712', // General
+  'DISTRIBUTION':                              '712', // General
+  'FORESTRY':                                  '663', // Agricultura
+  'EDUCATION':                                 '712', // General
+  'ENGINEERING & CONSTRUCTION':                '673', // Construccion
+  'FOOD PROCESSING':                           '670', // Carnicero
+  'CANNABIS CULTIVATION AND PROCESSING':       '663', // Agricultura
+  'ENVIRONMENTAL SERVICES':                    '699', // Landscape
+  'AGRICULTURE':                               '663', // Agricultura
+  'FOOD AND BEVERAGE':                         '710', // Restaurant
+  'CHILD DAY CARE SERVICES':                   '712', // General
+  'ENERGY & UTILITIES':                        '712', // General
+  'AEROSPACE & MANUFACTURING':                 '703', // Mechanic
+  'WHOLESALE':                                 '712', // General
+  'AUTOMOTIVE':                                '703', // Mechanic
+  'LANDSCAPING':                               '699', // Landscape
+  'IMMIGRATION SERVICES':                      '712', // General
+  // ── Typo variants ──
+  'VALIDAR':                                   '712', // General
+  'RECOLECTORESS Y VEGETALES':                 '663', // Agricultura (typo)
+  'TRABAJADORES DE IVERNADEROS':               '663', // Agricultura (typo)
+  'ASISTENTE SE COCINA':                       '677', // chef (typo)
+  'CONDUCTORES VEHICULOS DE CARGA':            '689', // Driver (typo)
+  'TECNICO EN ELEVADORES':                     '694', // entretien (typo)
+  'REPARADORES DE REFRIGERADOES':              '694', // entretien (typo)
+  'VALIDAR CARGO':                             '712', // General
+  'RETAIL GROCERY':                            '681', // Supermarket
   'GENERAL':                                   '712', // General
 };

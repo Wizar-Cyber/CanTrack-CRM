@@ -46,7 +46,7 @@ export function createRequireAuth(pool: Pool) {
     try {
       payload = jwt.verify(token, JWT_SECRET) as JwtPayload;
     } catch {
-      res.status(401).json({ error: 'Token inválido o expirado.' });
+      res.status(401).json({ error: 'Invalid or expired token.' });
       return;
     }
 
@@ -57,11 +57,11 @@ export function createRequireAuth(pool: Pool) {
         [payload.id],
       );
       if (!result.rows[0]?.is_active) {
-        res.status(401).json({ error: 'Cuenta desactivada.' });
+        res.status(401).json({ error: 'Account deactivated.' });
         return;
       }
     } catch {
-      res.status(500).json({ error: 'Error verificando sesión.' });
+      res.status(500).json({ error: 'Error verifying session.' });
       return;
     }
 
@@ -73,7 +73,7 @@ export function createRequireAuth(pool: Pool) {
 export function requireRole(...roles: string[]) {
   return (req: AuthRequest, res: Response, next: NextFunction): void => {
     if (!req.user || !roles.includes(req.user.role)) {
-      res.status(403).json({ error: 'Permisos insuficientes.' });
+      res.status(403).json({ error: 'Insufficient permissions.' });
       return;
     }
     next();

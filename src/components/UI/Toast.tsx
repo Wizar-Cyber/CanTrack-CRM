@@ -57,7 +57,7 @@ const ToastCard: React.FC<{ toast: ToastItem; onRemove: (id: string) => void }> 
       <button
         onClick={() => onRemove(toast.id)}
         className="p-0.5 text-slate-300 hover:text-slate-500 rounded transition-colors shrink-0"
-        aria-label="Cerrar"
+        aria-label="Close"
       >
         <X className="w-3.5 h-3.5" />
       </button>

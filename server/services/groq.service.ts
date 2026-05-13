@@ -1,32 +1,36 @@
 /**
- * GroqService — Enriquecimiento de empresas via Groq API.
+ * GroqService — Company enrichment via Groq API.
  *
- * Groq ofrece una capa gratuita muy generosa:
- *   - llama-3.1-8b-instant:  ~14 000 RPM en capa free
+ * Groq offers a very generous free tier:
+ *   - llama-3.1-8b-instant:  ~14 000 RPM on free tier
  *   - mixtral-8x7b-32768:    ~30 req/min
  *
- * Compatible con la interfaz OpenAI, sin SDKs adicionales (fetch puro).
- * Registro gratuito: https://console.groq.com
+ * Compatible with OpenAI interface, no extra SDKs (pure fetch).
+ * Free registration: https://console.groq.com
  *
  * Env vars:
  *   GROQ_API_KEY=gsk_...
- *   GROQ_MODEL=llama-3.1-8b-instant   (opcional, default: llama-3.1-8b-instant)
+ *   GROQ_MODEL=llama-3.1-8b-instant   (optional, default: llama-3.1-8b-instant)
  */
 
-export const GROQ_PROMPT = (companyName: string) => `Research the company "${companyName}" and return ONLY a valid JSON object with these exact keys:
-- "industry": string (e.g., "Manufacturing", "Retail", "Healthcare", "Hospitality", "Construction", "Staffing", "Technology", "Transport")
-- "company_size": string (one of: "1-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10001+")
-- "hq_city": string (city name)
-- "hq_province": string (province or state abbreviation, e.g. "QC", "ON", "BC", "AB")
-- "hq_region": string (administrative region / sub-province, e.g. in Quebec: "Montérégie", "Estrie", "Laurentides", "Montréal"; in Ontario: "GTA", "Eastern Ontario"; empty string if unknown)
-- "hq_town": string (specific municipality or town if different from hq_city, empty string otherwise)
-- "hq_country": string (country name in English, e.g. "Canada", "United States")
-- "exact_address": string (full street address: number, street, city, province, postal code — as precise as possible, empty string if unknown)
-- "website": string (official URL with https://, or empty string if unknown)
-- "phone": string (main office phone number with country code, e.g. "+1 514 555-1234", empty string if unknown)
-- "contact_email": string (main company contact or HR email address, e.g. "info@company.com", empty string if unknown)
-- "description": string (2-3 sentences about what the company does and what type of workers they employ)
-- "is_closed": boolean (set to true ONLY if you find clear evidence this business is permanently closed, permanently out of business, or does not exist — e.g. "permanently closed" on Google Maps, "business closed", "company dissolved". Otherwise always false)
+export const GROQ_PROMPT = (companyName: string) => `You are a company research assistant for a Canadian staffing agency. Research the company "${companyName}" in Canada. Every field must be a real verified value or empty string. NEVER hallucinate data.
+
+Return ONLY a valid JSON object with these exact keys:
+- "industry": string (e.g., "Construction", "Manufacturing", "Retail", "Healthcare", "Hospitality", "Technology", "Transport", "Staffing", "Agriculture", "Food Services"). Empty if unknown.
+- "company_size": string (EXACTLY one of: "1-10", "11-50", "51-200", "201-500", "501-1000", "1001-5000", "5001-10000", "10001+"). Empty if unknown.
+- "hq_city": string. Empty if unknown.
+- "hq_province": string ("ON" or "QC" or "BC" or "AB" etc). Empty if unknown.
+- "hq_region": string (administrative region in Quebec or Ontario). Empty if unknown.
+- "hq_town": string. Empty if unknown.
+- "hq_country": string (always "Canada").
+- "exact_address": string (COMPLETE address: number, street, city, province, postal code). IMPORTANT.
+- "website": string (URL with https://). Empty if unknown.
+- "phone": string (main phone with area code). IMPORTANT to find. Empty if unknown.
+- "contact_email": string. Empty if unknown.
+- "description": string (2-3 specific sentences about the company).
+- "is_closed": boolean (true ONLY if permanently closed).
+- "tipo": string (CRITICAL: "verde"=medium/large business 10+ employees, worth visit; "naranja"=small business under 10 employees, calls only; "morado"=home-based, calls only; "rojo"=closed/non-existent)
+- "primary_service": string (CHEF, PLOMERO, ELECTRICISTA, SOLDADOR, MECANICO, CONSTRUCCION, LIMPIEZA, PERSONAL DE SEGURIDAD, CONDUCTORES DE VEHICULOS DE CARGA, ALMACEN, RESTAURANTE, HOTEL, MANTENIMIENTO, CARPINTERO, PINTOR, PANADERIA, EMPACADORES, OPERADORES DE MONTEACARGA, PAISAJISMO, MESEROS, CARGA Y DESCARGA, GENERAL)
 
 Return ONLY the JSON object. No markdown, no extra text.`;
 
@@ -44,6 +48,8 @@ export interface EnrichmentData {
   website?: string;
   description?: string;
   is_closed?: boolean;
+  tipo?: string;
+  primary_service?: string;
   confidence_score?: number;
   _provider?: string;
 }
@@ -92,8 +98,8 @@ export class GroqService {
       const text: string = json.choices?.[0]?.message?.content ?? '{}';
       let parsed = JSON.parse(text);
 
-      // Algunos modelos anidan bajo el nombre de la empresa: { "Acme Corp": {...} }
-      // Comprobamos si el resultado tiene exactamente una clave cuyo valor es un objeto
+      // Some models nest under the company name: { "Acme Corp": {...} }
+      // Check if the result has exactly one key whose value is an object
       const keys = Object.keys(parsed);
       if (keys.length === 1 && parsed[keys[0]] !== null && typeof parsed[keys[0]] === 'object') {
         parsed = parsed[keys[0]];
@@ -102,7 +108,7 @@ export class GroqService {
       return { ...parsed, _provider: 'groq' };
     } catch (error: any) {
       console.error('[GroqService Error]', error.message);
-      throw error; // Re-lanzar para que EnrichmentService continúe al siguiente proveedor
+      throw error; // Re-throw so EnrichmentService can continue to the next provider
     }
   }
 }

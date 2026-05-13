@@ -8,7 +8,7 @@ interface RegionStatus {
   sin_coords: number;
 }
 
-interface ProgressEvent {
+interface GeoProgressEvent {
   type: string;
   region?: string;
   processed?: number;
@@ -27,9 +27,9 @@ export const GeocodingManager: React.FC = () => {
   const [running, setRunning] = useState(false);
   const [region, setRegion] = useState<'ontario' | 'quebec' | 'both'>('both');
   const [batchSize, setBatchSize] = useState(50);
-  const [progress, setProgress] = useState<ProgressEvent | null>(null);
-  const [regionProgress, setRegionProgress] = useState<Record<string, ProgressEvent>>({});
-  const [done, setDone] = useState<ProgressEvent | null>(null);
+  const [progress, setProgress] = useState<GeoProgressEvent | null>(null);
+  const [regionProgress, setRegionProgress] = useState<Record<string, GeoProgressEvent>>({});
+  const [done, setDone] = useState<GeoProgressEvent | null>(null);
   const [error, setError] = useState('');
 
   const loadStatus = useCallback(async () => {
@@ -83,7 +83,7 @@ export const GeocodingManager: React.FC = () => {
           for (const line of lines) {
             if (line.startsWith('data: ')) {
               try {
-                const event: ProgressEvent = JSON.parse(line.slice(6));
+                const event: GeoProgressEvent = JSON.parse(line.slice(6));
                 if (event.type === 'progress') {
                   setProgress(event);
                   setRegionProgress(prev => ({ ...prev, [event.region!]: event }));
@@ -111,7 +111,7 @@ export const GeocodingManager: React.FC = () => {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-bold text-slate-900">Geocodificación masiva</h2>
+        <h2 className="text-lg font-bold text-slate-900">Bulk geocoding</h2>
         <p className="text-sm text-slate-500 mt-1">
           Convierte las direcciones de las empresas en coordenadas GPS usando Mapbox.
           Las coordenadas son necesarias para crear rutas optimizadas.
@@ -140,7 +140,7 @@ export const GeocodingManager: React.FC = () => {
             {/* Overall progress */}
             <div className="mb-4">
               <div className="flex justify-between text-sm mb-1.5">
-                <span className="text-slate-600">Progreso total</span>
+                <span className="text-slate-600">Total progress</span>
                 <span className="font-semibold text-slate-900">{totalHave.toLocaleString()} / {totalAll.toLocaleString()} ({pctDone}%)</span>
               </div>
               <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
@@ -164,14 +164,14 @@ export const GeocodingManager: React.FC = () => {
                         pct > 50 ? 'bg-lime-100 text-lime-700' :
                         pct > 0 ? 'bg-amber-100 text-amber-700' :
                         'bg-red-100 text-red-600'
-                      }`}>{pct}% listo</span>
+                      }`}>{pct}% ready</span>
                     </div>
                     <div className="h-1.5 bg-white rounded-full overflow-hidden mb-2">
                       <div className="h-full bg-lime-500 rounded-full" style={{ width: `${pct}%` }} />
                     </div>
                     <div className="flex justify-between text-xs text-slate-500">
-                      <span className="text-green-600">{r.con_coords.toLocaleString()} con coords</span>
-                      <span className="text-amber-600">{r.sin_coords.toLocaleString()} pendientes</span>
+                      <span className="text-green-600">{r.con_coords.toLocaleString()} with coords</span>
+                      <span className="text-amber-600">{r.sin_coords.toLocaleString()} pending</span>
                     </div>
                   </div>
                 );
@@ -181,7 +181,7 @@ export const GeocodingManager: React.FC = () => {
             {totalNeed === 0 && (
               <div className="flex items-center gap-2 mt-4 p-3 bg-green-50 border border-green-200 rounded-lg">
                 <CheckCircle2 className="w-5 h-5 text-green-600 shrink-0" />
-                <p className="text-sm text-green-700 font-medium">¡Todas las empresas ya tienen coordenadas! Puedes crear rutas.</p>
+                <p className="text-sm text-green-700 font-medium">All companies already have coordinates! You can create routes.</p>
               </div>
             )}
           </>
@@ -191,25 +191,25 @@ export const GeocodingManager: React.FC = () => {
       {/* Run geocoding */}
       {totalNeed > 0 && (
         <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
-          <h3 className="font-semibold text-slate-800">Ejecutar geocodificación</h3>
+          <h3 className="font-semibold text-slate-800">Run geocoding</h3>
 
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-2">Región</label>
+              <label className="block text-sm font-medium text-slate-700 mb-2">Region</label>
               <select
                 value={region}
                 onChange={e => setRegion(e.target.value as any)}
                 disabled={running}
                 className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-lime-500"
               >
-                <option value="both">Ambas (Ontario + Quebec)</option>
-                <option value="ontario">Solo Ontario</option>
-                <option value="quebec">Solo Quebec</option>
+                <option value="both">Both (Ontario + Quebec)</option>
+                <option value="ontario">Ontario only</option>
+                <option value="quebec">Quebec only</option>
               </select>
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">
-                Lote: <span className="text-lime-600 font-bold">{batchSize}</span> / min
+                Batch: <span className="text-lime-600 font-bold">{batchSize}</span> / min
               </label>
               <input
                 type="range" min={10} max={100} step={10}
@@ -222,9 +222,9 @@ export const GeocodingManager: React.FC = () => {
           </div>
 
           <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-            <strong>{totalNeed.toLocaleString()}</strong> empresas por geocodificar.
+            <strong>{totalNeed.toLocaleString()}</strong> companies to geocode.
             {totalNeed > 1000 && ` Tiempo estimado: ~${Math.ceil(totalNeed / batchSize * 0.2 / 60)} minutos.`}
-            <span className="block mt-1 text-xs text-amber-600">Usa la API de Mapbox (tokens gratuitos: 100,000/mes).</span>
+            <span className="block mt-1 text-xs text-amber-600">Uses the Mapbox API (free tier: 100,000/month).</span>
           </div>
 
           {error && (
@@ -237,7 +237,7 @@ export const GeocodingManager: React.FC = () => {
           {/* Live progress */}
           {running && (
             <div className="space-y-3">
-              {Object.values(regionProgress).map(rp => (
+              {Object.values(regionProgress).map((rp: GeoProgressEvent) => (
                 <div key={rp.region} className="bg-slate-50 rounded-lg p-3">
                   <div className="flex justify-between text-sm mb-1.5">
                     <span className="font-medium text-slate-700 capitalize">{rp.region}</span>
@@ -250,14 +250,14 @@ export const GeocodingManager: React.FC = () => {
                     />
                   </div>
                   <div className="flex gap-4 mt-1.5 text-xs text-slate-500">
-                    <span className="text-green-600">{rp.updated?.toLocaleString()} geocodificadas</span>
-                    <span className="text-red-500">{rp.failed?.toLocaleString()} fallidas</span>
+                    <span className="text-green-600">{rp.updated?.toLocaleString()} geocoded</span>
+                    <span className="text-red-500">{rp.failed?.toLocaleString()} failed</span>
                   </div>
                 </div>
               ))}
               {!Object.keys(regionProgress).length && (
                 <div className="flex items-center gap-2 text-sm text-slate-600">
-                  <Loader2 className="w-4 h-4 animate-spin" /> Iniciando geocodificación...
+                  <Loader2 className="w-4 h-4 animate-spin" /> Starting geocoding...
                 </div>
               )}
             </div>
@@ -267,9 +267,9 @@ export const GeocodingManager: React.FC = () => {
             <div className="flex items-start gap-2 p-4 bg-lime-50 border border-lime-200 rounded-lg">
               <CheckCircle2 className="w-5 h-5 text-lime-600 shrink-0 mt-0.5" />
               <div>
-                <p className="font-semibold text-lime-800">¡Geocodificación completada!</p>
+                <p className="font-semibold text-lime-800">Geocoding completed!</p>
                 <p className="text-sm text-lime-700 mt-0.5">
-                  {done.totalUpdated?.toLocaleString()} empresas geocodificadas correctamente · {done.totalFailed?.toLocaleString()} fallidas
+                  {done.totalUpdated?.toLocaleString()} companies geocoded successfully · {done.totalFailed?.toLocaleString()} failed
                 </p>
               </div>
             </div>
@@ -281,9 +281,9 @@ export const GeocodingManager: React.FC = () => {
             className="w-full flex items-center justify-center gap-2 py-3 bg-lime-600 text-white rounded-xl font-semibold text-sm hover:bg-lime-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             {running ? (
-              <><Loader2 className="w-4 h-4 animate-spin" /> Geocodificando...</>
+              <><Loader2 className="w-4 h-4 animate-spin" /> Geocoding...</>
             ) : (
-              <><Play className="w-4 h-4" /> Iniciar geocodificación ({totalNeed.toLocaleString()} empresas)</>
+              <><Play className="w-4 h-4" /> Start geocoding ({totalNeed.toLocaleString()} companies)</>
             )}
           </button>
         </div>
@@ -291,7 +291,7 @@ export const GeocodingManager: React.FC = () => {
 
       {/* Info box */}
       <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-800 space-y-1.5">
-        <p className="font-semibold flex items-center gap-1.5"><MapPin className="w-4 h-4" /> Cómo funciona</p>
+        <p className="font-semibold flex items-center gap-1.5"><MapPin className="w-4 h-4" /> How it works</p>
         <ul className="space-y-1 text-blue-700 ml-5 list-disc">
           <li>Se usa la API de Mapbox Geocoding para convertir cada dirección en lat/lng</li>
           <li>Los resultados se guardan en la base de datos permanentemente</li>

@@ -23,6 +23,11 @@ export interface CreateUserInput {
   role: UserRole;
 }
 
+export interface UserWithLockout extends UserWithHash {
+  failedLoginAttempts?: number;
+  lockedUntil?: Date | null;
+}
+
 export interface DashboardStats {
   totalJobs: number;
   totalCompanies: number;

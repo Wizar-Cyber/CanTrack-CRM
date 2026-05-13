@@ -45,13 +45,13 @@ export const TipoSelector: React.FC<TipoSelectorProps> = ({
         className={`flex items-center gap-1.5 rounded-full text-xs font-medium transition-all border ${
           cfg ? cfg.badge : 'bg-gray-100 text-gray-400 border-gray-200'
         } ${compact ? 'p-1' : 'px-2.5 py-1'} hover:opacity-80`}
-        title={cfg ? cfg.action : 'Sin clasificar — click para asignar'}
+        title={cfg ? cfg.action : 'Unclassified — click to assign'}
       >
         {saving
           ? <Loader2 className="w-3 h-3 animate-spin" />
           : cfg
             ? <><span>{cfg.emoji}</span>{!compact && <span>{cfg.label}</span>}</>
-            : <span className={compact ? '' : 'italic'}>{compact ? '○' : 'Sin tipo'}</span>
+            : <span className={compact ? '' : 'italic'}>{compact ? '○' : 'No type'}</span>
         }
       </button>
 
@@ -85,7 +85,7 @@ export const TipoSelector: React.FC<TipoSelectorProps> = ({
                   onClick={() => select(null)}
                   className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs text-gray-400 hover:bg-gray-50 transition-colors border-t border-gray-100 mt-1"
                 >
-                  ✕ Quitar clasificación
+                  ✕ Remove classification
                 </button>
               )}
             </div>

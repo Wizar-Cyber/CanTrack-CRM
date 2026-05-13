@@ -189,11 +189,11 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
                   <p className="text-xs font-medium text-slate-900">{displayCompany.hqCountry || '—'}</p>
                 </div>
                 <div className="col-span-2 space-y-0.5">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase">Dirección</p>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">Address</p>
                   <p className="text-xs font-medium text-slate-900">{resolvedAddress || '—'}</p>
                 </div>
                 <div className="space-y-0.5">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1"><Phone className="w-3 h-3" />Teléfono</p>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-1"><Phone className="w-3 h-3" />Phone</p>
                   {resolvedPhone
                     ? <a href={`tel:${resolvedPhone}`} className="text-xs font-medium text-blue-600 hover:underline">{resolvedPhone}</a>
                     : <p className="text-xs font-medium text-slate-900">—</p>}
@@ -205,7 +205,7 @@ export const CompanyDetail: React.FC<CompanyDetailProps> = ({ company, jobs, onC
                     : <p className="text-xs font-medium text-slate-900">—</p>}
                 </div>
                 <div className="space-y-0.5">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase">Servicio</p>
+                  <p className="text-[10px] font-bold text-slate-400 uppercase">Service</p>
                   {displayCompany.knownATSPortal
                     ? <span className="px-2 py-0.5 bg-lime-50 text-lime-700 rounded text-xs font-medium">{displayCompany.knownATSPortal}</span>
                     : <p className="text-xs font-medium text-slate-900">—</p>}

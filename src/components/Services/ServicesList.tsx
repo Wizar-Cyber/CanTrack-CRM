@@ -23,7 +23,7 @@ interface ServiceType {
   keywords: string[];
 }
 
-// ── Íconos por servicio ──────────────────────────────────────────────────────
+// ── Icons by service ─────────────────────────────────────────────────────────
 const SERVICE_ICONS: Record<string, LucideIcon> = {
   'ga-empacadores':              Package,
   'ga-meseros':                  UtensilsCrossed,
@@ -79,7 +79,7 @@ const SERVICE_ICONS: Record<string, LucideIcon> = {
   'gn-general':                  UserCog,
 };
 
-// ── Paleta por categoría ─────────────────────────────────────────────────────
+// ── Palette by category ──────────────────────────────────────────────────────
 interface CategoryStyle {
   icon: string;     // clase Tailwind para el color del ícono
   iconBg: string;   // clase Tailwind para el fondo del ícono
@@ -89,18 +89,18 @@ interface CategoryStyle {
 }
 
 const CAT: Record<string, CategoryStyle> = {
-  'Gastronomía & Alimentos':  { icon: 'text-orange-600',  iconBg: 'bg-orange-50',  badge: 'bg-orange-50 text-orange-700 ring-orange-200',    dot: 'bg-orange-400',  accent: '#fb923c' },
-  'Logística & Transporte':   { icon: 'text-blue-600',    iconBg: 'bg-blue-50',    badge: 'bg-blue-50 text-blue-700 ring-blue-200',           dot: 'bg-blue-400',    accent: '#60a5fa' },
-  'Construcción & Oficios':   { icon: 'text-amber-600',   iconBg: 'bg-amber-50',   badge: 'bg-amber-50 text-amber-700 ring-amber-200',        dot: 'bg-amber-400',   accent: '#fbbf24' },
-  'Industria & Producción':   { icon: 'text-slate-600',   iconBg: 'bg-slate-100',  badge: 'bg-slate-100 text-slate-700 ring-slate-200',       dot: 'bg-slate-400',   accent: '#94a3b8' },
-  'Mecánica & Técnica':       { icon: 'text-cyan-600',    iconBg: 'bg-cyan-50',    badge: 'bg-cyan-50 text-cyan-700 ring-cyan-200',           dot: 'bg-cyan-400',    accent: '#22d3ee' },
-  'Limpieza & Mantenimiento': { icon: 'text-teal-600',    iconBg: 'bg-teal-50',    badge: 'bg-teal-50 text-teal-700 ring-teal-200',           dot: 'bg-teal-400',    accent: '#2dd4bf' },
-  'Agricultura & Campo':      { icon: 'text-green-600',   iconBg: 'bg-green-50',   badge: 'bg-green-50 text-green-700 ring-green-200',        dot: 'bg-green-400',   accent: '#4ade80' },
-  'Servicios al Hogar':       { icon: 'text-pink-600',    iconBg: 'bg-pink-50',    badge: 'bg-pink-50 text-pink-700 ring-pink-200',           dot: 'bg-pink-400',    accent: '#f472b6' },
-  'Hostelería & Turismo':     { icon: 'text-violet-600',  iconBg: 'bg-violet-50',  badge: 'bg-violet-50 text-violet-700 ring-violet-200',     dot: 'bg-violet-400',  accent: '#a78bfa' },
-  'Comercio & Retail':        { icon: 'text-indigo-600',  iconBg: 'bg-indigo-50',  badge: 'bg-indigo-50 text-indigo-700 ring-indigo-200',     dot: 'bg-indigo-400',  accent: '#818cf8' },
-  'Seguridad':                { icon: 'text-red-600',     iconBg: 'bg-red-50',     badge: 'bg-red-50 text-red-700 ring-red-200',             dot: 'bg-red-400',     accent: '#f87171' },
-  'Diseño':                   { icon: 'text-fuchsia-600', iconBg: 'bg-fuchsia-50', badge: 'bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-200',  dot: 'bg-fuchsia-400', accent: '#e879f9' },
+  'Gastronomy & Food':        { icon: 'text-orange-600',  iconBg: 'bg-orange-50',  badge: 'bg-orange-50 text-orange-700 ring-orange-200',    dot: 'bg-orange-400',  accent: '#fb923c' },
+  'Logistics & Transport':    { icon: 'text-blue-600',    iconBg: 'bg-blue-50',    badge: 'bg-blue-50 text-blue-700 ring-blue-200',           dot: 'bg-blue-400',    accent: '#60a5fa' },
+  'Construction & Trades':    { icon: 'text-amber-600',   iconBg: 'bg-amber-50',   badge: 'bg-amber-50 text-amber-700 ring-amber-200',        dot: 'bg-amber-400',   accent: '#fbbf24' },
+  'Industry & Production':    { icon: 'text-slate-600',   iconBg: 'bg-slate-100',  badge: 'bg-slate-100 text-slate-700 ring-slate-200',       dot: 'bg-slate-400',   accent: '#94a3b8' },
+  'Mechanics & Technical':    { icon: 'text-cyan-600',    iconBg: 'bg-cyan-50',    badge: 'bg-cyan-50 text-cyan-700 ring-cyan-200',           dot: 'bg-cyan-400',    accent: '#22d3ee' },
+  'Cleaning & Maintenance':   { icon: 'text-teal-600',    iconBg: 'bg-teal-50',    badge: 'bg-teal-50 text-teal-700 ring-teal-200',           dot: 'bg-teal-400',    accent: '#2dd4bf' },
+  'Agriculture & Farming':    { icon: 'text-green-600',   iconBg: 'bg-green-50',   badge: 'bg-green-50 text-green-700 ring-green-200',        dot: 'bg-green-400',   accent: '#4ade80' },
+  'Home Services':            { icon: 'text-pink-600',    iconBg: 'bg-pink-50',    badge: 'bg-pink-50 text-pink-700 ring-pink-200',           dot: 'bg-pink-400',    accent: '#f472b6' },
+  'Hospitality & Tourism':    { icon: 'text-violet-600',  iconBg: 'bg-violet-50',  badge: 'bg-violet-50 text-violet-700 ring-violet-200',     dot: 'bg-violet-400',  accent: '#a78bfa' },
+  'Commerce & Retail':        { icon: 'text-indigo-600',  iconBg: 'bg-indigo-50',  badge: 'bg-indigo-50 text-indigo-700 ring-indigo-200',     dot: 'bg-indigo-400',  accent: '#818cf8' },
+  'Security':                 { icon: 'text-red-600',     iconBg: 'bg-red-50',     badge: 'bg-red-50 text-red-700 ring-red-200',             dot: 'bg-red-400',     accent: '#f87171' },
+  'Design':                   { icon: 'text-fuchsia-600', iconBg: 'bg-fuchsia-50', badge: 'bg-fuchsia-50 text-fuchsia-700 ring-fuchsia-200',  dot: 'bg-fuchsia-400', accent: '#e879f9' },
   'General':                  { icon: 'text-slate-500',   iconBg: 'bg-slate-100',  badge: 'bg-slate-100 text-slate-600 ring-slate-200',       dot: 'bg-slate-300',   accent: '#cbd5e1' },
 };
 
@@ -114,7 +114,7 @@ function getStyle(cat: string): CategoryStyle {
   return CAT[cat] ?? defaultStyle;
 }
 
-// ── Componente ───────────────────────────────────────────────────────────────
+// ── Component ────────────────────────────────────────────────────────────────
 export const ServicesList: React.FC = () => {
   const [services, setServices] = useState<ServiceType[]>([]);
   const [loading, setLoading] = useState(true);
@@ -170,7 +170,7 @@ export const ServicesList: React.FC = () => {
         </div>
       </div>
 
-      {/* ── Search + Filtros ────────────────────────────────────────────────── */}
+      {/* ── Search + Filters ───────────────────────────────────────────────── */}
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 space-y-3">
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -214,7 +214,7 @@ export const ServicesList: React.FC = () => {
         </div>
       </div>
 
-      {/* ── Grid de servicios ───────────────────────────────────────────────── */}
+      {/* ── Service grid ───────────────────────────────────────────────────── */}
       {loading ? (
         <div className="flex items-center justify-center py-24">
           <Loader2 className="w-8 h-8 animate-spin text-lime-600" />
@@ -226,7 +226,7 @@ export const ServicesList: React.FC = () => {
         </div>
       ) : (
         <>
-          {/* Cantidad de resultados cuando hay búsqueda */}
+          {/* Results count when searching */}
           {search && (
             <p className="text-sm text-slate-500">
               {filtered.length} result{filtered.length !== 1 ? 's' : ''} for

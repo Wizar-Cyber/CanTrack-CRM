@@ -65,14 +65,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // On mount: restore session from cookie (the server validates it)
   useEffect(() => {
-    fetch('/api/auth/me', { credentials: 'include' })
-      .then(res => {
-        if (!res.ok) throw new Error('No session');
-        return res.json();
-      })
-      .then(data => setCurrentUser(buildProfile(data)))
-      .catch(() => setCurrentUser(null))
-      .finally(() => setLoading(false));
+    let retries = 0;
+    const maxRetries = 3;
+
+    const restoreSession = () => {
+      fetch('/api/auth/me', { credentials: 'include' })
+        .then(res => {
+          if (!res.ok) throw new Error('No session');
+          return res.json();
+        })
+        .then(data => {
+          setCurrentUser(buildProfile(data));
+          setLoading(false);
+        })
+        .catch(() => {
+          if (retries < maxRetries) {
+            retries++;
+            setTimeout(restoreSession, 1000 * retries);
+          } else {
+            setCurrentUser(null);
+            setLoading(false);
+          }
+        });
+    };
+
+    restoreSession();
   }, []);
 
   const login = async (email: string, password: string) => {

@@ -19,7 +19,7 @@ export class UpdateCompanyUseCase {
       }
     }
     if (Object.keys(fields).length === 0) {
-      throw new DomainError('No hay campos válidos para actualizar.');
+      throw new DomainError('No valid fields to update.');
     }
     await this.companies.update(id, fields);
   }

@@ -80,12 +80,22 @@ export class GoogleSheetsService {
 
   /** Inicializa la autenticación. Debe llamarse antes de cualquier operación. */
   static async init(): Promise<void> {
-    if (this.sheetsClient) return; // ya inicializado
+    if (this.sheetsClient) return;
 
-    const keyPath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH || '';
-    if (!keyPath) throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY_PATH no configurado en .env');
+    // Support inline JSON credentials (preferred on Linux servers)
+    const inlineJson = process.env.GOOGLE_SERVICE_ACCOUNT_CREDENTIALS;
+    const keyPath    = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH;
 
-    const keyJson = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
+    let keyJson: any;
+    if (inlineJson) {
+      keyJson = JSON.parse(inlineJson);
+    } else if (keyPath) {
+      keyJson = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
+    } else {
+      throw new Error(
+        'Google Sheets credentials not configured. Set GOOGLE_SERVICE_ACCOUNT_CREDENTIALS (inline JSON) or GOOGLE_SERVICE_ACCOUNT_KEY_PATH in .env'
+      );
+    }
 
     const auth = new JWT({
       email: keyJson.client_email,

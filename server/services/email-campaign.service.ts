@@ -198,8 +198,8 @@ export class EmailCampaignService {
   // ── Load from DB ──────────────────────────────────────────────────────────
 
   /**
-   * Load companies from ontario_companies or quebec_companies,
-   * map work → listId + segmentId, check last campaign log.
+   * Loads companies from ontario_companies or quebec_companies,
+   * maps work → listId + segmentId, checks last campaign log.
    */
   static async loadFromDb(pool: pg.Pool, source: ProvinceSource): Promise<CampaignContact[]> {
     const table    = source === 'ontario' ? 'ontario_companies' : 'quebec_companies';
@@ -207,7 +207,7 @@ export class EmailCampaignService {
     const segments = source === 'ontario' ? ONTARIO_SEGMENTS      : QUEBEC_SEGMENTS;
     const language: 'fr' | 'en' = source === 'ontario' ? 'fr' : 'en';
 
-    // Load companies with email
+    // Load companies that have an email address
     const companiesRes = await pool.query<{
       id: string; nombre: string; correo: string; work: string | null;
       tipo: string | null; direccion: string | null; created_at: Date;
@@ -220,7 +220,7 @@ export class EmailCampaignService {
 
     if (companiesRes.rows.length === 0) return [];
 
-    // Load last sent dates from campaign log
+    // Load last-sent dates from campaign log
     const emailList = companiesRes.rows.map(r => r.correo);
     const logRes = await pool.query<{ company_email: string; max_sent: Date }>(
       `SELECT company_email, MAX(sent_at) AS max_sent
@@ -257,7 +257,7 @@ export class EmailCampaignService {
     });
   }
 
-  // ── Preview (DB-based) ────────────────────────────────────────────────────
+  // ── Preview (DB-based) ───────────────────────────────────────────────────
 
   static async buildPreview(pool: pg.Pool, source: ProvinceSource): Promise<CampaignPreview> {
     const config   = await this.getConfig(pool);
@@ -312,7 +312,7 @@ export class EmailCampaignService {
     };
   }
 
-  // ── Legacy Google Sheets preview ──────────────────────────────────────────
+  // ── Legacy Google Sheets Preview ──────────────────────────────────────────
 
   static async buildPreviewFromSheet(pool: pg.Pool): Promise<any> {
     await GoogleSheetsService.init();
@@ -342,7 +342,7 @@ export class EmailCampaignService {
       const tipo = db?.tipo ?? tipoFromSheet;
 
       if (tipo === 'rojo') {
-        skipped.push({ name: row.empresa, reason: 'Empresa cerrada (rojo)' });
+        skipped.push({ name: row.empresa, reason: 'Company closed (red)' });
         continue;
       }
 
@@ -397,7 +397,7 @@ export class EmailCampaignService {
     return { toSend, skipped, byWork, totalNew: toSend.filter(c => c.isNew).length, totalOld: toSend.filter(c => !c.isNew).length };
   }
 
-  // ── Send (DB-based) ───────────────────────────────────────────────────────
+  // ── Send (DB-based) ──────────────────────────────────────────────────────
 
   static async sendCampaignFromDb(
     pool:         pg.Pool,
@@ -523,7 +523,7 @@ export class EmailCampaignService {
     return result;
   }
 
-  // ── Legacy send (Google Sheets flow) ─────────────────────────────────────
+  // ── Legacy Send (Google Sheets flow) ─────────────────────────────────────
 
   static async sendCampaign(
     pool:          pg.Pool,
@@ -567,7 +567,7 @@ export class EmailCampaignService {
     return result;
   }
 
-  // ── Legacy MDirector API calls (api_key based) ────────────────────────────
+  // ── Legacy MDirector API Calls (api_key based) ────────────────────────────
 
   private static async createMDirectorList(
     config:     CampaignConfig,
@@ -618,7 +618,7 @@ export class EmailCampaignService {
     return String(data.id);
   }
 
-  // ── Log & History ─────────────────────────────────────────────────────────
+  // ── Log & History ────────────────────────────────────────────────────────
 
   static async logSent(
     pool:          pg.Pool,

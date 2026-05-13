@@ -7,7 +7,7 @@ export class GetCompanyByIdUseCase {
 
   async execute(id: string): Promise<Company> {
     const company = await this.companies.findById(id);
-    if (!company) throw new NotFoundError('Empresa');
+    if (!company) throw new NotFoundError('Company');
     return company;
   }
 }

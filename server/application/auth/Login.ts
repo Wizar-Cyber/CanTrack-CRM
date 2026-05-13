@@ -19,14 +19,14 @@ export class LoginUseCase {
 
   async execute(input: LoginInput): Promise<LoginOutput> {
     if (!input.email || !input.password) {
-      throw new DomainError('Email y contraseña son requeridos.');
+      throw new DomainError('Email and password are required.');
     }
 
     const row = await this.users.findByEmail(input.email.toLowerCase().trim());
-    if (!row) throw new UnauthorizedError('Credenciales inválidas.');
+    if (!row) throw new UnauthorizedError('Invalid credentials.');
 
     const valid = await bcrypt.compare(input.password, row.passwordHash);
-    if (!valid) throw new UnauthorizedError('Credenciales inválidas.');
+    if (!valid) throw new UnauthorizedError('Invalid credentials.');
 
     const secret = process.env.JWT_SECRET!;
     const token  = jwt.sign(

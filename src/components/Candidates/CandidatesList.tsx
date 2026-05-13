@@ -85,7 +85,7 @@ export const CandidatesList: React.FC<CandidatesListProps> = ({ onCandidatesChan
     try {
       const res = await api(`/api/candidates/${id}`, { method: 'DELETE' });
       if (res.ok) setCandidates(prev => prev.filter(c => c.id !== id));
-      else alert('Error al eliminar candidato.');
+      else alert('Error deleting candidate.');
     } finally {
       setDeletingId(null);
     }
@@ -96,7 +96,7 @@ export const CandidatesList: React.FC<CandidatesListProps> = ({ onCandidatesChan
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900">Candidatos</h2>
+          <h2 className="text-2xl font-bold text-slate-900">Candidates</h2>
           <p className="text-sm text-slate-500">
             {candidates.length} candidates · {counts.Available} available · {counts.Placed} placed
           </p>

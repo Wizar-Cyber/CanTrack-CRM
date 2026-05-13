@@ -154,7 +154,7 @@ export const CompanyList: React.FC<CompanyListProps> = ({
       URL.revokeObjectURL(url);
     } catch (err) {
       console.error('[Export Excel]', err);
-      alert('No se pudo descargar el Excel. Revisa la consola.');
+      alert('Could not download the Excel. Check the console.');
     } finally {
       setDownloading(false);
     }
@@ -318,9 +318,9 @@ export const CompanyList: React.FC<CompanyListProps> = ({
               <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Tipo</p>
               <div className="flex flex-wrap gap-1">
                 <button onClick={() => setTipoFilter('all')}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors border ${
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors border ${
                     tipoFilter === 'all' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                  }`}>Todos</button>
+                  }`}>All</button>
                 {(Object.entries(TIPO_CONFIG) as [NonNullable<CompanyTipo>, typeof TIPO_CONFIG[NonNullable<CompanyTipo>]][]).map(([key, cfg]) => (
                   <button key={key} onClick={() => setTipoFilter(key)}
                     className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors border ${
@@ -330,21 +330,21 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                   </button>
                 ))}
                 <button onClick={() => setTipoFilter(null)}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors border ${
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors border ${
                     tipoFilter === null ? 'bg-slate-800 text-white border-slate-800' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'
-                  }`}>○ Sin tipo</button>
+                  }`}>○ No type</button>
               </div>
             </div>
 
             {/* Service filter — filtra empresas que ya tienen ese servicio clasificado o sugerido */}
             <div className="space-y-2 min-w-[230px]">
-              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Servicio CanTrack</p>
+              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">CanTrack Service</p>
               <select
                 value={serviceFilter}
                 onChange={(e) => setServiceFilter(e.target.value)}
                 className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-lime-500/30"
               >
-                <option value="">Todos los servicios</option>
+                <option value="">All services</option>
                 {EMPLOYEE_TYPES.slice()
                   .sort((a, b) => a.number - b.number)
                   .map(s => (
@@ -362,10 +362,10 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                 onClick={() => downloadExcel(false)}
                 disabled={downloading}
                 className="flex items-center gap-2 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-semibold rounded-lg transition-colors shadow-sm"
-                title="Descargar Excel en formato Acton Vale (Empresa, DIRECCION, WORK). Si hay un servicio filtrado, solo exporta empresas que ofrecen ese servicio."
+                title="Download Excel in Acton Vale format (Company, ADDRESS, WORK). If a service is filtered, only exports companies offering that service."
               >
                 {downloading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileDown className="w-3.5 h-3.5" />}
-                Descargar Excel{serviceFilter ? ' (filtrado)' : ''}
+                Download Excel{serviceFilter ? ' (filtered)' : ''}
               </button>
             </div>
           </div>
@@ -469,7 +469,7 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                     </div>
                   ) : (
                     <>
-                      {/* Dirección — exactAddress del Sheet o hqCity del enriquecimiento */}
+                      {/* Address — exactAddress from Sheet or hqCity from enrichment */}
                       <div className="flex items-start gap-2 text-sm text-slate-600">
                         <MapPin className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
                         <span className="truncate text-xs" title={company.exactAddress || ''}>
@@ -477,11 +477,11 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                             ? company.exactAddress
                             : company.hqCity
                               ? `${company.hqCity}, ${company.hqProvince || 'QC'}`
-                              : <span className="text-slate-300 italic">Sin dirección</span>}
+                              : <span className="text-slate-300 italic">No address</span>}
                         </span>
                       </div>
 
-                      {/* Servicio WORK del Sheet */}
+                      {/* Service WORK from Sheet */}
                       {company.knownATSPortal && (
                         <div className="flex items-center gap-2">
                           <Briefcase className="w-4 h-4 text-slate-400 shrink-0" />
@@ -502,7 +502,7 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                       {companyJobs.length > 0 && (
                         <div className="flex items-center gap-2 text-xs text-slate-500">
                           <span className="w-4 h-4 shrink-0" />
-                          {companyJobs.length} vacante{companyJobs.length > 1 ? 's' : ''}
+                          {companyJobs.length} {companyJobs.length === 1 ? 'vacancy' : 'vacancies'}
                         </div>
                       )}
                     </>
@@ -547,12 +547,12 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                       </button>
                     </th>
                   )}
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Empresa</th>
-                  <th className="px-4 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Tipo</th>
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Dirección</th>
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Servicio</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Company</th>
+                  <th className="px-4 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Type</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Address</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Service</th>
                   <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Email</th>
-                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Estado</th>
+                  <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -624,7 +624,7 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                         {isPending ? (
                           <div className="flex items-center gap-2 text-xs text-lime-600 font-medium">
                             <Loader2 className="w-3 h-3 animate-spin" />
-                            <span>Enriqueciendo...</span>
+                            <span>Enriching...</span>
                           </div>
                         ) : (
                           <div className="flex items-start gap-2 max-w-xs">
@@ -634,7 +634,7 @@ export const CompanyList: React.FC<CompanyListProps> = ({
                                 ? company.exactAddress
                                 : company.hqCity
                                   ? `${company.hqCity}, ${company.hqProvince || 'QC'}`
-                                  : <span className="italic text-slate-300">Sin dirección</span>}
+                                  : <span className="italic text-slate-300">No address</span>}
                             </span>
                           </div>
                         )}
@@ -714,10 +714,10 @@ export const CompanyList: React.FC<CompanyListProps> = ({
             onClick={() => downloadExcel(true)}
             disabled={downloading}
             className="flex items-center gap-2 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-sm font-semibold rounded-lg transition-colors"
-            title="Descargar un Excel con las empresas seleccionadas en formato Acton Vale (Empresa, DIRECCION, WORK)"
+            title="Download an Excel with selected companies in Acton Vale format (Company, ADDRESS, WORK)"
           >
             {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileDown className="w-4 h-4" />}
-            Descargar Excel
+            Download Excel
           </button>
 
           <button

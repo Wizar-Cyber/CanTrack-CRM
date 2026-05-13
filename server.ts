@@ -1,5 +1,4 @@
-// ⚠️ dotenv DEBE cargarse antes que cualquier otro import que lea process.env
-// (ej: server/utils/region-filter.ts evalúa REGION_FILTER al ser importado).
+// ⚠️ dotenv MUST be loaded before any other import that reads process.env
 import 'dotenv/config';
 
 import express from "express";
@@ -7,29 +6,23 @@ import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
 import ExcelJS from 'exceljs';
-import { ApplicationAgentService } from "./server/services/application-agent.service.js";
+// import { ApplicationAgentService } from "./server/services/application-agent.service.js";
 import { EnrichmentService } from "./server/services/enrichment.service.js";
-import { GeminiService } from "./server/services/gemini.service.js";  // coverLetter directo
+import { GeminiService } from "./server/services/gemini.service.js";
 import { JobClassifierService } from "./server/services/job-classifier.service.js";
 import { SERVICE_TYPES, SERVICE_TYPES_COMPACT, SERVICE_TYPE_BY_ID } from "./server/data/serviceTypes.js";
 import {
-  REGION_FILTER,
-  isRegionFilterActive,
-  companyRegionClause,
-  jobRegionClause,
-  isRegionMatch,
+  REGION_FILTER, isRegionFilterActive, companyRegionClause, jobRegionClause, isRegionMatch,
 } from "./server/utils/region-filter.js";
 import { GoogleSheetsService } from "./server/services/google-sheets.service.js";
 import { MDirectorService } from "./server/services/mdirector.service.js";
 import { EmailCampaignService } from "./server/services/email-campaign.service.js";
 import {
-  ONTARIO_LIST_ID, QUEBEC_LIST_ID,
-  ONTARIO_SEGMENTS, QUEBEC_SEGMENTS,
+  ONTARIO_LIST_ID, QUEBEC_LIST_ID, ONTARIO_SEGMENTS, QUEBEC_SEGMENTS,
 } from "./server/data/mdirectorSegments.js";
 import { spawn } from 'child_process';
 import pkg from 'pg';
 const { Pool } = pkg;
-import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
@@ -38,39 +31,36 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { createRequireAuth, requireRole, AuthRequest } from './server/middleware/auth.middleware.js';
 import { initCronJobs } from './server/automation/cron-jobs.js';
-
-dotenv.config();
+import { requestIdMiddleware } from './server/middleware/request-id.middleware.js';
+import { auditLogMiddleware } from './server/middleware/audit-log.middleware.js';
+import { logger } from './server/lib/logger.js';
+import { env, jwt as jwtCfg, db as dbCfg, auth as authCfg, agent as agentCfg } from './server/lib/config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ── Validations ───────────────────────────────────────────────────────────────
-if (!process.env.JWT_SECRET) {
-  console.error("❌ FATAL: JWT_SECRET no está configurado en .env");
+// ── Global error handlers ─────────────────────────────────────────────────────
+process.on('unhandledRejection', (reason) => {
+  logger.error({ reason }, 'Unhandled Rejection');
+});
+process.on('uncaughtException', (error) => {
+  logger.fatal({ err: error }, 'Uncaught Exception');
   process.exit(1);
-}
-if (!process.env.DATABASE_URL) {
-  console.error("❌ FATAL: DATABASE_URL no está configurado en .env");
-  process.exit(1);
-}
+});
 
-const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_EXPIRES_IN = '8h';
+const JWT_SECRET = jwtCfg.secret;
+const JWT_EXPIRES_IN = jwtCfg.expiresIn;
+const COOKIE_MAX_AGE = jwtCfg.cookieMaxAge;
 
 // ── PostgreSQL Pool ───────────────────────────────────────────────────────────
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  max: 10,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 5000,
-});
+const pool = dbCfg.pool;
 const requireAuth = createRequireAuth(pool);
 
 pool.connect((err) => {
   if (err) {
-    console.error("❌ Error conectando a PostgreSQL:", err.message);
+    logger.error({ err }, 'PostgreSQL connection failed');
   } else {
-    console.log("✅ PostgreSQL conectado correctamente.");
+    logger.info('PostgreSQL connected successfully');
     runMigrations().then(() => initCronJobs(pool));
   }
 });
@@ -100,19 +90,63 @@ async function _flushToExcel() {
       }
     }
 
-    // ── Exportar a Google Sheets ────────────────────────────────────────────
+    // ── Exportar a Google Sheets con formato correcto ───────────────────────
     if (target === 'sheets' || target === 'both') {
-      const sheetsId = process.env.GOOGLE_SHEETS_ID;
-      const keyPath  = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH;
-      if (!sheetsId || !keyPath) {
-        console.warn('[AutoExport/Sheets] GOOGLE_SHEETS_ID o GOOGLE_SERVICE_ACCOUNT_KEY_PATH no configurados — omitiendo.');
+      const onId = process.env.ONTARIO_SHEETS_ID;
+      const qcId = process.env.QUEBEC_SHEETS_ID;
+      const creds = process.env.GOOGLE_SERVICE_ACCOUNT_CREDENTIALS;
+      if (!onId || !qcId || !creds) {
+        console.warn('[AutoExport/Sheets] ONTARIO_SHEETS_ID o QUEBEC_SHEETS_ID o GOOGLE_SERVICE_ACCOUNT_CREDENTIALS no configurados — omitiendo.');
       } else {
-        const { runSheetsExport } = await import('./scripts/export-to-sheets.js')
-          .catch(() => ({ runSheetsExport: null })) as any;
-        if (runSheetsExport) {
-          const r = await runSheetsExport({ limit: 2000, dryRun: false, pool });
-          if (r.added > 0)
-            console.log(`[AutoExport/Sheets] ✅ +${r.added} nuevas · ${r.skipped} duplicadas · ${r.totalRowsInSheet} total`);
+        try {
+          const { google } = await import('googleapis');
+          const { JWT } = await import('google-auth-library');
+          const credentials = JSON.parse(creds);
+          const auth = new JWT({
+            email: credentials.client_email,
+            key: credentials.private_key,
+            scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+          });
+          await auth.authorize();
+          const sheets = google.sheets({ version: 'v4', auth });
+
+          const today = new Date();
+          const fecha = String(today.getDate()).padStart(2,'0')+'-'+String(today.getMonth()+1).padStart(2,'0')+'-'+today.getFullYear();
+
+          for (const [table, sheetId, isOntario] of [['ontario_companies', onId, true], ['quebec_companies', qcId, false]] as const) {
+            const { rows } = await pool.query(`
+              SELECT id, nombre, telefono, tipo, correo, direccion, provincia, region, ciudad, pueblo, work, descripcion, dominio_de_pagina
+              FROM ${table}
+              WHERE sheets_exported_at IS NULL
+                AND nombre IS NOT NULL AND correo IS NOT NULL AND correo != ''
+              ORDER BY nombre ASC
+              LIMIT 500
+            `);
+            if (rows.length === 0) continue;
+
+            const values = rows.map((r: any) => {
+              const prov = r.provincia ? (r.provincia.toLowerCase()==='on'||r.provincia.toLowerCase()==='ontario'?'Ontario':
+                         r.provincia.toLowerCase()==='qc'||r.provincia.toLowerCase()==='quebec'||r.provincia.toLowerCase()==='québec'?'Quebec':r.provincia) : '';
+              if (isOntario) {
+                return [r.nombre, r.telefono||'', r.tipo||'', r.correo||'', r.direccion||'', prov, r.region||'', r.ciudad||'', r.pueblo||'', r.work||'', r.descripcion||'', r.dominio_de_pagina||''];
+              } else {
+                return [r.nombre, r.telefono||'', r.tipo||'', r.correo||'', fecha, r.direccion||'', prov, r.region||'', r.ciudad||'', r.pueblo||'', r.work||'', r.descripcion||'', r.dominio_de_pagina||''];
+              }
+            });
+
+            await sheets.spreadsheets.values.append({
+              spreadsheetId: sheetId,
+              range: 'Hoja 1!A1',
+              valueInputOption: 'USER_ENTERED',
+              insertDataOption: 'INSERT_ROWS',
+              requestBody: { values },
+            });
+
+            await pool.query(`UPDATE ${table} SET sheets_exported_at = NOW() WHERE id = ANY($1::uuid[])`, [rows.map((r: any) => r.id)]);
+            console.log(`[AutoExport/Sheets] ✅ ${rows.length} empresas añadidas a ${isOntario ? 'Ontario' : 'Quebec'} sheet`);
+          }
+        } catch (err: any) {
+          console.error('[AutoExport/Sheets] Error:', err.message);
         }
       }
     }
@@ -274,6 +308,16 @@ async function runMigrations() {
       INSERT INTO campaign_config (id) VALUES ('00000000-0000-0000-0000-000000000001')
         ON CONFLICT (id) DO NOTHING;
 
+      -- Automatización de campañas
+      ALTER TABLE campaign_config ADD COLUMN IF NOT EXISTS auto_enabled        BOOLEAN     NOT NULL DEFAULT FALSE;
+      ALTER TABLE campaign_config ADD COLUMN IF NOT EXISTS auto_ontario        BOOLEAN     NOT NULL DEFAULT TRUE;
+      ALTER TABLE campaign_config ADD COLUMN IF NOT EXISTS auto_quebec         BOOLEAN     NOT NULL DEFAULT TRUE;
+      ALTER TABLE campaign_config ADD COLUMN IF NOT EXISTS auto_new_days       INTEGER     NOT NULL DEFAULT 15;
+      ALTER TABLE campaign_config ADD COLUMN IF NOT EXISTS auto_resend_days    INTEGER     NOT NULL DEFAULT 90;
+      ALTER TABLE campaign_config ADD COLUMN IF NOT EXISTS auto_min_gap_days   INTEGER     NOT NULL DEFAULT 60;
+      ALTER TABLE campaign_config ADD COLUMN IF NOT EXISTS auto_schedule_hour  INTEGER     NOT NULL DEFAULT 8;
+      ALTER TABLE campaign_config ADD COLUMN IF NOT EXISTS auto_last_run_at    TIMESTAMPTZ;
+
       -- Columna en companies para fecha último envío de campaña
       ALTER TABLE companies ADD COLUMN IF NOT EXISTS last_campaign_sent_at TIMESTAMPTZ;
 
@@ -343,8 +387,26 @@ async function runMigrations() {
     `);
     // Idempotent column additions (ALTER TABLE IF NOT EXISTS column)
     for (const tbl of ['ontario_companies', 'quebec_companies']) {
-      await client.query(`ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS last_campaign_at TIMESTAMPTZ`);
+      await client.query(`ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS last_campaign_at   TIMESTAMPTZ`);
+      await client.query(`ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS email_status       VARCHAR(20) DEFAULT 'unknown'`);
+      await client.query(`ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS email_bounce_count INTEGER     DEFAULT 0`);
+      await client.query(`ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS email_blocked_at   TIMESTAMPTZ`);
     }
+    // Tabla de supresión global de emails (bounces, unsubscribes, bloqueados manualmente)
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS email_suppression (
+        id         UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+        email      TEXT,
+        domain     TEXT,
+        reason     VARCHAR(50) NOT NULL,
+        source     VARCHAR(50) NOT NULL DEFAULT 'manual',
+        notes      TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        CONSTRAINT chk_email_or_domain CHECK (email IS NOT NULL OR domain IS NOT NULL)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_email_suppression_email  ON email_suppression (LOWER(email))  WHERE email  IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_email_suppression_domain ON email_suppression (LOWER(domain)) WHERE domain IS NOT NULL;
+    `);
     // Migración: mapeo region+work → templateId UUID de mDirector Plantillas
     await client.query(`
       CREATE TABLE IF NOT EXISTS mdirector_template_map (
@@ -390,6 +452,12 @@ async function runMigrations() {
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_jobs_url ON jobs(url);
     `);
+    // Unique index to prevent duplicate jobs (same company+title)
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_company_title_dedup
+        ON jobs (LOWER(TRIM(COALESCE(raw_company_name,''))), LOWER(TRIM(COALESCE(title,''))))
+        WHERE is_active = true;
+    `).catch(() => {});
 
     // ═══════════════════════════════════════════════════════════════════════
     // RUTAS MIGRATION — tablas para gestionar rutas de visitas
@@ -496,21 +564,40 @@ async function startServer() {
   const app = express();
   const PORT = parseInt(process.env.PORT || '3000', 10);
 
+  // ── Request ID Middleware ──────────────────────────────────────────────────
+  app.use(requestIdMiddleware);
+
   // ── Security Headers ───────────────────────────────────────────────────────
-  app.use(helmet());
+  app.use(helmet({
+    hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+    contentSecurityPolicy: false,
+    crossOriginOpenerPolicy: false,
+    originAgentCluster: false,
+  }));
   app.use(cors({
     origin: process.env.ALLOWED_ORIGINS?.split(',').filter(Boolean) || ['http://localhost:5173', 'http://localhost:3000'],
     credentials: true,
   }));
 
   app.use(express.json({ limit: '1mb' }));
-app.use(cookieParser());
+  app.use(cookieParser());
 
-  // ── Rate limiters ───────────────────────────────────────────────────────────
+  // ── Audit Log Middleware ───────────────────────────────────────────────────
+  app.use(auditLogMiddleware);
+
+  // ── Rate Limiters ───────────────────────────────────────────────────────────
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 10,
-    message: { error: 'Demasiados intentos. Intenta en 15 minutos.' },
+    message: { error: 'Too many attempts. Try again in 15 minutes.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  const passwordLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    message: { error: 'Too many password change attempts. Try again in 15 minutes.' },
     standardHeaders: true,
     legacyHeaders: false,
   });
@@ -518,7 +605,7 @@ app.use(cookieParser());
   const apiLimiter = rateLimit({
     windowMs: 60 * 1000,
     max: 60,
-    message: { error: 'Muchas peticiones. Intenta en 1 minuto.' },
+    message: { error: 'Too many requests. Try again in 1 minute.' },
     standardHeaders: true,
     legacyHeaders: false,
   });
@@ -526,7 +613,7 @@ app.use(cookieParser());
   const heavyLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
     max: 10,
-    message: { error: 'Límite de operaciones pesadas alcanzado.' },
+    message: { error: 'Heavy operation limit reached.' },
     standardHeaders: true,
     legacyHeaders: false,
   });
@@ -534,21 +621,36 @@ app.use(cookieParser());
   const setupLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
     max: 3,
-    message: { error: 'Límite de configuración alcanzado.' },
+    message: { error: 'Setup limit reached.' },
     standardHeaders: true,
     legacyHeaders: false,
   });
 
-// Aplicar rate limiting a rutas API
+  const agentLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 120,
+    message: { error: 'Too many agent requests.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  // Apply rate limiting to API routes
+  app.use('/api/agent/', agentLimiter);
   app.use('/api/', apiLimiter);
   app.use('/api/auth/login', authLimiter);
+  app.use('/api/auth/password', passwordLimiter);
   app.use('/api/auth/setup', setupLimiter);
   app.use('/api/routes/create-batch', heavyLimiter);
   app.use('/api/webhook', heavyLimiter);
 
-  // Health check endpoint (public)
-  app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  // Health check endpoint (public, with DB connectivity check)
+  app.get('/api/health', async (_req, res) => {
+    try {
+      await pool.query('SELECT 1');
+      res.json({ status: 'ok', db: 'connected', timestamp: new Date().toISOString() });
+    } catch {
+      res.status(503).json({ status: 'error', db: 'disconnected', timestamp: new Date().toISOString() });
+    }
   });
 
   // Mapbox public token for frontend map rendering
@@ -591,7 +693,7 @@ app.use(cookieParser());
     res.cookie('auth_token', token, {
       httpOnly: true,
       sameSite: 'lax',
-      secure: process.env.NODE_ENV === 'production',
+      secure: process.env.COOKIE_SECURE === 'true',
       maxAge: 8 * 60 * 60 * 1000,
       path: '/',
     });
@@ -854,20 +956,21 @@ app.use(cookieParser());
         params.push(`%${search}%`);
       }
 
-      const regionSQL = jobRegionClause('j', 'c');
+      const regionSQL = jobRegionClause('j');
       const baseSelect = `
         SELECT
           j.*,
-          COALESCE(c.name, j.raw_company_name) AS company_name,
-          c.industry           AS company_industry,
-          c.company_size       AS company_size,
-          c.hq_city            AS company_hq_city,
-          c.hq_country         AS company_hq_country,
-          c.website            AS company_website,
-          c.description        AS company_description,
-          c.enrichment_status  AS company_enrichment_status
+          COALESCE(oc.nombre, qc.nombre, j.raw_company_name) AS company_name,
+          COALESCE(oc.industry, qc.industry) AS company_industry,
+          COALESCE(oc.company_size, qc.company_size) AS company_size,
+          COALESCE(oc.ciudad, qc.ciudad) AS company_hq_city,
+          'Canada' AS company_hq_country,
+          COALESCE(oc.dominio_de_pagina, qc.dominio_de_pagina, oc.website, qc.website) AS company_website,
+          COALESCE(oc.descripcion, qc.descripcion) AS company_description,
+          COALESCE(oc.enrichment_status, qc.enrichment_status) AS company_enrichment_status
         FROM jobs j
-        LEFT JOIN companies c ON j.company_id = c.id
+        LEFT JOIN ontario_companies oc ON j.province_id = oc.id AND j.province_source = 'ontario'
+        LEFT JOIN quebec_companies qc ON j.province_id = qc.id AND j.province_source = 'quebec'
         WHERE j.is_active = true AND ${regionSQL} ${searchClause}
       `;
 
@@ -875,7 +978,8 @@ app.use(cookieParser());
         pool.query(`${baseSelect} ORDER BY j.created_at DESC LIMIT $1 OFFSET $2`, params),
         pool.query(
           `SELECT COUNT(*)::int AS total FROM jobs j
-           LEFT JOIN companies c ON j.company_id = c.id
+           LEFT JOIN ontario_companies oc ON j.province_id = oc.id AND j.province_source = 'ontario'
+           LEFT JOIN quebec_companies qc ON j.province_id = qc.id AND j.province_source = 'quebec'
            WHERE j.is_active = true AND ${regionSQL} ${searchClause}`,
           search ? [`%${search}%`] : [],
         ),
@@ -933,6 +1037,76 @@ app.use(cookieParser());
     } catch (error) {
       console.error('[Stats Error]:', error);
       return res.status(500).json({ error: 'Error al obtener estadísticas.' });
+    }
+  });
+
+  /** GET /api/dashboard — datos reales para el dashboard principal */
+  app.get('/api/dashboard', requireAuth, async (_req, res) => {
+    try {
+      const [main, geo, campaigns, recent, suppression, auto, enrichment] = await Promise.all([
+        // Totales Ontario + Quebec
+        pool.query(`
+          SELECT
+            (SELECT COUNT(*)::int FROM ontario_companies WHERE is_duplicate = FALSE) AS ontario_total,
+            (SELECT COUNT(*)::int FROM quebec_companies  WHERE is_duplicate = FALSE) AS quebec_total,
+            (SELECT COUNT(*)::int FROM ontario_companies WHERE is_duplicate = FALSE AND COALESCE(LOWER(status),'') NOT IN ('closed','cerrada','inactive','inactiva')) AS ontario_active,
+            (SELECT COUNT(*)::int FROM quebec_companies  WHERE is_duplicate = FALSE AND COALESCE(LOWER(status),'') NOT IN ('closed','cerrada','inactive','inactiva')) AS quebec_active,
+            (SELECT COUNT(*)::int FROM ontario_companies WHERE is_duplicate = FALSE AND correo IS NOT NULL AND correo <> '' AND correo LIKE '%@%' AND COALESCE(email_status,'unknown') NOT IN ('bounced','invalid','unsubscribed','blocked')) AS ontario_with_email,
+            (SELECT COUNT(*)::int FROM quebec_companies  WHERE is_duplicate = FALSE AND correo IS NOT NULL AND correo <> '' AND correo LIKE '%@%' AND COALESCE(email_status,'unknown') NOT IN ('bounced','invalid','unsubscribed','blocked')) AS quebec_with_email,
+            (SELECT COUNT(*)::int FROM ontario_companies WHERE is_duplicate = FALSE AND lat IS NOT NULL) AS ontario_geocoded,
+            (SELECT COUNT(*)::int FROM quebec_companies  WHERE is_duplicate = FALSE AND lat IS NOT NULL) AS quebec_geocoded,
+            (SELECT COUNT(*)::int FROM ontario_companies WHERE is_duplicate = FALSE AND COALESCE(email_status,'unknown') IN ('bounced','invalid','unsubscribed','blocked')) AS ontario_blocked,
+            (SELECT COUNT(*)::int FROM quebec_companies  WHERE is_duplicate = FALSE AND COALESCE(email_status,'unknown') IN ('bounced','invalid','unsubscribed','blocked')) AS quebec_blocked
+        `),
+        // Geocodificación pendiente
+        pool.query(`
+          SELECT
+            (SELECT COUNT(*)::int FROM ontario_companies WHERE lat IS NULL AND direccion IS NOT NULL AND TRIM(direccion) <> '') AS ontario_pending_geo,
+            (SELECT COUNT(*)::int FROM quebec_companies  WHERE lat IS NULL AND direccion IS NOT NULL AND TRIM(direccion) <> '') AS quebec_pending_geo
+        `),
+        // Campañas: historial reciente + totales
+        pool.query(`
+          SELECT
+            COUNT(*)::int AS total_sent,
+            COUNT(*) FILTER (WHERE sent_at > NOW() - INTERVAL '30 days')::int AS sent_last_30d,
+            COUNT(*) FILTER (WHERE sent_at > NOW() - INTERVAL '7 days')::int  AS sent_last_7d,
+            COUNT(DISTINCT company_email)::int AS unique_companies,
+            MAX(sent_at) AS last_sent_at
+          FROM email_campaign_log
+        `),
+        // Últimas 6 empresas agregadas (Ontario + Quebec combinadas)
+        pool.query(`
+          SELECT id, nombre, correo, work, ciudad, provincia, 'ontario' AS region, created_at
+          FROM ontario_companies WHERE is_duplicate = FALSE
+          UNION ALL
+          SELECT id, nombre, correo, work, ciudad, provincia, 'quebec' AS region, created_at
+          FROM quebec_companies WHERE is_duplicate = FALSE
+          ORDER BY created_at DESC LIMIT 6
+        `),
+        // Supresión
+        pool.query(`SELECT COUNT(*)::int AS total FROM email_suppression`),
+        // Automatización
+        pool.query(`SELECT auto_enabled, auto_last_run_at FROM campaign_config LIMIT 1`),
+        // Enrichment del CRM (companies table)
+        pool.query(`
+          SELECT
+            COUNT(*) FILTER (WHERE enrichment_status = 'pending')::int   AS pending,
+            COUNT(*) FILTER (WHERE enrichment_status != 'pending')::int  AS done
+          FROM companies
+        `),
+      ]);
+
+      return res.json({
+        companies: { ...main.rows[0], ...geo.rows[0] },
+        campaigns: campaigns.rows[0],
+        recent:    recent.rows,
+        suppression: suppression.rows[0],
+        automation: auto.rows[0] ?? {},
+        enrichment: enrichment.rows[0],
+      });
+    } catch (err: any) {
+      console.error('[Dashboard Error]:', err.message);
+      return res.status(500).json({ error: err.message });
     }
   });
 
@@ -1118,99 +1292,104 @@ app.use(cookieParser());
   // POST /api/enrichment/process-next — procesa UNA empresa pending de la cola (llama el frontend cada N segundos)
   app.post('/api/enrichment/process-next', requireAuth, async (req: AuthRequest, res) => {
     try {
-      // Tomar la siguiente empresa pending (con lock para evitar race conditions)
-      const lockResult = await pool.query(
-        `UPDATE companies SET enrichment_status = 'processing'
-         WHERE id = (
-           SELECT id FROM companies WHERE enrichment_status = 'pending' ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED
-         ) RETURNING id, name`
-      );
-      if (lockResult.rows.length === 0) return res.json({ done: true, message: 'No hay empresas pendientes.' });
+      // Lock next pending company that HAS a job linked
+      let lockResult;
+      for (const [table, src] of [['ontario_companies', 'ontario'], ['quebec_companies', 'quebec']] as const) {
+        lockResult = await pool.query(`
+          UPDATE ${table} oc SET enrichment_status = 'processing'
+          WHERE oc.id = (
+            SELECT oc2.id FROM ${table} oc2
+            JOIN jobs j ON j.province_id = oc2.id AND j.province_source = $1
+            WHERE oc2.enrichment_status = 'pending'
+            ORDER BY oc2.created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED
+          ) RETURNING oc.id, oc.nombre AS name, $1 AS src
+        `, [src]);
+        if (lockResult.rows.length > 0) break;
+      }
+      if (lockResult.rows.length === 0) return res.json({ done: true, message: 'No pending companies.' });
 
-      const { id: companyId, name: companyName } = lockResult.rows[0];
+      const { id: companyId, name: companyName, src: province } = lockResult.rows[0];
+      const table = province === 'ontario' ? 'ontario_companies' : 'quebec_companies';
 
-      // Verificar si ya tiene datos en BD
+      // Check if already has data
       const existing = await pool.query(
-        'SELECT industry, website, description FROM companies WHERE id = $1',
+        `SELECT industry, website, description FROM ${table} WHERE id = $1`,
         [companyId]
       );
       const row = existing.rows[0];
 
       if (row && (row.industry || row.website || row.description)) {
-        // Ya tiene datos — db_matched
         await pool.query(
-          `UPDATE companies SET enrichment_status = 'db_matched', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+          `UPDATE ${table} SET enrichment_status = 'db_matched', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
           [companyId]
         );
-        scheduleExcelExport(); // también exportar empresas db_matched
-        return res.json({ done: false, source: 'db_matched', companyId, companyName });
+        scheduleExcelExport();
+        return res.json({ done: false, source: 'db_matched', companyId, companyName, province });
       }
 
-      // Enriquecer con proveedor disponible (Gemini → Groq → Ollama → WebSearch)
+      // AI enrichment (Gemini → Groq → WebSearch)
       const data = await EnrichmentService.enrichCompany(companyName);
-
-      // Si ningún proveedor devolvió datos reales, marcar como failed (no scraped)
       const hasData = data.industry || data.description || data.website;
       const newStatus = hasData ? 'scraped' : 'failed';
 
-      // Auto-rojo: si el modelo detecta que la empresa está cerrada, marcarla como rojo
-      const autoRojo = data.is_closed === true;
+      // Build update payload for province table
+      const updates: Record<string, any> = { enrichment_status: newStatus };
 
-      const updatePayload: Record<string, any> = { enrichment_status: newStatus };
-      if (autoRojo) {
-        updatePayload.tipo = 'rojo';
-        updatePayload.tipo_updated_at = new Date().toISOString();
-        console.info(`[Auto-rojo] "${companyName}" detectada como cerrada por el modelo de IA`);
+      if (data.is_closed === true) {
+        updates.tipo = 'rojo';
+        console.info(`[Auto-rojo] "${companyName}" marked as closed by AI`);
       }
-      if (data.industry) updatePayload.industry = data.industry;
-      if (data.company_size) updatePayload.company_size = data.company_size;
-      if (data.hq_city) updatePayload.hq_city = data.hq_city;
-      if (data.hq_province) updatePayload.hq_province = data.hq_province;
-      if (data.hq_country) updatePayload.hq_country = data.hq_country;
-      if (data.exact_address) updatePayload.exact_address = data.exact_address;
-      if (data.phone) updatePayload.phone = data.phone;
-      if (data.contact_email) updatePayload.contact_email = data.contact_email;
-      if (data.website) updatePayload.website = data.website;
-      if (data.description) updatePayload.description = data.description;
-      const keys = Object.keys(updatePayload).filter(k => ALLOWED_COMPANY_COLUMNS.has(k));
-      const setClause = keys.map((key, i) => `"${key}" = $${i + 2}`).join(', ');
-      const values = keys.map(k => updatePayload[k]);
+      if (data.industry) updates.industry = data.industry;
+      if (data.company_size) updates.company_size = data.company_size;
+      if (data.website) updates.dominio_de_pagina = data.website;
+      if (data.description) updates.descripcion = (data.description || '').substring(0, 500);
+      if (data.hq_city) updates.ciudad = data.hq_city;
+      if (data.hq_province) updates.provincia = data.hq_province;
+      if (data.exact_address) updates.direccion = data.exact_address;
+      if (data.phone) updates.telefono = data.phone;
+      if (data.contact_email) updates.correo = data.contact_email;
+      if (data.website) updates.dominio_de_pagina = data.website;
+
+      const updateKeys = Object.keys(updates);
+      const setClauses = updateKeys.map((k, i) => `"${k}" = $${i + 3}`);
+      const allValues = [companyId, data._provider ?? 'unknown', ...Object.values(updates)];
       await pool.query(
-        `UPDATE companies SET ${setClause}, updated_at = CURRENT_TIMESTAMP, enriched_at = CURRENT_TIMESTAMP WHERE id = $1`,
-        [companyId, ...values]
+        `UPDATE ${table} SET ${setClauses.join(', ')}, enrichment_provider = $2, enriched_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
+        allValues
       );
 
-      // Disparar export al Excel en background (debounced 10s)
+      // Trigger sheets export in background
       if (hasData) scheduleExcelExport();
-      // Copiar a ontario/quebec si la provincia corresponde
-      if (hasData) maybeCopyToProvinceTable(pool, companyId).catch(() => {});
 
-      // Auto-sugerir servicios si la empresa tiene datos suficientes (background)
+      // Auto-suggest services
       if (hasData) {
         JobClassifierService.suggestForCompany({
-          name: companyName,
-          industry: data.industry,
-          description: data.description,
-          company_size: data.company_size,
-          hq_city: data.hq_city,
-          hq_country: data.hq_country,
+          name: companyName, industry: data.industry, description: data.description,
+          company_size: data.company_size, hq_city: data.hq_city, hq_country: data.hq_country,
         }).then(suggestions => pool.query(
-          `UPDATE companies SET suggested_services=$1, suggested_services_summary=$2, suggested_services_at=NOW() WHERE id=$3`,
-          [JSON.stringify(suggestions.suggestions), suggestions.company_summary, companyId]
+          `UPDATE ${table} SET suggested_services=$1, suggested_services_at=NOW() WHERE id=$2`,
+          [JSON.stringify(suggestions.suggestions), companyId]
         )).catch(err => console.warn('[Auto-suggest]', err.message));
       }
 
-      // Cuántas quedan
-      const countResult = await pool.query(`SELECT COUNT(*) FROM companies WHERE enrichment_status = 'pending'`);
-      const remaining = parseInt(countResult.rows[0].count, 10);
-      return res.json({ done: remaining === 0, source: data._provider ?? 'unknown', companyId, companyName, data, remaining });
+      // Remaining count
+      const countResult = await pool.query(
+        `SELECT (SELECT COUNT(*) FROM ontario_companies WHERE enrichment_status = 'pending') +
+                (SELECT COUNT(*) FROM quebec_companies WHERE enrichment_status = 'pending') AS cnt`
+      );
+      const remaining = parseInt(countResult.rows[0].cnt, 10);
+      return res.json({ done: remaining === 0, source: data._provider ?? 'unknown', companyId, companyName, data, remaining, province });
+
     } catch (error: any) {
-      // Si la transacción falló, liberar el lock
       console.error('[process-next Error]:', error);
+      // Release locks on error
       await pool.query(
-        `UPDATE companies SET enrichment_status = 'pending' WHERE enrichment_status = 'processing'`
+        `UPDATE ontario_companies SET enrichment_status = 'pending' WHERE enrichment_status = 'processing'`
       ).catch(() => {});
-      return res.status(500).json({ error: 'Error procesando cola de enriquecimiento.' });
+      await pool.query(
+        `UPDATE quebec_companies SET enrichment_status = 'pending' WHERE enrichment_status = 'processing'`
+      ).catch(() => {});
+      return res.status(500).json({ error: 'Error processing enrichment queue.' });
     }
   });
 
@@ -1543,34 +1722,133 @@ app.use(cookieParser());
     }
   });
 
-  // Webhook — protected by WEBHOOK_SECRET header (called by external scrapers)
+  // ── Helper: find company across BOTH province tables ─────────────────────────
+  async function findCompanyInBothTables(
+    companyName: string
+  ): Promise<{ id: string; table: 'ontario_companies' | 'quebec_companies'; src: 'ontario' | 'quebec' } | null> {
+    const slug = slugify(companyName);
+    const nameNorm = companyName.trim().toLowerCase();
+
+    for (const [table, src] of [['ontario_companies', 'ontario'], ['quebec_companies', 'quebec']] as const) {
+      const found = await pool.query(
+        `SELECT id FROM ${table} WHERE slug = $1 OR LOWER(TRIM(nombre)) = $2 LIMIT 1`,
+        [slug, nameNorm]
+      );
+      if (found.rows.length > 0) return { id: found.rows[0].id, table, src: src as 'ontario' | 'quebec' };
+    }
+    return null;
+  }
+
+  // ── Helper: enrich + insert new company into province table ─────────────────
+  async function enrichAndInsertCompany(companyName: string): Promise<{
+    id: string; table: string; src: string;
+  }> {
+    const slug = slugify(companyName);
+
+    // 1. Call AI enrichment
+    const data = await EnrichmentService.enrichCompany(companyName);
+    const hasData = data.industry || data.description || data.website;
+    const newStatus = hasData ? 'scraped' : 'failed';
+
+    // 2. Determine province from AI result
+    const hqProv = (data.hq_province || '').toLowerCase();
+    const table = (hqProv.includes('qc') || hqProv.includes('quebec')) ? 'quebec_companies' : 'ontario_companies';
+    const src = table === 'quebec_companies' ? 'quebec' : 'ontario';
+
+    // 3. Build insert payload
+    const updates: Record<string, any> = {
+      nombre: companyName.trim(),
+      slug,
+      enrichment_status: newStatus,
+      enrichment_provider: data._provider ?? 'unknown',
+    };
+    if (data.is_closed === true) updates.tipo = 'rojo';
+    if (data.industry) updates.industry = data.industry;
+    if (data.company_size) updates.company_size = data.company_size;
+    if (data.website) updates.dominio_de_pagina = data.website;
+    if (data.description) updates.descripcion = (data.description || '').substring(0, 500);
+    if (data.hq_city) updates.ciudad = data.hq_city;
+    if (data.hq_province) updates.provincia = data.hq_province;
+    if (data.hq_region) updates.region = data.hq_region;
+    if (data.hq_town) updates.pueblo = data.hq_town;
+    if (data.exact_address) updates.direccion = data.exact_address;
+    if (data.phone) updates.telefono = data.phone;
+    if (data.contact_email) updates.correo = data.contact_email;
+
+    // 4. Insert into province table
+    const keys = Object.keys(updates);
+    const cols = keys.map(k => `"${k}"`);
+    const vals = keys.map((_, i) => `$${i + 1}`);
+    const ins = await pool.query(
+      `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${vals.join(', ')}) ON CONFLICT DO NOTHING RETURNING id`,
+      Object.values(updates)
+    );
+
+    if (ins.rows.length > 0) {
+      console.log(`[Webhook] ✅ New company created: ${companyName} → ${table} (${newStatus})`);
+
+      // 5. Trigger sheets export in background
+      scheduleExcelExport();
+
+      return { id: ins.rows[0].id, table, src };
+    }
+
+    // Race condition: another request created it. Find and return.
+    const existing = await pool.query(`SELECT id FROM ${table} WHERE slug = $1`, [slug]);
+    if (existing.rows.length > 0) return { id: existing.rows[0].id, table, src };
+
+    throw new Error(`Could not create company ${companyName} in ${table}`);
+  }
+
+  // Webhook — busca empresa, si no existe la enriquece con IA y la guarda
   app.post('/api/webhook/scraper', async (req, res) => {
     const secret = req.headers['x-webhook-secret'];
     if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET)
-      return res.status(401).json({ error: 'Webhook secret inválido.' });
+      return res.status(401).json({ error: 'Invalid webhook secret.' });
 
     const { fuente, titulo, empresa, url_postulacion, location, country } = req.body;
     if (!empresa || !titulo || !url_postulacion)
-      return res.status(400).json({ error: 'Campos requeridos: empresa, titulo, url_postulacion.' });
+      return res.status(400).json({ error: 'Required fields: empresa, titulo, url_postulacion.' });
 
-    // Filtro regional: descartamos vacantes fuera de la provincia configurada.
-    // Respondemos 200 para que el scraper no reintente (no es un error real).
     if (isRegionFilterActive() && !isRegionMatch(location, country, titulo, empresa, url_postulacion)) {
-      return res.json({ success: true, skipped: true, reason: `Fuera de región ${REGION_FILTER}` });
+      return res.json({ success: true, skipped: true, reason: `Outside region ${REGION_FILTER}` });
     }
 
     try {
-      // Insertar la vacante con raw_company_name; sync la vinculará con la empresa
       const validSources = new Set(['linkedin', 'indeed', 'glassdoor', 'company_website']);
       const source = validSources.has((fuente || '').toLowerCase()) ? fuente.toLowerCase() : 'other';
+
+      // 1. Check if company exists in either province table
+      const existing = await findCompanyInBothTables(empresa);
+      let companyId: string;
+      let province: string;
+      let isNew = false;
+
+      if (existing) {
+        // Company exists — just link job
+        companyId = existing.id;
+        province = existing.src;
+        console.log(`[Webhook] Existing company: ${empresa} → ${existing.table}`);
+      } else {
+        // Company NOT found — enrich with AI and insert
+        isNew = true;
+        const created = await enrichAndInsertCompany(empresa);
+        companyId = created.id;
+        province = created.src;
+      }
+
+      // 2. Insert job linked to the company
       const insertResult = await pool.query(
-        `INSERT INTO jobs (raw_company_name, title, source, url)
-         VALUES ($1, $2, $3::job_source_enum, $4)
-         ON CONFLICT DO NOTHING
+        `INSERT INTO jobs (raw_company_name, title, source, url, province_id, province_source)
+         VALUES ($1, $2, $3::job_source_enum, $4, $5, $6)
+         ON CONFLICT (LOWER(TRIM(COALESCE(raw_company_name,''))), LOWER(TRIM(COALESCE(title,''))))
+           WHERE is_active = true
+           DO UPDATE SET url = EXCLUDED.url, province_id = COALESCE(EXCLUDED.province_id, jobs.province_id), updated_at = NOW()
          RETURNING id`,
-        [empresa, titulo, source, url_postulacion]
+        [empresa, titulo, source, url_postulacion, companyId, province]
       );
-      // Clasificar la vacante en background (no bloquea la respuesta)
+
+      // 3. Classify job in background
       if (insertResult.rowCount && insertResult.rowCount > 0) {
         const newJobId = insertResult.rows[0].id;
         JobClassifierService.classifyJob(titulo, '', empresa, '')
@@ -1580,10 +1858,11 @@ app.use(cookieParser());
           ))
           .catch(err => console.warn('[Webhook Classify]', err.message));
       }
-      return res.json({ success: true });
+
+      return res.json({ success: true, isNew, province, companyId });
     } catch (error) {
       console.error('[Webhook Error]:', error);
-      return res.status(500).json({ error: 'Error interno del servidor.' });
+      return res.status(500).json({ error: 'Internal server error.' });
     }
   });
 
@@ -2093,13 +2372,12 @@ app.use(cookieParser());
     }
   });
 
-  // ── Application Agent ─────────────────────────────────────────────────────
-
+  // ── Application Agent (DISABLED) ──────────────────────────────────────────
+  /*
   // GET /api/agent/status
   app.get('/api/agent/status', requireAuth, (_req, res) => {
     res.json(ApplicationAgentService.getState());
   });
-
   // POST /api/agent/start
   app.post('/api/agent/start', requireAuth, requireRole('admin', 'editor'), async (_req, res) => {
     try {
@@ -2109,141 +2387,14 @@ app.use(cookieParser());
       res.status(400).json({ success: false, message: err.message });
     }
   });
-
   // POST /api/agent/stop
   app.post('/api/agent/stop', requireAuth, requireRole('admin', 'editor'), (_req, res) => {
     ApplicationAgentService.stop();
     res.json({ success: true, state: ApplicationAgentService.getState() });
   });
+  */
 
-  // ── Application Queue ─────────────────────────────────────────────────────
-
-  // GET /api/application-queue — lista completa con info de job
-  app.get('/api/application-queue', requireAuth, async (_req, res) => {
-    try {
-      const { rows } = await pool.query(`
-        SELECT
-          aq.id, aq.job_id, aq.status, aq.priority,
-          aq.queued_at, aq.started_at, aq.applied_at, aq.failed_at,
-          aq.error_message, aq.notes,
-          j.title  AS job_title,
-          j.source,
-          COALESCE(c.name, j.raw_company_name, '') AS company_name
-        FROM application_queue aq
-        JOIN jobs j ON j.id = aq.job_id
-        LEFT JOIN companies c ON c.id = j.company_id
-        ORDER BY
-          CASE aq.status WHEN 'queued' THEN 0 WHEN 'processing' THEN 1 ELSE 2 END,
-          aq.priority DESC,
-          aq.queued_at ASC
-      `);
-      res.json(rows);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // GET /api/application-queue/stats
-  app.get('/api/application-queue/stats', requireAuth, async (_req, res) => {
-    try {
-      const stats = await ApplicationAgentService.getStats(pool);
-      res.json(stats);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // POST /api/application-queue — añadir vacante(s) a la cola
-  app.post('/api/application-queue', requireAuth, async (req: AuthRequest, res) => {
-    const { jobId, jobIds, priority = 5 } = req.body ?? {};
-    const ids: string[] = jobIds ?? (jobId ? [jobId] : []);
-    if (ids.length === 0) return res.status(400).json({ error: 'jobId o jobIds requerido.' });
-
-    try {
-      // Verificar que los jobs existen y son de LinkedIn/Indeed
-      const { rows: jobs } = await pool.query(
-        `SELECT id, source FROM jobs WHERE id = ANY($1::uuid[]) AND source IN ('linkedin','indeed')`,
-        [ids]
-      );
-      if (jobs.length === 0) {
-        return res.status(400).json({ error: 'Ningún job válido (debe ser LinkedIn o Indeed).' });
-      }
-
-      const inserted: string[] = [];
-      for (const job of jobs) {
-        // Evitar duplicados en estado queued/processing
-        const { rows: dup } = await pool.query(
-          `SELECT id FROM application_queue WHERE job_id=$1 AND status IN ('queued','processing')`,
-          [job.id]
-        );
-        if (dup.length > 0) continue;
-
-        await pool.query(
-          `INSERT INTO application_queue (job_id, priority, created_by)
-           VALUES ($1, $2, $3)`,
-          [job.id, Math.min(10, Math.max(1, priority)), req.user?.id ?? null]
-        );
-        inserted.push(job.id);
-      }
-
-      res.json({ success: true, inserted: inserted.length, skippedDuplicates: jobs.length - inserted.length });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // DELETE /api/application-queue/clear — limpiar completados/fallidos (antes que /:id)
-  app.delete('/api/application-queue/clear', requireAuth, requireRole('admin', 'editor'), async (_req, res) => {
-    try {
-      const { rowCount } = await pool.query(
-        `DELETE FROM application_queue WHERE status IN ('applied','skipped','failed','captcha')`
-      );
-      res.json({ success: true, deleted: rowCount });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // DELETE /api/application-queue/:id — eliminar item
-  app.delete('/api/application-queue/:id', requireAuth, async (req, res) => {
-    try {
-      await pool.query(`DELETE FROM application_queue WHERE id=$1`, [req.params.id]);
-      res.json({ success: true });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // PATCH /api/application-queue/:id/retry — reintentar fallido
-  app.patch('/api/application-queue/:id/retry', requireAuth, async (req, res) => {
-    try {
-      const { rowCount } = await pool.query(
-        `UPDATE application_queue
-         SET status='queued', error_message=NULL, failed_at=NULL, notes=NULL, started_at=NULL
-         WHERE id=$1 AND status IN ('failed','captcha','skipped')`,
-        [req.params.id]
-      );
-      if (rowCount === 0) return res.status(400).json({ error: 'Item no encontrado o no se puede reintentar.' });
-      res.json({ success: true });
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
-
-  // GET /api/application-queue/job/:jobId — estado de un job específico en la cola
-  app.get('/api/application-queue/job/:jobId', requireAuth, async (req, res) => {
-    try {
-      const { rows } = await pool.query(
-        `SELECT id, status, priority, queued_at, applied_at, failed_at, notes, error_message
-         FROM application_queue WHERE job_id=$1
-         ORDER BY queued_at DESC LIMIT 1`,
-        [req.params.jobId]
-      );
-      res.json(rows[0] ?? null);
-    } catch (err: any) {
-      res.status(500).json({ error: err.message });
-    }
-  });
+  // ── Application Queue (DISABLED) ──────────────────────────────────────────
 
   // ── Exportación a Excel ──────────────────────────────────────────────────────
 
@@ -2882,9 +3033,11 @@ Respond in ${language || 'English'} with JSON format:
   {
     const { createOntarioRouter, createQuebecRouter } = await import('./server/routes/ontario.routes.js') as any;
     const { createCampaignRouter } = await import('./server/routes/campaign.routes.js') as any;
+    // const { createAgentRouter } = await import('./server/routes/agent.routes.js') as any;
     app.use('/api/ontario',  createOntarioRouter(pool));
     app.use('/api/quebec',   createQuebecRouter(pool));
     app.use('/api/campaign', createCampaignRouter(pool));
+    // app.use('/api', createAgentRouter(pool));
   }
 
   // ═════════════════════════════════════════════════════════════════════════
@@ -2981,6 +3134,7 @@ Respond in ${language || 'English'} with JSON format:
       stopsPerRoute = 100,
       routePrefix = 'Ruta',
       averageSpeedKmh = 30,
+      startAddress = '',
     } = req.body;
 
     if (!region) return res.status(400).json({ error: 'region es requerida.' });
@@ -2994,6 +3148,47 @@ Respond in ${language || 'English'} with JSON format:
               Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
               Math.sin(dLng/2) ** 2;
       return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    };
+
+    // TSP nearest-neighbor + 2-opt starting from (startLat, startLng)
+    const tspOrder = (startLat: number, startLng: number, stops: any[]): any[] => {
+      if (stops.length <= 1) return [...stops];
+
+      // Phase 1: nearest-neighbor greedy
+      const remaining = [...stops];
+      const ordered: any[] = [];
+      let curLat = startLat, curLng = startLng;
+      while (remaining.length > 0) {
+        let nearIdx = 0, nearDist = Infinity;
+        remaining.forEach((s, i) => {
+          const d = haversine(curLat, curLng, s.lat, s.lng);
+          if (d < nearDist) { nearDist = d; nearIdx = i; }
+        });
+        const next = remaining.splice(nearIdx, 1)[0];
+        ordered.push(next);
+        curLat = next.lat; curLng = next.lng;
+      }
+
+      // Phase 2: 2-opt improvements (O(n²) per pass, fast for n≤150)
+      let improved = true;
+      while (improved) {
+        improved = false;
+        for (let i = 0; i < ordered.length - 1; i++) {
+          for (let j = i + 1; j < ordered.length; j++) {
+            const a = i === 0 ? { lat: startLat, lng: startLng } : ordered[i - 1];
+            const b = ordered[i];
+            const c = ordered[j];
+            const d2 = j + 1 < ordered.length ? ordered[j + 1] : null;
+            const before = haversine(a.lat, a.lng, b.lat, b.lng) + (d2 ? haversine(c.lat, c.lng, d2.lat, d2.lng) : 0);
+            const after  = haversine(a.lat, a.lng, c.lat, c.lng) + (d2 ? haversine(b.lat, b.lng, d2.lat, d2.lng) : 0);
+            if (after < before - 0.01) {
+              ordered.splice(i, j - i + 1, ...ordered.slice(i, j + 1).reverse());
+              improved = true;
+            }
+          }
+        }
+      }
+      return ordered;
     };
 
     // Geographic nearest-neighbor clustering: groups companies into spatially coherent batches
@@ -3017,6 +3212,8 @@ Respond in ${language || 'English'} with JSON format:
         const batch: any[] = [remaining.splice(seedIdx, 1)[0]];
 
         // Grow batch greedily: always pick nearest to the last added stop
+        // Stop if nearest remaining is > 120 km away (keeps batches geographically tight)
+        const MAX_NEXT_STOP_KM = 120;
         while (batch.length < batchSize && remaining.length > 0) {
           const last = batch[batch.length - 1];
           let nearIdx = 0;
@@ -3025,6 +3222,7 @@ Respond in ${language || 'English'} with JSON format:
             const d = haversine(last.lat, last.lng, c.lat, c.lng);
             if (d < nearDist) { nearDist = d; nearIdx = i; }
           });
+          if (nearDist > MAX_NEXT_STOP_KM) break;
           batch.push(remaining.splice(nearIdx, 1)[0]);
         }
 
@@ -3038,6 +3236,12 @@ Respond in ${language || 'English'} with JSON format:
       const params: any[] = [];
       const filters: string[] = [
         `direccion IS NOT NULL AND TRIM(direccion) <> '' AND TRIM(direccion) <> 'null'`,
+        `LENGTH(TRIM(direccion)) > 8`,
+        `LOWER(TRIM(direccion)) NOT LIKE '%virtual%'`,
+        `LOWER(TRIM(direccion)) NOT LIKE '%no tiene%'`,
+        `LOWER(TRIM(direccion)) NOT LIKE '%sin direcci%'`,
+        `LOWER(TRIM(direccion)) NOT LIKE '%n/a%'`,
+        `lat IS NOT NULL AND lng IS NOT NULL`,
       ];
 
       if (town) {
@@ -3048,52 +3252,44 @@ Respond in ${language || 'English'} with JSON format:
         filters.push(`TRIM(ciudad) = $${params.length}`);
       }
 
-      // 1. Fetch companies with addresses (with or without coordinates)
-      const addressFilters = filters.filter(f => !f.includes('lat IS NOT NULL'));
-      const { rows: rawCompanies } = await pool.query(`
+      // 1. Fetch companies with valid addresses and coordinates
+      const { rows: companies } = await pool.query(`
         SELECT id, nombre, direccion, ciudad, pueblo, provincia, telefono, lat, lng
         FROM ${table}
-        WHERE ${addressFilters.join(' AND ')}
+        WHERE ${filters.join(' AND ')}
         ORDER BY nombre
         LIMIT 2000
       `, params);
 
-      if (rawCompanies.length === 0) {
-        return res.status(400).json({ error: 'No hay empresas con dirección en esta zona.' });
-      }
-
-      // 2. Separate companies with/without coordinates
-      const withCoords = rawCompanies.filter((c: any) => c.lat && c.lng);
-      const withoutCoords = rawCompanies.filter((c: any) => !c.lat || !c.lng);
-
-      // Geocode up to 30 missing companies on-demand (sequential to respect Nominatim rate limit)
-      const { geocodeAddress } = await import('./server/automation/cron-jobs.js');
-      const geocodedOnDemand: any[] = [];
-      const onDemandLimit = Math.min(30, withoutCoords.length);
-
-      for (let i = 0; i < onDemandLimit; i++) {
-        const c = withoutCoords[i];
-        const coords = await geocodeAddress(c.direccion, c.ciudad || '', c.provincia || region);
-        if (coords) {
-          pool.query(
-            `UPDATE ${table} SET lat = $1, lng = $2, updated_at = NOW() WHERE id = $3`,
-            [coords.lat, coords.lng, c.id]
-          ).catch(() => {});
-          geocodedOnDemand.push({ ...c, lat: coords.lat, lng: coords.lng });
-        }
-        if (i < onDemandLimit - 1) await new Promise(r => setTimeout(r, 1100));
-      }
-
-      const companies = [...withCoords, ...geocodedOnDemand];
-
       if (companies.length === 0) {
         return res.status(400).json({
-          error: 'No hay empresas con coordenadas en esta zona todavía. El servidor está geocodificando las empresas en segundo plano — intenta de nuevo en unos minutos.',
-          pending: withoutCoords.length,
+          error: 'No hay empresas con coordenadas geocodificadas en esta zona todavía. El servidor geocodifica en segundo plano — intenta de nuevo en unos minutos.',
         });
       }
 
-      // 2. Cluster companies geographically
+      // 2. Geocode starting address (once for all batches)
+      const { geocodeAddress } = await import('./server/automation/cron-jobs.js');
+      let startLat: number;
+      let startLng: number;
+      let resolvedStartAddress: string;
+
+      if (startAddress && startAddress.trim().length > 5) {
+        const startCoords = await geocodeAddress(startAddress.trim(), city || town || '', region);
+        if (startCoords) {
+          startLat = startCoords.lat;
+          startLng = startCoords.lng;
+          resolvedStartAddress = startAddress.trim();
+        } else {
+          return res.status(400).json({ error: `No se pudo geocodificar la dirección de salida: "${startAddress}". Verifica la dirección e intenta de nuevo.` });
+        }
+      } else {
+        // Default: centroid of all companies in the zone
+        startLat = companies.reduce((s: number, c: any) => s + c.lat, 0) / companies.length;
+        startLng = companies.reduce((s: number, c: any) => s + c.lng, 0) / companies.length;
+        resolvedStartAddress = city || town || region;
+      }
+
+      // 3. Cluster companies geographically
       const batchSize = Math.max(10, Math.min(stopsPerRoute, 150));
       const batches = clusterByProximity(companies, batchSize);
       const locationName = town || city || region;
@@ -3103,52 +3299,19 @@ Respond in ${language || 'English'} with JSON format:
       for (let i = 0; i < numRoutes; i++) {
         const batch = batches[i];
         try {
-          // 3. Try Optimus for optimized stop order within each batch
-          let orderedBatch = batch;
-          let totalDistance = 0;
-
-          try {
-            const optimusRes = await fetch(`${OPTIMUS_URL}/api/routes`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              signal: AbortSignal.timeout(15000),
-              body: JSON.stringify({
-                name: `${routePrefix} ${locationName} ${i + 1}`,
-                start_address: batch[0].direccion + ', ' + batch[0].ciudad + ', Canada',
-                stops: batch.slice(1).map((c: any) => c.direccion + ', ' + (c.ciudad || '') + ', Canada'),
-                return_to_start: false,
-                average_speed_kmh: averageSpeedKmh,
-              }),
-            });
-
-            if (optimusRes.ok) {
-              const optData = await optimusRes.json();
-              if (optData.stops && optData.stops.length > 0) {
-                // Optimus returns stops in optimized order with indices
-                const optimizedIndices = optData.stops.map((s: any) => s.order ?? s.order_index ?? 0);
-                const allIndices = [0, ...optimizedIndices.map((idx: number) => idx + 1)];
-                orderedBatch = allIndices.map((idx: number) => batch[Math.min(idx, batch.length - 1)]).filter(Boolean);
-              }
-              totalDistance = optData.total_distance_km || 0;
-            }
-          } catch (optimusErr) {
-            // Fallback: calculate total distance from existing order
-            console.warn(`[Optimus] batch ${i + 1} failed, using proximity order:`, optimusErr);
+          // 4. TSP optimization from user's starting point
+          let orderedBatch = tspOrder(startLat, startLng, batch);
+          // Calculate total distance: startAddress -> stop[0] -> stop[1] -> ...
+          let totalDistance = haversine(startLat, startLng, orderedBatch[0].lat, orderedBatch[0].lng);
+          for (let j = 1; j < orderedBatch.length; j++) {
+            totalDistance += haversine(
+              orderedBatch[j-1].lat, orderedBatch[j-1].lng,
+              orderedBatch[j].lat, orderedBatch[j].lng
+            );
           }
-
-          // Calculate distances between consecutive stops using Haversine as fallback
-          if (totalDistance === 0) {
-            for (let j = 1; j < orderedBatch.length; j++) {
-              totalDistance += haversine(
-                orderedBatch[j-1].lat, orderedBatch[j-1].lng,
-                orderedBatch[j].lat, orderedBatch[j].lng
-              );
-            }
-          }
-
           const estimatedTime = (totalDistance / averageSpeedKmh) * 60;
 
-          // 4. Save route to DB
+          // 5. Save route to DB
           const client = await pool.connect();
           try {
             await client.query('BEGIN');
@@ -3159,9 +3322,9 @@ Respond in ${language || 'English'} with JSON format:
                RETURNING *`,
               [
                 `${routePrefix} ${locationName} ${i + 1}/${numRoutes}`,
-                orderedBatch[0].direccion,
-                orderedBatch[0].lat,
-                orderedBatch[0].lng,
+                resolvedStartAddress,
+                startLat,
+                startLng,
                 false,
                 averageSpeedKmh,
                 Math.round(totalDistance * 10) / 10,
@@ -3171,16 +3334,16 @@ Respond in ${language || 'English'} with JSON format:
             );
             const route = routeRes.rows[0];
 
-            let prevLat = orderedBatch[0].lat;
-            let prevLng = orderedBatch[0].lng;
+            let prevLat = startLat;
+            let prevLng = startLng;
 
             for (let j = 0; j < orderedBatch.length; j++) {
               const stop = orderedBatch[j];
-              const distFromPrev = j === 0 ? 0 : haversine(prevLat, prevLng, stop.lat, stop.lng);
+              const distFromPrev = haversine(prevLat, prevLng, stop.lat, stop.lng);
               await client.query(
                 `INSERT INTO route_stops (route_id, company_id, order_index, address, lat, lng, label, distance_from_previous_km)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-                [route.id, stop.id, j, stop.direccion, stop.lat, stop.lng, stop.nombre, Math.round(distFromPrev * 100) / 100]
+                [route.id, stop.id, j + 1, stop.direccion, stop.lat, stop.lng, stop.nombre, Math.round(distFromPrev * 100) / 100]
               );
               prevLat = stop.lat;
               prevLng = stop.lng;
@@ -3692,6 +3855,41 @@ async function recalculateDistances(routeId: string) {
     } catch (error) {
       console.error('[Delete Route Error]:', error);
       res.status(500).json({ error: 'Error al eliminar ruta.' });
+    }
+  });
+
+  // ── Workflow manual trigger ───────────────────────────────────────────────────
+  app.post('/api/workflow/run-now', requireAuth, requireRole('admin'), async (_req, res) => {
+    try {
+      const { runWorkflowCycle } = await import('./server/services/workflow.service.js');
+      const result = await runWorkflowCycle(pool);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/workflow/status', requireAuth, async (_req, res) => {
+    try {
+      const { rows } = await pool.query(`
+        SELECT job, status, message, created_at
+        FROM automation_log
+        WHERE job = 'workflow_cycle'
+        ORDER BY created_at DESC
+        LIMIT 10
+      `);
+      const last = rows[0] ?? null;
+      res.json({
+        lastRun: last ? {
+          at:      last.created_at,
+          status:  last.status,
+          message: last.message,
+        } : null,
+        history: rows,
+        nextRunsUTC: ['08:00', '20:00'],
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   });
 

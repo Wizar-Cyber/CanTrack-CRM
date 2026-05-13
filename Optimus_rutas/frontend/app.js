@@ -1,82 +1,48 @@
-/* ============================================================
-   Itinéraires — frontend logic (vanilla JS)
-   API: misma origen, /api/*
-
-   Features:
-   - Settings persistidos en localStorage (home_address, units)
-   - Toggle km ↔ miles para display (cálculos siempre en km en el back)
-   - Mapa interactivo con Mapbox GL JS en el detalle
-   - Apertura de cada parada en Google Maps / Waze / Apple Maps
-   ============================================================ */
+/* Optimus Rutas — frontend logic */
 
 const API = "/api";
 const MAX_STOPS = 30;
-const STORAGE_KEY = "itineraires.settings.v1";
+const STORAGE_KEY = "optimus.settings.v3";
 const KM_TO_MI = 0.621371;
 
-// ============================== Settings (localStorage) ============================== //
+// ─── Settings ────────────────────────────────────────────────────────────────
 const Settings = {
-  _data: { home_address: "", units: "km" },
-
+  _d: { home_address: "", units: "km" },
   load() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === "object") {
-          this._data = { ...this._data, ...parsed };
-        }
-      }
-    } catch (e) {
-      console.warn("Settings: no se pudo leer localStorage", e);
-    }
-    // Validar units
-    if (!["km", "mi"].includes(this._data.units)) this._data.units = "km";
-    return this._data;
+    try { const r = localStorage.getItem(STORAGE_KEY); if (r) this._d = { ...this._d, ...JSON.parse(r) }; } catch {}
+    if (!["km","mi"].includes(this._d.units)) this._d.units = "km";
+    return this._d;
   },
-
-  save(patch) {
-    this._data = { ...this._data, ...patch };
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this._data));
-    } catch (e) {
-      console.warn("Settings: no se pudo escribir localStorage", e);
-    }
-    return this._data;
-  },
-
-  get() { return { ...this._data }; },
+  save(p) { this._d = { ...this._d, ...p }; try { localStorage.setItem(STORAGE_KEY, JSON.stringify(this._d)); } catch {} },
+  get() { return { ...this._d }; },
 };
 
-// ============================== State ============================== //
+// ─── State ───────────────────────────────────────────────────────────────────
 const state = {
   view: "list",
   filterStatus: "",
   routes: [],
   currentRoute: null,
   draftStops: [],
-  serverConfig: null,   // { mapbox_public_token, proximity_lng, proximity_lat, ... }
-  map: null,            // instancia activa de mapboxgl.Map
+  serverConfig: null,
+  map: null,
   mapMarkers: [],
 };
 
-// ============================== Helpers ============================== //
-const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => document.querySelectorAll(sel);
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
 
-function showLoader(text = "Chargement...") {
-  $("#loader-text").textContent = text;
-  $("#loader").classList.remove("hidden");
-}
+function showLoader(t = "Cargando...") { $("#loader-text").textContent = t; $("#loader").classList.remove("hidden"); }
 function hideLoader() { $("#loader").classList.add("hidden"); }
 
 function toast(msg, kind = "") {
   const el = $("#toast");
   el.textContent = msg;
-  el.className = "toast";
-  if (kind) el.classList.add(kind);
+  el.className = "toast" + (kind ? " " + kind : "");
   el.classList.remove("hidden");
-  setTimeout(() => el.classList.add("hidden"), 3500);
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.classList.add("hidden"), 3500);
 }
 
 async function api(method, path, body) {
@@ -84,94 +50,62 @@ async function api(method, path, body) {
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(API + path, opts);
   if (!res.ok) {
-    let payload;
-    try { payload = await res.json(); } catch { payload = { message: res.statusText }; }
-    const err = new Error(payload.message || "Erreur");
-    err.code = payload.code;
-    err.details = payload.details;
-    err.status = res.status;
-    throw err;
+    let p; try { p = await res.json(); } catch { p = { message: res.statusText }; }
+    const err = new Error(p.message || "Error"); err.code = p.code; err.status = res.status; throw err;
   }
   if (res.status === 204) return null;
   return res.json();
 }
 
-function fmtDate(iso) {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleDateString("fr-CA", {
-      day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
-    });
-  } catch { return iso; }
-}
-
-// ============================== Unit conversion ============================== //
-function units() { return Settings.get().units; }
-
-function convertKm(km) {
-  if (km == null) return null;
-  return units() === "mi" ? km * KM_TO_MI : km;
-}
-function convertSpeedKmh(kmh) {
-  if (kmh == null) return null;
-  return units() === "mi" ? kmh * KM_TO_MI : kmh;
-}
-function distLabel() { return units() === "mi" ? "mi" : "km"; }
+function units() { return Settings.get().units || "km"; }
 function speedLabel() { return units() === "mi" ? "mph" : "km/h"; }
 
 function fmtDist(km) {
-  if (km == null) return "—";
-  const v = convertKm(km);
-  const u = distLabel();
-  return v < 10 ? `${v.toFixed(1)} ${u}` : `${Math.round(v)} ${u}`;
+  if (km == null || isNaN(km)) return "—";
+  if (units() === "mi") return (km * KM_TO_MI).toFixed(1) + " mi";
+  return km < 1 ? Math.round(km * 1000) + " m" : km.toFixed(1) + " km";
+}
+function fmtMin(m) {
+  if (m == null || isNaN(m)) return "—";
+  const h = Math.floor(m / 60), min = Math.round(m % 60);
+  return h === 0 ? `${min}m` : `${h}h ${min}m`;
 }
 function fmtSpeed(kmh) {
   if (kmh == null) return "—";
-  return `${Math.round(convertSpeedKmh(kmh))} ${speedLabel()}`;
+  return units() === "mi" ? (kmh * KM_TO_MI).toFixed(0) + " mph" : Math.round(kmh) + " km/h";
 }
-function fmtMin(m) {
-  if (m == null) return "—";
-  if (m < 60) return Math.round(m) + " min";
-  const h = Math.floor(m / 60), mm = Math.round(m % 60);
-  return mm ? `${h}h ${mm}` : `${h}h`;
+function fmtDate(iso) {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString("es-CA", { day: "numeric", month: "short" });
 }
-
-function statusLabel(s) {
-  return {
-    pending: "À faire",
-    in_progress: "En cours",
-    completed: "Terminée",
-    cancelled: "Annulée",
-  }[s] || s;
-}
-
-function escapeHtml(s) {
-  const div = document.createElement("div");
-  div.textContent = s ?? "";
-  return div.innerHTML;
-}
+function esc(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
 function truncate(s, n) { return s && s.length > n ? s.slice(0, n - 1) + "…" : (s || ""); }
 
-// ============================== Server config (Mapbox token) ============================== //
+function statusLabel(s) {
+  return { draft:"Borrador", pending:"Pendiente", active:"Activa", in_progress:"En progreso", paused:"Pausada", completed:"Completada", cancelled:"Cancelada" }[s] || s;
+}
+function stopStatusLabel(s) {
+  return { pending:"Pendiente", visited:"Visitada", skipped:"Omitida", failed:"Fallida" }[s] || s;
+}
+function isVirtualAddress(addr) {
+  if (!addr) return true;
+  const l = addr.toLowerCase();
+  return l.includes("virtual") || l.includes("no tiene") || l.includes("sin direcci") || addr.trim().length < 5;
+}
+
+// ─── Server config (Mapbox token) ────────────────────────────────────────────
 async function loadServerConfig() {
   if (state.serverConfig) return state.serverConfig;
-  try {
-    state.serverConfig = await api("GET", "/config");
-  } catch (e) {
-    console.warn("No se pudo cargar /api/config:", e);
-    state.serverConfig = null;
-  }
+  try { state.serverConfig = await api("GET", "/config"); }
+  catch { state.serverConfig = null; }
   return state.serverConfig;
 }
 
-// ============================== Routing (views) ============================== //
+// ─── Views ────────────────────────────────────────────────────────────────────
 function showView(name) {
   state.view = name;
   $$(".view").forEach(v => v.classList.toggle("is-active", v.id === `view-${name}`));
-  $$(".tab").forEach(t => {
-    if (t.dataset.view) t.classList.toggle("is-active", t.dataset.view === name);
-  });
-  // Limpiar mapa al salir del detalle
+  $$(".tab").forEach(t => { if (t.dataset.view) t.classList.toggle("is-active", t.dataset.view === name); });
   if (name !== "detail") destroyMap();
   if (name === "list") loadRoutes();
   if (name === "create") prefillCreateForm();
@@ -180,20 +114,12 @@ function showView(name) {
 function prefillCreateForm() {
   const home = Settings.get().home_address;
   const $start = $("#f-start");
-  const $btnHome = $("#btn-use-home");
-  if (home) {
-    if (!$start.value) {
-      $start.value = home;
-      // Geocodificar para mostrar el pill verde
-      debouncedGeocodeStart();
-    }
-    $btnHome.hidden = false;
-  } else {
-    $btnHome.hidden = true;
-  }
+  const $btn = $("#btn-use-home");
+  if (home && !$start.value) { $start.value = home; debouncedGeocodeStart(); }
+  $btn.hidden = !home;
 }
 
-// ============================== List view ============================== //
+// ─── List ──────────────────────────────────────────────────────────────────────
 async function loadRoutes() {
   const params = new URLSearchParams();
   if (state.filterStatus) params.set("status", state.filterStatus);
@@ -203,8 +129,7 @@ async function loadRoutes() {
     state.routes = data.items;
     renderRoutes();
   } catch (err) {
-    toast("Erreur de chargement", "error");
-    console.error(err);
+    toast("Error al cargar las rutas", "error");
   }
 }
 
@@ -220,102 +145,96 @@ function renderRoutes() {
   empty.classList.add("hidden");
 
   for (const r of state.routes) {
+    const visited = r.completed_stops_count || 0;
+    const total = r.stops_count || 0;
+    const pct = total > 0 ? Math.round((visited / total) * 100) : 0;
+
     const card = document.createElement("article");
     card.className = "route-card";
     card.dataset.id = r.id;
     card.innerHTML = `
       <div class="route-card-head">
-        <h2 class="route-card-title">${escapeHtml(r.name)}</h2>
+        <h2 class="route-card-title">${esc(r.name)}</h2>
         <span class="pill pill-${r.status}">${statusLabel(r.status)}</span>
       </div>
-      <p class="route-card-meta">${fmtDate(r.created_at)} · départ ${escapeHtml(truncate(r.start_address, 40))}</p>
+      <p class="route-card-meta">${fmtDate(r.created_at)} · ${esc(truncate(r.start_address, 38))}</p>
       <div class="route-stats">
-        <div><span class="stat-label">Arrêts</span><span class="stat-value">${r.completed_stops_count}/${r.stops_count}</span></div>
-        <div><span class="stat-label">Distance</span><span class="stat-value">${fmtDist(r.total_distance_km)}</span></div>
-        <div><span class="stat-label">Durée</span><span class="stat-value">${fmtMin(r.estimated_time_minutes)}</span></div>
+        <div class="route-stat">
+          <span class="stat-label">Paradas</span>
+          <span class="stat-value">${visited}/${total}</span>
+        </div>
+        <div class="route-stat">
+          <span class="stat-label">Distancia</span>
+          <span class="stat-value">${fmtDist(r.total_distance_km)}</span>
+        </div>
+        <div class="route-stat">
+          <span class="stat-label">Duración</span>
+          <span class="stat-value">${fmtMin(r.estimated_time_minutes)}</span>
+        </div>
       </div>
+      ${total > 0 ? `
+        <div class="route-progress" title="${pct}% completada">
+          <div class="route-progress-bar" style="width:${pct}%"></div>
+        </div>
+      ` : ""}
     `;
     card.addEventListener("click", () => openDetail(r.id));
     list.appendChild(card);
   }
 }
 
-// ============================== Create view ============================== //
+// ─── Create form ──────────────────────────────────────────────────────────────
 function bindCreateView() {
-  const stopInput = $("#f-stop");
-  $("#btn-add-stop").addEventListener("click", () => addDraftStop(stopInput.value));
-  stopInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      addDraftStop(stopInput.value);
-    }
-  });
-
+  $("#btn-add-stop").addEventListener("click", () => addDraftStop($("#f-stop").value));
+  $("#f-stop").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); addDraftStop($("#f-stop").value); } });
   $("#f-start").addEventListener("blur", debouncedGeocodeStart);
-
   $("#btn-use-home").addEventListener("click", () => {
     const home = Settings.get().home_address;
-    if (home) {
-      $("#f-start").value = home;
-      debouncedGeocodeStart();
-    }
+    if (home) { $("#f-start").value = home; debouncedGeocodeStart(); }
   });
-
   $("#form-create").addEventListener("submit", onSubmitCreate);
 }
 
-let _geocodeStartTimer = null;
+let _geocodeTimer = null;
 function debouncedGeocodeStart() {
-  clearTimeout(_geocodeStartTimer);
+  clearTimeout(_geocodeTimer);
   const v = $("#f-start").value.trim();
   if (v.length < 5) return;
   setStatusPill("status-start", "loading", "...");
-  _geocodeStartTimer = setTimeout(async () => {
+  _geocodeTimer = setTimeout(async () => {
     const r = await tryGeocode(v);
-    paintStatusFromResult("status-start", r);
-  }, 300);
+    paintGeoStatus("status-start", r);
+  }, 400);
 }
 
-async function tryGeocode(address) {
-  try {
-    return await api("POST", "/geocode", { address });
-  } catch (err) {
-    return { status: "error", message: err.message };
-  }
+async function tryGeocode(addr) {
+  try { return await api("POST", "/geocode", { address: addr }); }
+  catch (e) { return { status: "error" }; }
 }
 
 function setStatusPill(id, kind, text) {
   const el = document.getElementById(id);
-  el.className = "status-pill " + kind;
+  if (!el) return;
+  el.className = "status-pill" + (kind ? " " + kind : "");
   el.textContent = text;
 }
-
-function paintStatusFromResult(pillId, result) {
-  if (!result) return setStatusPill(pillId, "", "");
-  switch (result.status) {
-    case "ok":             return setStatusPill(pillId, "ok",   "✓ localisée");
-    case "ambiguous":      return setStatusPill(pillId, "warn", "⚠ ambigüe");
-    case "out_of_region":  return setStatusPill(pillId, "error","✗ hors Québec");
-    case "not_found":      return setStatusPill(pillId, "error","✗ introuvable");
-    default:               return setStatusPill(pillId, "error","✗ erreur");
-  }
+function paintGeoStatus(pillId, r) {
+  if (!r) return setStatusPill(pillId, "", "");
+  const map = { ok: ["ok","✓ OK"], ambiguous: ["warn","⚠ Ambigua"], out_of_region: ["error","✗ Región"], not_found: ["error","✗ No encontrada"] };
+  const [kind, text] = map[r.status] || ["error","✗ Error"];
+  setStatusPill(pillId, kind, text);
 }
 
-async function addDraftStop(rawAddress) {
-  const address = (rawAddress || "").trim();
-  if (address.length < 5) { toast("Adresse trop courte", "warn"); return; }
-  if (state.draftStops.length >= MAX_STOPS) { toast(`Maximum ${MAX_STOPS} arrêts`, "warn"); return; }
-
-  const item = { address, status: "loading", meta: null };
+async function addDraftStop(rawAddr) {
+  const addr = (rawAddr || "").trim();
+  if (addr.length < 5) { toast("Dirección muy corta", "warn"); return; }
+  if (state.draftStops.length >= MAX_STOPS) { toast(`Máximo ${MAX_STOPS} paradas`, "warn"); return; }
+  const item = { address: addr, status: "loading", meta: null };
   state.draftStops.push(item);
   renderDraftStops();
   $("#f-stop").value = "";
-
-  const res = await tryGeocode(address);
-  item.status = res.status === "ok" ? "ok" :
-                res.status === "ambiguous" ? "warn" :
-                res.status === "out_of_region" ? "error" :
-                res.status === "not_found" ? "error" : "error";
+  const res = await tryGeocode(addr);
+  item.status = { ok:"ok", ambiguous:"warn" }[res?.status] || "error";
   item.meta = res;
   renderDraftStops();
 }
@@ -325,17 +244,14 @@ function renderDraftStops() {
   list.innerHTML = "";
   state.draftStops.forEach((s, i) => {
     const li = document.createElement("li");
-    const icon = { ok: "✓", warn: "⚠", error: "✗", loading: "..." }[s.status] || "";
+    const icon = { ok:"✓", warn:"⚠", error:"✗", loading:"…" }[s.status] || "";
     li.innerHTML = `
       <span class="stop-num">${i + 1}.</span>
-      <span class="stop-text">${escapeHtml(s.address)}</span>
-      <span class="stop-status ${s.status}" title="${s.meta?.status || ''}">${icon}</span>
-      <button class="stop-remove" data-i="${i}" type="button" aria-label="Retirer">×</button>
+      <span class="stop-text">${esc(s.address)}</span>
+      <span class="stop-status ${s.status}">${icon}</span>
+      <button class="stop-remove" data-i="${i}" type="button" aria-label="Eliminar">×</button>
     `;
-    li.querySelector(".stop-remove").addEventListener("click", () => {
-      state.draftStops.splice(i, 1);
-      renderDraftStops();
-    });
+    li.querySelector(".stop-remove").addEventListener("click", () => { state.draftStops.splice(i, 1); renderDraftStops(); });
     list.appendChild(li);
   });
   $("#stops-count").textContent = `(${state.draftStops.length}/${MAX_STOPS})`;
@@ -344,34 +260,26 @@ function renderDraftStops() {
 async function onSubmitCreate(e) {
   e.preventDefault();
   $("#form-error").classList.add("hidden");
-
   const name = $("#f-name").value.trim();
   const start_address = $("#f-start").value.trim();
   const stops = state.draftStops.map(s => s.address);
   const return_to_start = $("#f-return").checked;
-  // Speed: el input está en la unidad activa. Convertir SIEMPRE a km/h para el back.
   const speedRaw = parseFloat($("#f-speed").value) || 30;
   const average_speed_kmh = units() === "mi" ? speedRaw / KM_TO_MI : speedRaw;
   const notes = $("#f-notes").value.trim() || null;
 
   if (!name || !start_address || stops.length === 0) {
-    showFormError("Remplissez le nom, l'adresse de départ et au moins un arrêt.");
+    showFormError("Completa el nombre, la dirección de salida y al menos una parada.");
     return;
   }
-
   const bad = state.draftStops.filter(s => s.status === "error");
-  if (bad.length) {
-    if (!confirm(`${bad.length} arrêt(s) n'ont pas pu être validés. Continuer quand même ?`)) return;
-  }
+  if (bad.length && !confirm(`${bad.length} parada(s) no se pudieron validar. ¿Continuar?`)) return;
 
   $("#btn-submit").disabled = true;
-  showLoader("Optimisation de la route...");
-
+  showLoader("Optimizando ruta...");
   try {
-    const created = await api("POST", "/routes", {
-      name, start_address, stops, return_to_start, average_speed_kmh, notes,
-    });
-    toast("Route créée et optimisée", "");
+    const created = await api("POST", "/routes", { name, start_address, stops, return_to_start, average_speed_kmh, notes });
+    toast("Ruta creada y optimizada ✓");
     state.draftStops = [];
     e.target.reset();
     renderDraftStops();
@@ -379,15 +287,7 @@ async function onSubmitCreate(e) {
     showView("list");
     setTimeout(() => openDetail(created.id), 200);
   } catch (err) {
-    if (err.code === "geocoding_ambiguous") {
-      showFormError(`Une adresse est ambiguë. Précisez-la et réessayez. ${err.message}`);
-    } else if (err.code === "geocoding_out_of_region") {
-      showFormError(`Une adresse est hors du Québec. ${err.message}`);
-    } else if (err.code === "geocoding_failed") {
-      showFormError(`Une adresse n'a pas pu être géocodée. ${err.message}`);
-    } else {
-      showFormError(err.message || "Erreur inconnue");
-    }
+    showFormError(err.message || "Error desconocido");
   } finally {
     hideLoader();
     $("#btn-submit").disabled = false;
@@ -396,19 +296,19 @@ async function onSubmitCreate(e) {
 
 function showFormError(msg) {
   const el = $("#form-error");
-  el.textContent = msg;
+  el.innerHTML = `<span>⚠</span> ${esc(msg)}`;
   el.classList.remove("hidden");
 }
 
-// ============================== Detail view ============================== //
+// ─── Detail ───────────────────────────────────────────────────────────────────
 async function openDetail(id) {
   showView("detail");
-  $("#detail-content").innerHTML = '<p style="opacity:.5;text-align:center;padding:40px">Chargement...</p>';
+  $("#detail-content").innerHTML = `<div style="text-align:center;padding:48px 0;color:var(--text-3);font-size:14px">Cargando ruta...</div>`;
   try {
     state.currentRoute = await api("GET", `/routes/${id}`);
     renderDetail();
   } catch (err) {
-    $("#detail-content").innerHTML = `<p>Erreur: ${escapeHtml(err.message)}</p>`;
+    $("#detail-content").innerHTML = `<div style="color:var(--danger);padding:20px;font-size:14px">Error: ${esc(err.message)}</div>`;
   }
 }
 
@@ -416,32 +316,54 @@ function renderDetail() {
   const r = state.currentRoute;
   if (!r) return;
 
-  const visited = r.stops.filter(s => s.status === "visited").length;
-  const total = r.stops.length;
+  const visited  = r.stops.filter(s => s.status === "visited").length;
+  const skipped  = r.stops.filter(s => s.status === "skipped").length;
+  const failed   = r.stops.filter(s => s.status === "failed").length;
+  const total    = r.stops.length;
+  const done     = visited + skipped + failed;
+  const pct      = total > 0 ? Math.round((done / total) * 100) : 0;
 
-  let actions = "";
-  if (r.status === "pending") {
-    actions = `
-      <div class="detail-actions">
-        <button class="btn-primary" id="btn-start">Démarrer</button>
-        <button class="btn-secondary" id="btn-maps">Itinéraire complet</button>
+  const isPending  = ["pending","draft"].includes(r.status);
+  const isActive   = ["in_progress","active"].includes(r.status);
+  const isPaused   = r.status === "paused";
+  const isFinished = ["completed","cancelled"].includes(r.status);
+
+  // Action buttons
+  let actionBtns = "";
+  if (isPending) {
+    actionBtns = `
+      <div class="detail-actions has-2">
+        <button class="btn-primary" id="btn-start" style="grid-column:span 1">
+          <span>▶</span> Iniciar ruta
+        </button>
+        <button class="btn-secondary" id="btn-maps">🗺 Ver mapa</button>
       </div>
-      <div class="detail-actions single">
-        <button class="btn-secondary" id="btn-cancel" style="border-color:var(--danger);color:var(--danger)">Annuler</button>
+      <div class="detail-actions has-1">
+        <button class="btn-danger" id="btn-cancel">Cancelar ruta</button>
       </div>
     `;
-  } else if (r.status === "in_progress") {
-    actions = `
-      <div class="detail-actions">
-        <button class="btn-secondary" id="btn-pause">Pause</button>
-        <button class="btn-secondary" id="btn-maps">Itinéraire</button>
-        <button class="btn-primary" id="btn-complete">Terminer</button>
+  } else if (isActive) {
+    actionBtns = `
+      <div class="detail-actions has-3">
+        <button class="btn-secondary" id="btn-pause">⏸ Pausar</button>
+        <button class="btn-secondary" id="btn-maps">🗺 Mapa</button>
+        <button class="btn-primary"   id="btn-complete">✓ Finalizar</button>
+      </div>
+    `;
+  } else if (isPaused) {
+    actionBtns = `
+      <div class="detail-actions has-2">
+        <button class="btn-primary"  id="btn-resume">▶ Reanudar</button>
+        <button class="btn-secondary" id="btn-maps">🗺 Mapa</button>
+      </div>
+      <div class="detail-actions has-1">
+        <button class="btn-danger" id="btn-cancel">Cancelar ruta</button>
       </div>
     `;
   } else {
-    actions = `
-      <div class="detail-actions single">
-        <button class="btn-secondary" id="btn-maps">Voir l'itinéraire</button>
+    actionBtns = `
+      <div class="detail-actions has-1">
+        <button class="btn-secondary" id="btn-maps">🗺 Ver itinerario completo</button>
       </div>
     `;
   }
@@ -449,168 +371,220 @@ function renderDetail() {
   const stopsHtml = r.stops.map(s => stopHtml(s, r.status)).join("");
 
   $("#detail-content").innerHTML = `
-    <div class="detail-head">
+    <div class="detail-header">
       <span class="pill pill-${r.status}">${statusLabel(r.status)}</span>
-      <h1 class="detail-title">${escapeHtml(r.name)}</h1>
-      <div class="detail-meta">${fmtDate(r.created_at)} · ${visited}/${total} arrêts visités</div>
+      <h1 class="detail-title">${esc(r.name)}</h1>
+      <p class="detail-meta">Creada ${fmtDate(r.created_at)} · Salida: ${esc(truncate(r.start_address, 42))}</p>
     </div>
 
     <div class="map-container">
       <div id="map"></div>
       <div class="map-fallback hidden" id="map-fallback">
-        <span class="map-fallback-icon">⌖</span>
-        <span id="map-fallback-msg">Carte indisponible</span>
+        <div class="map-fallback-icon">🗺</div>
+        <span id="map-fallback-msg">Mapa no disponible</span>
       </div>
     </div>
 
-    <div class="detail-stats">
-      <div><span class="stat-label">Distance</span><span class="stat-value">${fmtDist(r.total_distance_km)}</span></div>
-      <div><span class="stat-label">Durée est.</span><span class="stat-value">${fmtMin(r.estimated_time_minutes)}</span></div>
-      <div><span class="stat-label">Vitesse</span><span class="stat-value">${fmtSpeed(r.average_speed_kmh)}</span></div>
+    <div class="detail-progress-section">
+      <div class="detail-progress-row">
+        <span class="detail-progress-label">Progreso</span>
+        <span class="detail-progress-count">${done} de ${total} paradas · ${pct}%</span>
+      </div>
+      <div class="detail-progress-bar-track">
+        <div class="detail-progress-bar-fill" style="width:${pct}%"></div>
+      </div>
+      ${done > 0 ? `
+        <div style="display:flex;gap:12px;margin-top:8px;font-size:11px;color:var(--text-3)">
+          ${visited > 0  ? `<span style="color:var(--success)">✓ ${visited} visitada${visited!==1?"s":""}</span>` : ""}
+          ${skipped > 0  ? `<span style="color:var(--warning)">⤳ ${skipped} omitida${skipped!==1?"s":""}</span>` : ""}
+          ${failed > 0   ? `<span style="color:var(--danger)">✗ ${failed} fallida${failed!==1?"s":""}</span>` : ""}
+        </div>
+      ` : ""}
     </div>
 
-    ${actions}
+    <div class="detail-stats">
+      <div class="detail-stat">
+        <span class="stat-label">Distancia</span>
+        <span class="stat-value">${fmtDist(r.total_distance_km)}</span>
+      </div>
+      <div class="detail-stat">
+        <span class="stat-label">Duración est.</span>
+        <span class="stat-value">${fmtMin(r.estimated_time_minutes)}</span>
+      </div>
+      <div class="detail-stat">
+        <span class="stat-label">Velocidad</span>
+        <span class="stat-value">${fmtSpeed(r.average_speed_kmh)}</span>
+      </div>
+    </div>
 
-    ${r.notes ? `<p style="font-style:italic;color:var(--ink-soft);background:var(--paper-2);padding:12px 14px;border-left:3px solid var(--accent);border-radius:4px;font-size:14px">${escapeHtml(r.notes)}</p>` : ""}
+    ${actionBtns}
 
-    <h3 style="font-family:var(--font-display);font-size:22px;font-weight:600;margin:24px 0 6px">Itinéraire</h3>
-    <p style="font-family:var(--font-mono);font-size:11px;color:var(--ink-mute);margin:0 0 14px;text-transform:uppercase;letter-spacing:.08em">Départ → ${escapeHtml(truncate(r.start_address, 40))}</p>
+    ${r.notes ? `<div style="background:var(--surface);border:1.5px solid var(--border);border-left:3px solid var(--accent);border-radius:var(--r-lg);padding:12px 14px;font-size:13px;color:var(--text-2);margin-bottom:16px;font-style:italic">${esc(r.notes)}</div>` : ""}
+
+    <p class="stops-section-title">Paradas · ${total}</p>
     <ol class="stops-display">${stopsHtml}</ol>
   `;
 
   bindDetailActions(r);
-  // Inicializar mapa async
   renderMap(r);
 }
 
 function stopHtml(s, routeStatus) {
-  const cls = `stop-item is-${s.status}`;
-  const canAct = routeStatus === "in_progress" && s.status === "pending";
+  const isActive = ["in_progress","active"].includes(routeStatus);
+  const canAct   = isActive && s.status === "pending";
+  const canReset = isActive && ["visited","skipped","failed"].includes(s.status);
+  const virtual  = isVirtualAddress(s.address);
+
+  const navRow = virtual
+    ? `<span class="stop-virtual-badge">Sin dirección física</span>`
+    : `<div class="stop-nav-row">
+        <button class="nav-btn" onclick="openNav('google',${s.lat},${s.lng})" type="button">
+          <span class="nav-icon google">G</span> Maps
+        </button>
+        <button class="nav-btn" onclick="openNav('waze',${s.lat},${s.lng})" type="button">
+          <span class="nav-icon waze">W</span> Waze
+        </button>
+        <button class="nav-btn" onclick="openNav('apple',${s.lat},${s.lng})" type="button">
+          <span class="nav-icon apple">A</span> Apple
+        </button>
+      </div>`;
+
+  const actRow = (canAct || canReset) ? `
+    <div class="stop-actions-row">
+      ${canAct ? `
+        <button class="stop-act-btn visit" data-action="visited">
+          <span class="act-icon">✓</span> Visitada
+        </button>
+        <button class="stop-act-btn skip" data-action="skipped">
+          <span class="act-icon">⤳</span> Omitida
+        </button>
+        <button class="stop-act-btn fail" data-action="failed">
+          <span class="act-icon">✗</span> Fallida
+        </button>
+      ` : `
+        <button class="stop-act-btn reset" data-action="pending">
+          <span class="act-icon">↺</span> Restablecer
+        </button>
+      `}
+    </div>
+  ` : "";
+
   return `
-    <li class="${cls}" data-stop-id="${s.id}">
-      <div class="stop-order">${s.order}</div>
-      <div class="stop-body">
-        <p class="stop-name">${escapeHtml(s.address)}</p>
-        <span class="stop-distance">${fmtDist(s.distance_from_previous_km)} depuis l'arrêt précédent</span>
-        ${s.notes ? `<p style="font-size:12px;color:var(--ink-mute);margin:4px 0 0;font-style:italic">${escapeHtml(s.notes)}</p>` : ""}
-        <div class="stop-nav-row">
-          <a class="nav-btn google" href="${navUrl('google', s.lat, s.lng, s.address)}" target="_blank" rel="noopener" aria-label="Google Maps"><span class="nav-btn-icon">G</span> Maps</a>
-          <a class="nav-btn waze"   href="${navUrl('waze',   s.lat, s.lng, s.address)}" target="_blank" rel="noopener" aria-label="Waze"><span class="nav-btn-icon">W</span> Waze</a>
-          <a class="nav-btn apple"  href="${navUrl('apple',  s.lat, s.lng, s.address)}" target="_blank" rel="noopener" aria-label="Apple Maps"><span class="nav-btn-icon">⌘</span> Apple</a>
+    <li class="stop-item is-${s.status}" data-stop-id="${s.id}">
+      <div class="stop-main">
+        <div class="stop-num-badge">${s.order || "—"}</div>
+        <div class="stop-body">
+          ${s.label ? `<p class="stop-label">${esc(s.label)}</p>` : ""}
+          <p class="stop-address">${esc(s.address)}</p>
+          <div class="stop-meta-row">
+            <span class="stop-distance">${fmtDist(s.distance_from_previous_km)} desde anterior</span>
+            <span class="stop-status-tag is-${s.status}">${stopStatusLabel(s.status)}</span>
+          </div>
+          ${navRow}
         </div>
       </div>
-      <div class="stop-actions">
-        <button class="stop-action visit" data-action="visited" ${canAct ? "" : "disabled"} aria-label="Visité">✓</button>
-        <button class="stop-action skip"  data-action="skipped" ${canAct ? "" : "disabled"} aria-label="Sauté">⤳</button>
-      </div>
+      ${actRow}
     </li>
   `;
 }
 
 function bindDetailActions(r) {
-  const start = $("#btn-start");
-  if (start) start.addEventListener("click", () => updateRouteStatus("in_progress"));
-  const pause = $("#btn-pause");
-  if (pause) pause.addEventListener("click", () => updateRouteStatus("pending"));
-  const complete = $("#btn-complete");
-  if (complete) complete.addEventListener("click", () => {
-    if (confirm("Terminer la route ? Les arrêts non visités seront marqués sautés.")) {
-      updateRouteStatus("completed");
-    }
-  });
-  const cancel = $("#btn-cancel");
-  if (cancel) cancel.addEventListener("click", () => {
-    if (confirm("Annuler cette route ?")) updateRouteStatus("cancelled");
-  });
-  const maps = $("#btn-maps");
-  if (maps) maps.addEventListener("click", () => openFullRouteInMaps(r));
+  const on = (id, fn) => { const el = $(id); if (el) el.addEventListener("click", fn); };
+  on("#btn-start",    () => updateRouteStatus("in_progress"));
+  on("#btn-resume",   () => updateRouteStatus("in_progress"));
+  on("#btn-pause",    () => updateRouteStatus("paused"));
+  on("#btn-complete", () => { if (confirm("¿Finalizar la ruta? Las paradas pendientes quedarán omitidas.")) updateRouteStatus("completed"); });
+  on("#btn-cancel",   () => { if (confirm("¿Cancelar esta ruta?")) updateRouteStatus("cancelled"); });
+  on("#btn-maps",     () => openFullRouteInMaps(r));
 
-  $$(".stop-action").forEach(btn => {
-    btn.addEventListener("click", (e) => {
+  $$(".stop-act-btn").forEach(btn => {
+    btn.addEventListener("click", e => {
       const li = e.currentTarget.closest("[data-stop-id]");
-      const stopId = li.dataset.stopId;
-      const action = e.currentTarget.dataset.action;
-      updateStop(stopId, action);
+      updateStop(li.dataset.stopId, e.currentTarget.dataset.action);
     });
   });
 }
 
 async function updateRouteStatus(status) {
-  showLoader("Mise à jour...");
+  showLoader("Actualizando...");
   try {
     state.currentRoute = await api("PATCH", `/routes/${state.currentRoute.id}/status`, { status });
     renderDetail();
-    toast("Mis à jour");
+    toast("Estado actualizado");
   } catch (err) {
     toast(err.message, "error");
-  } finally {
-    hideLoader();
-  }
+  } finally { hideLoader(); }
 }
 
 async function updateStop(stopId, status) {
   try {
-    state.currentRoute = await api(
-      "PATCH",
-      `/routes/${state.currentRoute.id}/stops/${stopId}`,
-      { status }
-    );
+    state.currentRoute = await api("PATCH", `/routes/${state.currentRoute.id}/stops/${stopId}`, { status });
     renderDetail();
-  } catch (err) {
-    toast(err.message, "error");
-  }
+    renderMap(state.currentRoute);
+  } catch (err) { toast(err.message, "error"); }
 }
 
-// ============================== Deep links Google / Waze / Apple ============================== //
-function navUrl(provider, lat, lng, address) {
+// ─── Navigation deep links ────────────────────────────────────────────────────
+function openNav(provider, lat, lng) {
+  if (!lat || !lng) { toast("Esta parada no tiene coordenadas", "warn"); return; }
   const ll = `${lat},${lng}`;
-  const q = encodeURIComponent(address || ll);
-  switch (provider) {
-    case "google":
-      // Funciona en web y app de Google Maps en cualquier plataforma
-      return `https://www.google.com/maps/dir/?api=1&destination=${ll}&travelmode=driving`;
-    case "waze":
-      // Waze deep-link universal: abre la app si está instalada, web si no
-      return `https://waze.com/ul?ll=${ll}&navigate=yes`;
-    case "apple":
-      return `https://maps.apple.com/?daddr=${ll}&q=${q}`;
-    default:
-      return "#";
+  const ua = navigator.userAgent;
+  const isIOS     = /iPhone|iPad|iPod/.test(ua);
+  const isAndroid = /Android/.test(ua);
+  const isMobile  = isIOS || isAndroid;
+
+  let appUrl, webUrl;
+
+  if (provider === 'google') {
+    webUrl = `https://www.google.com/maps/dir/?api=1&destination=${ll}&travelmode=driving`;
+    appUrl = isIOS     ? `comgooglemaps://?daddr=${ll}&directionsmode=driving`
+           : isAndroid ? `intent://maps.google.com/maps?daddr=${ll}#Intent;scheme=https;package=com.google.android.apps.maps;end`
+           : null;
+  } else if (provider === 'waze') {
+    webUrl = `https://waze.com/ul?ll=${ll}&navigate=yes&zoom=17`;
+    appUrl = (isIOS || isAndroid) ? `waze://ul?ll=${ll}&navigate=yes` : null;
+  } else if (provider === 'apple') {
+    webUrl = `https://maps.apple.com/?daddr=${ll}`;
+    appUrl = isIOS ? `maps://?daddr=${ll}&dirflg=d` : null;
+  }
+
+  if (appUrl) {
+    // Try native app; if not installed fall back to web after 1.5s
+    let opened = false;
+    const fallback = setTimeout(() => {
+      if (!opened) window.open(webUrl, '_blank', 'noopener');
+    }, 1500);
+    document.addEventListener('visibilitychange', function h() {
+      if (document.hidden) { opened = true; clearTimeout(fallback); }
+      document.removeEventListener('visibilitychange', h);
+    });
+    window.location.href = appUrl;
+  } else {
+    window.open(webUrl, '_blank', 'noopener');
   }
 }
 
 function openFullRouteInMaps(route) {
-  // Ruta completa con waypoints. Apple Maps en iOS, Google Maps en el resto.
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-  const wp = route.stops.map(s => `${s.lat},${s.lng}`);
+  const stops = route.stops.filter(s => s.lat && s.lng && !isVirtualAddress(s.address));
   const start = `${route.start_lat},${route.start_lng}`;
-
+  if (!stops.length) { toast("Sin paradas con dirección física", "warn"); return; }
   if (isIOS) {
-    const dest = wp.length ? wp[wp.length - 1] : start;
-    window.open(`https://maps.apple.com/?saddr=${start}&daddr=${dest}`, "_blank");
+    window.location.href = `maps://?saddr=${start}&daddr=${stops[stops.length-1].lat},${stops[stops.length-1].lng}&dirflg=d`;
   } else {
-    const params = new URLSearchParams({
-      api: "1",
-      origin: start,
-      destination: wp.length ? wp[wp.length - 1] : start,
-      travelmode: "driving",
-    });
-    if (wp.length > 1) {
-      params.set("waypoints", wp.slice(0, -1).join("|"));
-    }
-    window.open(`https://www.google.com/maps/dir/?${params.toString()}`, "_blank");
+    const wp = stops.map(s => `${s.lat},${s.lng}`);
+    const dest = wp.pop();
+    const params = new URLSearchParams({ api:"1", origin: start, destination: dest, travelmode:"driving" });
+    if (wp.length > 0) params.set("waypoints", wp.slice(0, 8).join("|"));
+    window.location.href = `https://www.google.com/maps/dir/?${params}`;
   }
 }
 
-// ============================== Mapbox GL JS map ============================== //
+// ─── Mapbox GL ────────────────────────────────────────────────────────────────
 function destroyMap() {
-  if (state.map) {
-    try { state.map.remove(); } catch {}
-    state.map = null;
-  }
+  if (state.map) { try { state.map.remove(); } catch {} state.map = null; }
   state.mapMarkers = [];
 }
-
 function showMapFallback(msg) {
   const fb = document.getElementById("map-fallback");
   const m = document.getElementById("map-fallback-msg");
@@ -622,13 +596,11 @@ let _mapboxLoading = null;
 async function ensureMapboxLoaded() {
   if (window.mapboxgl) return true;
   if (_mapboxLoading) return _mapboxLoading;
-
-  _mapboxLoading = new Promise((resolve) => {
+  _mapboxLoading = new Promise(resolve => {
     const css = document.createElement("link");
     css.rel = "stylesheet";
     css.href = "https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.css";
     document.head.appendChild(css);
-
     const script = document.createElement("script");
     script.src = "https://api.mapbox.com/mapbox-gl-js/v3.7.0/mapbox-gl.js";
     script.onload = () => resolve(true);
@@ -641,40 +613,26 @@ async function ensureMapboxLoaded() {
 async function renderMap(route) {
   destroyMap();
   await loadServerConfig();
-
   const cfg = state.serverConfig;
-  if (!cfg || !cfg.mapbox_public_token) {
-    showMapFallback("Configurez MAPBOX_PUBLIC_TOKEN pour afficher la carte");
-    return;
-  }
-
+  if (!cfg?.mapbox_public_token) { showMapFallback("Configura MAPBOX_PUBLIC_TOKEN para el mapa"); return; }
   const ok = await ensureMapboxLoaded();
-  if (!ok || !window.mapboxgl) {
-    showMapFallback("Impossible de charger la bibliothèque cartographique");
-    return;
-  }
-
-  // Validar que tenemos coordenadas
-  if (route.start_lat == null || route.start_lng == null) {
-    showMapFallback("Coordonnées de départ manquantes");
-    return;
-  }
+  if (!ok || !window.mapboxgl) { showMapFallback("No se pudo cargar Mapbox"); return; }
+  if (route.start_lat == null) { showMapFallback("Faltan coordenadas"); return; }
 
   window.mapboxgl.accessToken = cfg.mapbox_public_token;
-
   const container = document.getElementById("map");
   if (!container) return;
 
-  const startCoord = [route.start_lng, route.start_lat];
-  const stopCoords = route.stops.map(s => [s.lng, s.lat]);
-  const allCoords = [startCoord, ...stopCoords];
-  if (route.return_to_start) allCoords.push(startCoord);
+  const start = [route.start_lng, route.start_lat];
+  const stops = route.stops.filter(s => s.lat != null && s.lng != null).map(s => [s.lng, s.lat]);
+  const all = [start, ...stops];
+  if (route.return_to_start) all.push(start);
 
   const map = new window.mapboxgl.Map({
     container: "map",
     style: "mapbox://styles/mapbox/light-v11",
-    bounds: bboxOf(allCoords),
-    fitBoundsOptions: { padding: 40, maxZoom: 14 },
+    bounds: bboxOf(all),
+    fitBoundsOptions: { padding: 32, maxZoom: 14 },
     attributionControl: false,
   });
   state.map = map;
@@ -683,116 +641,71 @@ async function renderMap(route) {
   map.addControl(new window.mapboxgl.NavigationControl({ showCompass: false }), "top-right");
 
   map.on("load", () => {
-    // Línea conectando paradas en orden
     map.addSource("route-line", {
       type: "geojson",
-      data: {
-        type: "Feature",
-        properties: {},
-        geometry: { type: "LineString", coordinates: allCoords },
-      },
+      data: { type:"Feature", properties:{}, geometry:{ type:"LineString", coordinates: all } },
     });
     map.addLayer({
-      id: "route-line",
-      type: "line",
-      source: "route-line",
-      layout: { "line-join": "round", "line-cap": "round" },
-      paint: {
-        "line-color": "#2d5a3d",
-        "line-width": 3,
-        "line-opacity": 0.85,
-        "line-dasharray": [1, 0],
-      },
+      id: "route-line", type: "line", source: "route-line",
+      layout: { "line-join":"round", "line-cap":"round" },
+      paint: { "line-color":"#65a30d", "line-width":3, "line-opacity":0.8 },
     });
-
-    // Marker de inicio (negro, con etiqueta)
-    addCustomMarker(map, startCoord, "MAISON", "start", route.start_address);
-
-    // Markers numerados de paradas
-    route.stops.forEach((s) => {
-      const cls = s.status === "visited" ? "visited" :
-                  s.status === "skipped" ? "skipped" :
-                  s.status === "failed"  ? "failed"  : "";
-      addCustomMarker(map, [s.lng, s.lat], String(s.order), cls, s.address);
+    addMarker(map, start, "INICIO", "start", route.start_address);
+    route.stops.forEach(s => {
+      if (s.lat == null) return;
+      const cls = { visited:"visited", skipped:"skipped", failed:"failed" }[s.status] || "";
+      addMarker(map, [s.lng, s.lat], String(s.order || "?"), cls, s.label || s.address);
     });
   });
-
-  map.on("error", (e) => {
-    console.error("Mapbox error:", e);
-    // Si el token es inválido el mapa queda en blanco — mostrar fallback
-    showMapFallback("Erreur de la carte (token invalide?)");
-  });
+  map.on("error", () => showMapFallback("Error del mapa"));
 }
 
-function addCustomMarker(map, lngLat, label, kind, popupText) {
+function addMarker(map, lngLat, label, kind, popup) {
   const el = document.createElement("div");
   el.className = "map-marker " + (kind || "");
   el.textContent = label;
-
-  const marker = new window.mapboxgl.Marker({ element: el, anchor: "center" })
-    .setLngLat(lngLat);
-
-  if (popupText) {
-    const popup = new window.mapboxgl.Popup({ offset: 22, closeButton: false })
-      .setText(popupText);
-    marker.setPopup(popup);
-  }
-
-  marker.addTo(map);
-  state.mapMarkers.push(marker);
+  const m = new window.mapboxgl.Marker({ element: el, anchor: "center" }).setLngLat(lngLat);
+  if (popup) m.setPopup(new window.mapboxgl.Popup({ offset: 20, closeButton: false }).setText(popup));
+  m.addTo(map);
+  state.mapMarkers.push(m);
 }
 
 function bboxOf(coords) {
-  let minLng = +Infinity, minLat = +Infinity, maxLng = -Infinity, maxLat = -Infinity;
+  let [mLng, mLat, xLng, xLat] = [+Infinity, +Infinity, -Infinity, -Infinity];
   for (const [lng, lat] of coords) {
-    if (lng < minLng) minLng = lng;
-    if (lng > maxLng) maxLng = lng;
-    if (lat < minLat) minLat = lat;
-    if (lat > maxLat) maxLat = lat;
+    if (lng < mLng) mLng = lng; if (lng > xLng) xLng = lng;
+    if (lat < mLat) mLat = lat; if (lat > xLat) xLat = lat;
   }
-  return [[minLng, minLat], [maxLng, maxLat]];
+  return [[mLng, mLat], [xLng, xLat]];
 }
 
-// ============================== Settings modal ============================== //
+// ─── Settings modal ───────────────────────────────────────────────────────────
 function openSettings() {
   const s = Settings.get();
   $("#s-home").value = s.home_address || "";
   setStatusPill("status-home", "", "");
-  // Reflejar la unidad activa en el toggle del modal
-  $$(".unit-btn[data-unit-modal]").forEach(b => {
-    b.classList.toggle("is-active", b.dataset.unitModal === s.units);
-  });
+  $$(".unit-btn[data-unit-modal]").forEach(b => b.classList.toggle("is-active", b.dataset.unitModal === s.units));
   $("#settings-modal").classList.remove("hidden");
-
-  // Validar la dirección actual al abrir, si hay una
   if (s.home_address) {
     setStatusPill("status-home", "loading", "...");
-    tryGeocode(s.home_address).then(r => paintStatusFromResult("status-home", r));
+    tryGeocode(s.home_address).then(r => paintGeoStatus("status-home", r));
   }
 }
-
-function closeSettings() {
-  $("#settings-modal").classList.add("hidden");
-}
+function closeSettings() { $("#settings-modal").classList.add("hidden"); }
 
 function bindSettingsModal() {
   $("#btn-settings").addEventListener("click", openSettings);
   $$("[data-close-modal]").forEach(el => el.addEventListener("click", closeSettings));
 
-  // Validar dirección al perder foco
-  let homeTimer = null;
+  let t = null;
   $("#s-home").addEventListener("blur", () => {
-    clearTimeout(homeTimer);
+    clearTimeout(t);
     const v = $("#s-home").value.trim();
     if (v.length < 5) { setStatusPill("status-home", "", ""); return; }
     setStatusPill("status-home", "loading", "...");
-    homeTimer = setTimeout(async () => {
-      const r = await tryGeocode(v);
-      paintStatusFromResult("status-home", r);
-    }, 300);
+    t = setTimeout(async () => paintGeoStatus("status-home", await tryGeocode(v)), 400);
   });
 
-  // Toggle unidades dentro del modal
   $$(".unit-btn[data-unit-modal]").forEach(b => {
     b.addEventListener("click", () => {
       $$(".unit-btn[data-unit-modal]").forEach(x => x.classList.remove("is-active"));
@@ -802,33 +715,25 @@ function bindSettingsModal() {
 
   $("#btn-save-settings").addEventListener("click", () => {
     const home = $("#s-home").value.trim();
-    const activeUnit = document.querySelector(".unit-btn[data-unit-modal].is-active");
-    const newUnit = activeUnit ? activeUnit.dataset.unitModal : "km";
-
-    Settings.save({ home_address: home, units: newUnit });
+    const u = document.querySelector(".unit-btn[data-unit-modal].is-active")?.dataset.unitModal || "km";
+    Settings.save({ home_address: home, units: u });
     syncUnitTopbar();
+    updateSpeedFieldUnit();
     closeSettings();
-    toast("Paramètres enregistrés");
-
-    // Re-render para reflejar nueva unidad y tener el home address disponible
+    toast("Ajustes guardados ✓");
     if (state.view === "list") renderRoutes();
     else if (state.view === "detail" && state.currentRoute) renderDetail();
     else if (state.view === "create") prefillCreateForm();
-
-    updateSpeedFieldUnit();
   });
 }
 
-// ============================== Topbar unit toggle ============================== //
+// ─── Unit toggle (topbar) ─────────────────────────────────────────────────────
 function bindTopbarUnits() {
   $$(".unit-toggle .unit-btn[data-unit]").forEach(b => {
     b.addEventListener("click", () => {
       const u = b.dataset.unit;
-      $$(".unit-toggle .unit-btn[data-unit]").forEach(x =>
-        x.classList.toggle("is-active", x.dataset.unit === u));
+      $$(".unit-toggle .unit-btn[data-unit]").forEach(x => x.classList.toggle("is-active", x.dataset.unit === u));
       Settings.save({ units: u });
-
-      // Re-render lo visible
       if (state.view === "list") renderRoutes();
       else if (state.view === "detail" && state.currentRoute) renderDetail();
       updateSpeedFieldUnit();
@@ -838,36 +743,27 @@ function bindTopbarUnits() {
 
 function syncUnitTopbar() {
   const u = Settings.get().units;
-  $$(".unit-toggle .unit-btn[data-unit]").forEach(b =>
-    b.classList.toggle("is-active", b.dataset.unit === u));
+  $$(".unit-toggle .unit-btn[data-unit]").forEach(b => b.classList.toggle("is-active", b.dataset.unit === u));
 }
 
 function updateSpeedFieldUnit() {
-  const $unitLabel = document.querySelector(".speed-unit");
-  const $speed = $("#f-speed");
-  if (!$unitLabel || !$speed) return;
+  const lbl = document.querySelector(".speed-unit");
+  const spd = $("#f-speed");
+  if (!lbl || !spd) return;
   const u = units();
-  // Si el campo tiene un valor, convertir
-  const cur = parseFloat($speed.value);
-  const wasMi = $unitLabel.textContent.includes("mph");
-  const isMi  = u === "mi";
-  if (!Number.isNaN(cur) && wasMi !== isMi) {
-    if (isMi) $speed.value = (cur * KM_TO_MI).toFixed(0);
-    else      $speed.value = (cur / KM_TO_MI).toFixed(0);
+  const cur = parseFloat(spd.value);
+  const wasMi = lbl.textContent.includes("mph");
+  if (!isNaN(cur) && wasMi !== (u === "mi")) {
+    spd.value = u === "mi" ? (cur * KM_TO_MI).toFixed(0) : (cur / KM_TO_MI).toFixed(0);
   }
-  $unitLabel.textContent = `(${speedLabel()})`;
+  lbl.textContent = `(${speedLabel()})`;
 }
 
-// ============================== Bindings globales ============================== //
+// ─── Global bindings ──────────────────────────────────────────────────────────
 function bindGlobal() {
-  $$(".tab").forEach(t => {
-    t.addEventListener("click", () => {
-      if (t.dataset.view) showView(t.dataset.view);
-    });
-  });
+  $$(".tab").forEach(t => t.dataset.view && t.addEventListener("click", () => showView(t.dataset.view)));
   $("#fab-new").addEventListener("click", () => showView("create"));
   $("#btn-back").addEventListener("click", () => showView("list"));
-
   $$(".filter").forEach(f => {
     f.addEventListener("click", () => {
       $$(".filter").forEach(x => x.classList.remove("is-active"));
@@ -876,19 +772,17 @@ function bindGlobal() {
       loadRoutes();
     });
   });
-
   bindCreateView();
   bindSettingsModal();
   bindTopbarUnits();
 }
 
-// ============================== Init ============================== //
+// ─── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
   Settings.load();
   syncUnitTopbar();
   updateSpeedFieldUnit();
   bindGlobal();
   loadRoutes();
-  // Pre-cargar config en background (token de Mapbox para el mapa)
   loadServerConfig();
 });

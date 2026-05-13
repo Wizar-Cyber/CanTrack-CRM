@@ -7,7 +7,7 @@ export class UpdateProfileUseCase {
 
   async execute(userId: string, firstName: string, lastName: string): Promise<User> {
     if (!firstName?.trim() || !lastName?.trim()) {
-      throw new DomainError('Nombre y apellido requeridos.');
+      throw new DomainError('First and last name are required.');
     }
     return this.users.updateProfile(userId, firstName.trim(), lastName.trim());
   }

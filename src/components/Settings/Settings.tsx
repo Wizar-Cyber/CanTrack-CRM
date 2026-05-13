@@ -2,12 +2,21 @@ import React, { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { ProfileSettings } from './ProfileSettings';
 import { UserManagement } from './UserManagement';
-import { ExcelExport } from './ExcelExport';
-import { User, Users, Bell, FileSpreadsheet } from 'lucide-react';
+import { User, Users, Bell } from 'lucide-react';
+
+type Tab = 'profile' | 'users' | 'notifications';
 
 export const Settings: React.FC = () => {
   const { userProfile } = useAuth();
-  const [activeTab, setActiveTab] = useState<'profile' | 'users' | 'notifications' | 'excel'>('profile');
+  const [activeTab, setActiveTab] = useState<Tab>('profile');
+
+  const tabs: Array<{ id: Tab; label: string; icon: React.ReactNode; adminOnly?: boolean }> = [
+    { id: 'profile',       label: 'Profile',         icon: <User  className="w-4 h-4" /> },
+    { id: 'users',         label: 'Team Management', icon: <Users className="w-4 h-4" />, adminOnly: true },
+    { id: 'notifications', label: 'Notifications',   icon: <Bell  className="w-4 h-4" /> },
+  ];
+
+  const visibleTabs = tabs.filter(t => !t.adminOnly || userProfile?.role === 'admin');
 
   return (
     <div className="space-y-6">
@@ -16,62 +25,34 @@ export const Settings: React.FC = () => {
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="flex border-b border-slate-200">
-          <button
-            onClick={() => setActiveTab('profile')}
-            className={`flex items-center gap-2 px-6 py-4 text-sm font-medium transition-colors border-b-2 ${
-              activeTab === 'profile' ? 'border-lime-600 text-lime-700 bg-lime-50/50' : 'border-transparent text-slate-600 hover:bg-slate-50'
-            }`}
-          >
-            <User className="w-4 h-4" />
-            Profile
-          </button>
-          
-          {userProfile?.role === 'admin' && (
+        <div className="flex border-b border-slate-200 overflow-x-auto">
+          {visibleTabs.map(tab => (
             <button
-              onClick={() => setActiveTab('users')}
-              className={`flex items-center gap-2 px-6 py-4 text-sm font-medium transition-colors border-b-2 ${
-                activeTab === 'users' ? 'border-lime-600 text-lime-700 bg-lime-50/50' : 'border-transparent text-slate-600 hover:bg-slate-50'
-              }`}
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-2 px-6 py-4 text-sm font-medium transition-colors border-b-2 whitespace-nowrap
+                ${activeTab === tab.id
+                  ? 'border-lime-600 text-lime-700 bg-lime-50/50'
+                  : 'border-transparent text-slate-600 hover:bg-slate-50'}`}
             >
-              <Users className="w-4 h-4" />
-              Team Management
+              {tab.icon}
+              {tab.label}
             </button>
-          )}
-          
-          <button
-            onClick={() => setActiveTab('notifications')}
-            className={`flex items-center gap-2 px-6 py-4 text-sm font-medium transition-colors border-b-2 ${
-              activeTab === 'notifications' ? 'border-lime-600 text-lime-700 bg-lime-50/50' : 'border-transparent text-slate-600 hover:bg-slate-50'
-            }`}
-          >
-            <Bell className="w-4 h-4" />
-            Notifications
-          </button>
-
-          {userProfile?.role === 'admin' && (
-            <button
-              onClick={() => setActiveTab('excel')}
-              className={`flex items-center gap-2 px-6 py-4 text-sm font-medium transition-colors border-b-2 ${
-                activeTab === 'excel' ? 'border-lime-600 text-lime-700 bg-lime-50/50' : 'border-transparent text-slate-600 hover:bg-slate-50'
-              }`}
-            >
-              <FileSpreadsheet className="w-4 h-4" />
-              Excel Export
-            </button>
-          )}
+          ))}
         </div>
 
         <div className="p-6 bg-slate-50/50 min-h-[500px]">
           {activeTab === 'profile' && <ProfileSettings />}
+
           {activeTab === 'users' && userProfile?.role === 'admin' && <UserManagement />}
+
           {activeTab === 'notifications' && (
-            <div className="text-center text-slate-500 py-12">
+            <div className="text-center text-slate-500 py-16">
               <Bell className="w-12 h-12 mx-auto text-slate-300 mb-4" />
-              <p>Notification preferences coming soon.</p>
+              <p className="font-medium text-slate-700 mb-1">Notifications coming soon</p>
+              <p className="text-sm text-slate-400">You'll be able to configure email and in-app alerts here.</p>
             </div>
           )}
-          {activeTab === 'excel' && userProfile?.role === 'admin' && <ExcelExport />}
         </div>
       </div>
     </div>

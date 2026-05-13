@@ -157,12 +157,22 @@ function normDomain(s: string): string {
 
 // ── Autenticación Google ──────────────────────────────────────────────────────
 function getAuthClient() {
+  const credJson = process.env.GOOGLE_SERVICE_ACCOUNT_CREDENTIALS;
+  if (credJson) {
+    try {
+      return new google.auth.GoogleAuth({
+        credentials: JSON.parse(credJson),
+        scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+      });
+    } catch {
+      throw new Error('GOOGLE_SERVICE_ACCOUNT_CREDENTIALS no es JSON válido');
+    }
+  }
   const keyPath = process.env.GOOGLE_SERVICE_ACCOUNT_KEY_PATH;
-  if (!keyPath) throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY_PATH no configurado en .env');
+  if (!keyPath) throw new Error('Configura GOOGLE_SERVICE_ACCOUNT_CREDENTIALS o GOOGLE_SERVICE_ACCOUNT_KEY_PATH en .env');
   if (!fs.existsSync(keyPath)) throw new Error(`Archivo de credenciales no encontrado: ${keyPath}`);
-  const key = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
   return new google.auth.GoogleAuth({
-    credentials: key,
+    credentials: JSON.parse(fs.readFileSync(keyPath, 'utf8')),
     scopes: ['https://www.googleapis.com/auth/spreadsheets'],
   });
 }
@@ -237,6 +247,7 @@ interface CandidateCompany {
   hq_town: string;
   website: string;
   google_maps_status: string;
+  tipo: string | null;
   suggested_services: Array<{ service_id: string; service_name?: string; reasoning?: string }> | null;
   service_type_id: string | null;
 }
@@ -659,6 +670,7 @@ export async function runSheetsExport(opts: {
   dryRun?: boolean;
   spreadsheetId?: string;
   pool?: pkg.Pool;
+  hqProvince?: string;
 } = {}): Promise<SheetsExportResult> {
   const spreadsheetId = opts.spreadsheetId
     || process.env.GOOGLE_SHEETS_ID
@@ -687,28 +699,63 @@ export async function runSheetsExport(opts: {
     await buildSheetDupIndex(sheets, spreadsheetId);
 
   // 2. Consultar empresas nuevas de la BD
-  const regionSQL = companyRegionClause('c');
-  if (isRegionFilterActive()) {
-    console.log(`🍁 Filtro regional activo: ${REGION_FILTER} — solo se exportan empresas de esa provincia\n`);
+  let provinceClause: string;
+  if (opts.hqProvince) {
+    const p = opts.hqProvince.toLowerCase();
+    if (p === 'ontario') {
+      provinceClause = `(c.hq_province ILIKE 'on' OR c.hq_province ILIKE 'ontario')`;
+    } else if (p === 'quebec') {
+      provinceClause = `(c.hq_province ILIKE 'qc' OR c.hq_province ILIKE 'quebec' OR c.hq_province ILIKE 'québec')`;
+    } else {
+      provinceClause = `c.hq_province ILIKE '${p.replace(/'/g, "''")}'`;
+    }
+    console.log(`🍁 Filtrando por provincia: ${opts.hqProvince}\n`);
+  } else {
+    provinceClause = companyRegionClause('c');
+    if (isRegionFilterActive()) {
+      console.log(`🍁 Filtro regional activo: ${REGION_FILTER} — solo se exportan empresas de esa provincia\n`);
+    }
   }
 
   const { rows: companies } = await pool.query(`
-    SELECT
-      c.id, c.name, c.phone, c.contact_email,
-      c.exact_address, c.hq_province, c.hq_city,
-      c.hq_region, c.hq_town, c.website,
-      c.google_maps_status, c.enriched_at,
-      c.suggested_services,
-      (SELECT j.service_type_id FROM jobs j
-       WHERE j.company_id = c.id AND j.service_type_id IS NOT NULL
-       LIMIT 1) AS service_type_id
-    FROM companies c
-    WHERE c.sheets_exported_at IS NULL
-      AND c.enrichment_status IN ('scraped', 'db_matched', 'verified')
-      AND c.name IS NOT NULL
-      AND (c.exact_address IS NOT NULL AND TRIM(c.exact_address) <> '')
-      AND ${regionSQL}
-    ORDER BY c.enriched_at ASC NULLS LAST
+    SELECT id, name, phone, contact_email, exact_address, hq_province, hq_city,
+           hq_region, hq_town, website, google_maps_status, enriched_at,
+           suggested_services, tipo, NULL AS service_type_id
+    FROM companies
+    WHERE sheets_exported_at IS NULL
+      AND enrichment_status IN ('scraped', 'db_matched', 'verified')
+      AND name IS NOT NULL
+      AND (exact_address IS NOT NULL AND TRIM(exact_address) <> '')
+      AND ${provinceClause}
+    UNION ALL
+    SELECT oc.id, oc.nombre, oc.telefono, oc.correo,
+           oc.direccion, oc.provincia, oc.ciudad,
+           oc.region, oc.pueblo, oc.dominio_de_pagina,
+           NULL, oc.enriched_at,
+           oc.suggested_services, oc.tipo,
+           (SELECT j.service_type_id FROM jobs j
+            WHERE j.province_id = oc.id AND j.province_source = 'ontario' AND j.service_type_id IS NOT NULL
+            ORDER BY j.service_match_confidence DESC NULLS LAST LIMIT 1)
+    FROM ontario_companies oc
+    WHERE oc.sheets_exported_at IS NULL
+      AND oc.enrichment_status IN ('scraped', 'db_matched')
+      AND oc.nombre IS NOT NULL
+      AND (oc.direccion IS NOT NULL AND TRIM(oc.direccion) <> '')
+    UNION ALL
+    SELECT qc.id, qc.nombre, qc.telefono, qc.correo,
+           qc.direccion, qc.provincia, qc.ciudad,
+           qc.region, qc.pueblo, qc.dominio_de_pagina,
+           NULL, qc.enriched_at,
+           qc.suggested_services, qc.tipo,
+           (SELECT j.service_type_id FROM jobs j
+            WHERE j.province_id = qc.id AND j.province_source = 'quebec' AND j.service_type_id IS NOT NULL
+            ORDER BY j.service_match_confidence DESC NULLS LAST LIMIT 1)
+    FROM quebec_companies qc
+    WHERE qc.sheets_exported_at IS NULL
+      AND qc.enrichment_status IN ('scraped', 'db_matched')
+      AND qc.nombre IS NOT NULL
+      AND (qc.direccion IS NOT NULL AND TRIM(qc.direccion) <> '')
+    ORDER BY enriched_at ASC NULLS LAST
     LIMIT $1
   `, [limit]);
 
@@ -748,6 +795,7 @@ export async function runSheetsExport(opts: {
       hq_town: co.hq_town || '',
       website: co.website || '',
       google_maps_status: co.google_maps_status || 'unknown',
+      tipo: co.tipo || null,
       suggested_services: Array.isArray(co.suggested_services) ? co.suggested_services : [],
       service_type_id: co.service_type_id || null,
     };
@@ -797,9 +845,9 @@ export async function runSheetsExport(opts: {
       company,
       rowNumber: sheetSnapshot.lastDataRowNumber + newRows.length + 1,
       values: [
-        company.name || '',  // A: EMPRESA
-        company.phone || '', // B: TELEFONO
-        '',                  // C: TIPO
+        company.name || '',          // A: EMPRESA
+        company.phone || '',         // B: TELEFONO
+        company.tipo || '',          // C: TIPO
         company.contact_email || '', // D: CORREO
         today,               // E: Fecha
         company.exact_address || '', // F: DIRECCION
@@ -879,18 +927,32 @@ export async function runSheetsExport(opts: {
       throw explainGoogleSheetsError(error, spreadsheetId);
     }
 
-    const closedIndices = newRows.flatMap((row, index) =>
-      row.company.google_maps_status === 'closed'
-        ? [actualStartRowNumber - 1 + index]
-        : []
-    );
+    const TIPO_COLORS: Record<string, { red: number; green: number; blue: number }> = {
+      rojo:    { red: 0.96, green: 0.74, blue: 0.74 },
+      verde:   { red: 0.72, green: 0.93, blue: 0.72 },
+      naranja: { red: 0.99, green: 0.87, blue: 0.60 },
+      morado:  { red: 0.83, green: 0.72, blue: 0.93 },
+    };
 
-    if (closedIndices.length > 0) {
+    interface RowColorInfo { rowIndex: number; red: number; green: number; blue: number; }
+    const colorRows: RowColorInfo[] = [];
+    for (let i = 0; i < newRows.length; i++) {
+      const row = newRows[i];
+      const rowIndex = actualStartRowNumber - 1 + i;
+      const tipo = row.company.tipo;
+      if (tipo && TIPO_COLORS[tipo]) {
+        colorRows.push({ rowIndex, ...TIPO_COLORS[tipo] });
+      } else if (row.company.google_maps_status === 'closed') {
+        colorRows.push({ rowIndex, red: 1, green: 0.92, blue: 0.92 });
+      }
+    }
+
+    if (colorRows.length > 0) {
       try {
         await sheets.spreadsheets.batchUpdate({
           spreadsheetId,
           requestBody: {
-            requests: closedIndices.map(rowIndex => ({
+            requests: colorRows.map(({ rowIndex, red, green, blue }) => ({
               repeatCell: {
                 range: {
                   sheetId: sheetSnapshot.sheetId,
@@ -900,9 +962,7 @@ export async function runSheetsExport(opts: {
                   endColumnIndex: 16,
                 },
                 cell: {
-                  userEnteredFormat: {
-                    backgroundColor: { red: 1, green: 0.92, blue: 0.92 },
-                  },
+                  userEnteredFormat: { backgroundColor: { red, green, blue } },
                 },
                 fields: 'userEnteredFormat.backgroundColor',
               },
@@ -919,10 +979,19 @@ export async function runSheetsExport(opts: {
 
   // 4. Marcar exportadas en BD (columna sheets_exported_at)
   if (!dryRun && exportedIds.length > 0) {
+    // Try all three tables
     await pool.query(
       `UPDATE companies SET sheets_exported_at = NOW() WHERE id = ANY($1::uuid[])`,
       [exportedIds]
-    );
+    ).catch(() => {});
+    await pool.query(
+      `UPDATE ontario_companies SET sheets_exported_at = NOW() WHERE id = ANY($1::uuid[])`,
+      [exportedIds]
+    ).catch(() => {});
+    await pool.query(
+      `UPDATE quebec_companies SET sheets_exported_at = NOW() WHERE id = ANY($1::uuid[])`,
+      [exportedIds]
+    ).catch(() => {});
   }
 
   if (ownPool) await pool.end();

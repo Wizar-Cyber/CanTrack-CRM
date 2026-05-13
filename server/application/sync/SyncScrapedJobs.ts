@@ -33,8 +33,8 @@ export class SyncScrapedJobsUseCase {
       synced: linkedJobs,
       newCompanies,
       message: linkedJobs === 0
-        ? 'Todo al día — no hay vacantes sin empresa.'
-        : `${linkedJobs} vacantes sincronizadas, ${newCompanies} empresas nuevas para enriquecer.`,
+        ? 'All up to date — no unlinked vacancies.'
+        : `${linkedJobs} vacancies synced, ${newCompanies} new companies to enrich.`,
     };
   }
 

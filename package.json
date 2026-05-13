@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
@@ -42,7 +44,8 @@
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.13.1",
     "tailwind-merge": "^3.5.0",
-    "vite": "^6.2.0"
+    "vite": "^6.2.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/cookie-parser": "^1.4.10",
@@ -51,10 +54,14 @@
     "@types/helmet": "^0.0.48",
     "@types/node": "^22.14.0",
     "@types/pg": "^8.20.0",
+    "@types/supertest": "^7.2.0",
     "autoprefixer": "^10.4.21",
+    "supertest": "^7.2.2",
     "tailwindcss": "^4.1.14",
+    "testcontainers": "^11.14.0",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "vite": "^6.2.0",
+    "vitest": "^3.1.0"
   }
 }

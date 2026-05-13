@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { Layers, Loader2 } from 'lucide-react';
 
 /**
- * Pantalla de configuración inicial — solo accesible antes de que exista algún usuario.
- * POST /api/auth/setup crea el primer admin y retorna token + user.
+ * Initial setup screen — only accessible before any user exists.
+ * POST /api/auth/setup creates the first admin and returns a token + user.
  */
 export const Setup: React.FC = () => {
   const navigate = useNavigate();
@@ -79,7 +79,7 @@ export const Setup: React.FC = () => {
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-lime-500 focus:border-lime-500" />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Password (min. 8 characters)</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Password (min. 8 characters, uppercase, lowercase, number, special char)</label>
               <input type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-lime-500 focus:border-lime-500" />
             </div>

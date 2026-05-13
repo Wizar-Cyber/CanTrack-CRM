@@ -107,10 +107,10 @@ export const ProfilesList = () => {
               <div className="pt-4 border-t border-slate-100 flex justify-between items-center">
                 <div className="text-sm">
                   <span className="font-bold text-slate-900">{profile.active}</span>
-                  <span className="text-slate-500 ml-1">candidatos activos</span>
+                  <span className="text-slate-500 ml-1">active candidates</span>
                 </div>
                 <button className="text-emerald-600 hover:text-emerald-700 text-sm font-medium">
-                  Editar Reglas
+                  Edit Rules
                 </button>
               </div>
             </div>

@@ -19,7 +19,7 @@ export class ProcessNextEnrichmentUseCase {
 
   async execute(): Promise<ProcessNextResult> {
     const locked = await this.companies.lockNextPending();
-    if (!locked) return { done: true, message: 'No hay empresas pendientes.' };
+    if (!locked) return { done: true, message: 'No pending companies.' };
 
     const { id: companyId, name: companyName } = locked;
     const existing = await this.companies.findById(companyId);

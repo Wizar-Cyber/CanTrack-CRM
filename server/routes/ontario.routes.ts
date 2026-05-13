@@ -1,6 +1,7 @@
 import { Router, Response } from 'express';
 import type { Pool } from 'pg';
 import { AuthRequest, createRequireAuth, requireRole } from '../middleware/auth.middleware.js';
+import { EnrichmentService } from '../services/enrichment.service.js';
 
 const ALLOWED_ONTARIO_COLUMNS = new Set([
   'nombre',
@@ -45,22 +46,32 @@ function createCompanyImportRouter(pool: Pool, tableName: CompanyImportTable, la
       const limit = Math.min(200, Math.max(1, parseInt(String(_req.query.limit ?? '50'), 10) || 50));
       const offset = (page - 1) * limit;
       const search = String(_req.query.search ?? '').trim();
+      const work = String(_req.query.work ?? '').trim();
       const searchTerm = `%${search}%`;
+
+      const whereParts = [
+        'is_duplicate = FALSE',
+        '(nombre ILIKE $1 OR correo ILIKE $1 OR ciudad ILIKE $1)',
+      ];
+      const params: any[] = [searchTerm];
+
+      if (work) {
+        params.push(work);
+        whereParts.push(`work ILIKE $${params.length}`);
+      }
+
+      const where = whereParts.join(' AND ');
 
       // Count total
       const countResult = await pool.query(
-        `SELECT COUNT(*) as total FROM ${tableName}
-         WHERE is_duplicate = FALSE AND (nombre ILIKE $1 OR correo ILIKE $1 OR ciudad ILIKE $1)`,
-        [searchTerm]
+        `SELECT COUNT(*) as total FROM ${tableName} WHERE ${where}`,
+        params
       );
 
       // Fetch paginated
       const companiesResult = await pool.query(
-        `SELECT * FROM ${tableName}
-         WHERE is_duplicate = FALSE AND (nombre ILIKE $1 OR correo ILIKE $1 OR ciudad ILIKE $1)
-         ORDER BY created_at DESC
-         LIMIT $2 OFFSET $3`,
-        [searchTerm, limit, offset]
+        `SELECT * FROM ${tableName} WHERE ${where} ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+        [...params, limit, offset]
       );
 
       return res.json({
@@ -305,6 +316,123 @@ function createCompanyImportRouter(pool: Pool, tableName: CompanyImportTable, la
     } catch (error) {
       console.error(`[${label}/Stats Error]:`, error);
       return res.status(500).json({ error: 'Error al obtener estadísticas' });
+    }
+  });
+
+  /**
+   * GET /api/{province}/distinct-work
+   * Valores únicos de 'work' para filtro en el frontend
+   */
+  router.get('/distinct-work', requireAuth, async (_req: AuthRequest, res: Response) => {
+    try {
+      const result = await pool.query(
+        `SELECT DISTINCT work FROM ${tableName}
+         WHERE work IS NOT NULL AND TRIM(work) != '' AND is_duplicate = FALSE
+         ORDER BY work`
+      );
+      return res.json(result.rows.map(r => r.work));
+    } catch (error) {
+      return res.status(500).json({ error: 'Error al obtener valores de work' });
+    }
+  });
+
+  /**
+   * POST /api/{province}/enrich-next
+   * Enriquece la próxima empresa sin datos completos usando IA.
+   * Valida que el resultado tenga al menos email, teléfono o dirección
+   * antes de escribir en la tabla.
+   */
+  router.post('/enrich-next', requireAuth, requireRole('admin', 'editor'), async (_req: AuthRequest, res: Response) => {
+    try {
+      // Tomar empresa con datos incompletos (sin email Y sin teléfono Y sin dirección)
+      const lock = await pool.query(`
+        UPDATE ${tableName}
+        SET status = 'enriching'
+        WHERE id = (
+          SELECT id FROM ${tableName}
+          WHERE is_duplicate = FALSE
+            AND status NOT IN ('enriching', 'processed', 'deleted')
+            AND (correo IS NULL OR TRIM(correo) = '')
+            AND (telefono IS NULL OR TRIM(telefono) = '')
+            AND (direccion IS NULL OR TRIM(direccion) = '')
+          ORDER BY created_at DESC
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id, nombre
+      `);
+
+      if (lock.rows.length === 0) {
+        return res.json({ done: true, message: 'No hay empresas pendientes de enriquecimiento.' });
+      }
+
+      const { id, nombre } = lock.rows[0];
+
+      const data = await EnrichmentService.enrichCompany(nombre);
+
+      // Validar que tenga datos útiles mínimos para empresas canadienses
+      const correo    = data.contact_email?.trim() || null;
+      const telefono  = data.phone?.trim() || null;
+      const direccion = data.exact_address?.trim() || null;
+      const ciudad    = data.hq_city?.trim() || null;
+      const provincia = data.hq_province?.trim() || null;
+      const pueblo    = data.hq_town?.trim() || null;
+      const region    = data.hq_region?.trim() || null;
+      const descripcion = data.description?.trim() || null;
+      const dominio   = data.website?.trim() || null;
+      const tipoRaw   = (data as any).tipo?.trim().toLowerCase() || null;
+      const primaryService = (data as any).primary_service?.trim().toUpperCase() || null;
+
+      const VALID_TIPOS = new Set(['verde', 'naranja', 'morado', 'rojo']);
+      const tipo = tipoRaw && VALID_TIPOS.has(tipoRaw) ? tipoRaw : null;
+
+      // Require at minimum correo AND direccion to write the record
+      const hasMinimum = correo && direccion;
+
+      if (!hasMinimum) {
+        await pool.query(
+          `UPDATE ${tableName} SET status = 'pending', updated_at = NOW() WHERE id = $1`,
+          [id]
+        );
+        return res.json({ done: false, skipped: true, id, nombre, reason: 'sin_correo_o_direccion' });
+      }
+
+      // Validar provincia: solo aceptar provincias canadienses conocidas
+      const CANADIAN_PROVINCES = new Set([
+        'ON','QC','BC','AB','MB','SK','NS','NB','NL','PE','NT','NU','YT',
+        'Ontario','Quebec','British Columbia','Alberta','Manitoba',
+        'Saskatchewan','Nova Scotia','New Brunswick','Newfoundland',
+      ]);
+      const provinciaValida = provincia && CANADIAN_PROVINCES.has(provincia) ? provincia : null;
+
+      await pool.query(
+        `UPDATE ${tableName}
+         SET correo = COALESCE(NULLIF($1,''), correo),
+             telefono = COALESCE(NULLIF($2,''), telefono),
+             direccion = COALESCE(NULLIF($3,''), direccion),
+             ciudad = COALESCE(NULLIF($4,''), ciudad),
+             provincia = COALESCE(NULLIF($5,''), provincia),
+             pueblo = COALESCE(NULLIF($6,''), pueblo),
+             region = COALESCE(NULLIF($7,''), region),
+             descripcion = COALESCE(NULLIF($8,''), descripcion),
+             dominio_de_pagina = COALESCE(NULLIF($9,''), dominio_de_pagina),
+             tipo = COALESCE($10, tipo),
+             work = COALESCE(NULLIF($11,''), work),
+             status = 'processed',
+             updated_at = NOW()
+         WHERE id = $12`,
+        [correo, telefono, direccion, ciudad, provinciaValida, pueblo, region, descripcion, dominio, tipo, primaryService, id]
+      );
+
+      return res.json({
+        done: false,
+        id,
+        nombre,
+        enriched: { correo: !!correo, telefono: !!telefono, direccion: !!direccion, ciudad: !!ciudad, tipo, work: primaryService },
+      });
+    } catch (error) {
+      console.error(`[${label}/enrich-next Error]:`, error);
+      return res.status(500).json({ error: (error as Error).message });
     }
   });
 
