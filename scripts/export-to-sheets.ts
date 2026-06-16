@@ -720,7 +720,7 @@ export async function runSheetsExport(opts: {
   const { rows: companies } = await pool.query(`
     SELECT id, name, phone, contact_email, exact_address, hq_province, hq_city,
            hq_region, hq_town, website, google_maps_status, enriched_at,
-           suggested_services, tipo, NULL AS service_type_id
+           suggested_services, tipo::text AS tipo, NULL AS service_type_id
     FROM companies
     WHERE sheets_exported_at IS NULL
       AND enrichment_status IN ('scraped', 'db_matched', 'verified')

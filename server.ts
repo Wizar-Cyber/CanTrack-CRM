@@ -683,7 +683,6 @@ async function startServer() {
     }
   });
 
-
   // ── Helpers ─────────────────────────────────────────────────────────────────
   function signToken(payload: object) {
     return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
@@ -3191,39 +3190,26 @@ Respond in ${language || 'English'} with JSON format:
       return ordered;
     };
 
-    // Geographic nearest-neighbor clustering: groups companies into spatially coherent batches
+    // Agrupa empresas geográficamente: siempre añade la más cercana al centroide del grupo
     const clusterByProximity = (companies: any[], batchSize: number): any[][] => {
       const remaining = [...companies];
       const batches: any[][] = [];
 
       while (remaining.length > 0) {
-        // Centroid of remaining companies
-        const centLat = remaining.reduce((s, c) => s + c.lat, 0) / remaining.length;
-        const centLng = remaining.reduce((s, c) => s + c.lng, 0) / remaining.length;
+        const batch = [remaining.shift()!];
+        let centLat = batch[0].lat;
+        let centLng = batch[0].lng;
 
-        // Seed: nearest company to centroid
-        let seedIdx = 0;
-        let minDist = Infinity;
-        remaining.forEach((c, i) => {
-          const d = haversine(centLat, centLng, c.lat, c.lng);
-          if (d < minDist) { minDist = d; seedIdx = i; }
-        });
-
-        const batch: any[] = [remaining.splice(seedIdx, 1)[0]];
-
-        // Grow batch greedily: always pick nearest to the last added stop
-        // Stop if nearest remaining is > 120 km away (keeps batches geographically tight)
-        const MAX_NEXT_STOP_KM = 120;
         while (batch.length < batchSize && remaining.length > 0) {
-          const last = batch[batch.length - 1];
-          let nearIdx = 0;
-          let nearDist = Infinity;
+          let bestIdx = 0;
+          let bestDist = Infinity;
           remaining.forEach((c, i) => {
-            const d = haversine(last.lat, last.lng, c.lat, c.lng);
-            if (d < nearDist) { nearDist = d; nearIdx = i; }
+            const d = haversine(centLat, centLng, c.lat, c.lng);
+            if (d < bestDist) { bestDist = d; bestIdx = i; }
           });
-          if (nearDist > MAX_NEXT_STOP_KM) break;
-          batch.push(remaining.splice(nearIdx, 1)[0]);
+          batch.push(remaining.splice(bestIdx, 1)[0]);
+          centLat = batch.reduce((s, c) => s + c.lat, 0) / batch.length;
+          centLng = batch.reduce((s, c) => s + c.lng, 0) / batch.length;
         }
 
         batches.push(batch);
@@ -3246,10 +3232,10 @@ Respond in ${language || 'English'} with JSON format:
 
       if (town) {
         params.push(town);
-        filters.push(`TRIM(pueblo) = $${params.length}`);
+        filters.push(`normalize_location_name(pueblo) = normalize_location_name($${params.length})`);
       } else if (city) {
         params.push(city);
-        filters.push(`TRIM(ciudad) = $${params.length}`);
+        filters.push(`normalize_location_name(ciudad) = normalize_location_name($${params.length})`);
       }
 
       // 1. Fetch companies with valid addresses and coordinates
@@ -3289,7 +3275,7 @@ Respond in ${language || 'English'} with JSON format:
         resolvedStartAddress = city || town || region;
       }
 
-      // 3. Cluster companies geographically
+      // 3. Agrupar empresas geográficamente
       const batchSize = Math.max(10, Math.min(stopsPerRoute, 150));
       const batches = clusterByProximity(companies, batchSize);
       const locationName = town || city || region;
@@ -3386,12 +3372,12 @@ Respond in ${language || 'English'} with JSON format:
       const table = region === 'ontario' ? 'ontario_companies' : 'quebec_companies';
 
       const { rows } = await pool.query(`
-        SELECT DISTINCT TRIM(ciudad) AS city,
+        SELECT normalize_location_name(ciudad) AS city,
                COUNT(*) AS total,
                COUNT(*) FILTER (WHERE direccion IS NOT NULL AND TRIM(direccion) <> '' AND TRIM(direccion) <> 'null') AS with_address
         FROM ${table}
         WHERE ciudad IS NOT NULL AND TRIM(ciudad) <> '' AND TRIM(ciudad) <> 'null'
-        GROUP BY TRIM(ciudad)
+        GROUP BY normalize_location_name(ciudad)
         HAVING COUNT(*) FILTER (WHERE direccion IS NOT NULL AND TRIM(direccion) <> '' AND TRIM(direccion) <> 'null') > 0
         ORDER BY with_address DESC
         LIMIT 200
@@ -3414,16 +3400,16 @@ Respond in ${language || 'English'} with JSON format:
       let extraFilter = '';
       if (city) {
         params.push(city);
-        extraFilter = `AND TRIM(ciudad) = $${params.length}`;
+        extraFilter = `AND normalize_location_name(ciudad) = normalize_location_name($${params.length})`;
       }
 
       const { rows } = await pool.query(`
-        SELECT DISTINCT TRIM(pueblo) AS town,
+        SELECT normalize_location_name(pueblo) AS town,
                COUNT(*) AS total,
                COUNT(*) FILTER (WHERE direccion IS NOT NULL AND TRIM(direccion) <> '' AND TRIM(direccion) <> 'null') AS with_address
         FROM ${table}
         WHERE pueblo IS NOT NULL AND TRIM(pueblo) <> '' AND TRIM(pueblo) <> 'null' ${extraFilter}
-        GROUP BY TRIM(pueblo)
+        GROUP BY normalize_location_name(pueblo)
         HAVING COUNT(*) FILTER (WHERE direccion IS NOT NULL AND TRIM(direccion) <> '' AND TRIM(direccion) <> 'null') > 0
         ORDER BY with_address DESC
         LIMIT 200
@@ -3455,7 +3441,7 @@ Respond in ${language || 'English'} with JSON format:
 
       if (city && city !== '') {
         params.push(city);
-        where.push(`TRIM(ciudad) = $${params.length}`);
+        where.push(`normalize_location_name(ciudad) = normalize_location_name($${params.length})`);
       }
 
       if (!includeAll) {
@@ -3473,8 +3459,8 @@ Respond in ${language || 'English'} with JSON format:
           provincia AS province, 
           telefono AS phone,
           work AS service,
-          latitude AS lat,
-          longitude AS lng
+          lat,
+          lng
         FROM ${table}
         ${whereSQL}
         ORDER BY nombre
