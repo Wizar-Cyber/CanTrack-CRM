@@ -89,10 +89,9 @@ export function createCandidatesRouter(pool: Pool) {
       }
       await client.query('COMMIT');
       return res.status(201).json({ ...candidate, skills: skills || [] });
-    } catch (error: unknown) {
+    } catch (error: any) {
       await client.query('ROLLBACK');
-      const dbErr = error as { code?: string };
-      if (dbErr.code === '23505') return res.status(409).json({ error: 'Ya existe un candidato con ese email.' });
+      if (error.code === '23505') return res.status(409).json({ error: 'Ya existe un candidato con ese email.' });
       console.error('[Candidate POST Error]:', error);
       return res.status(500).json({ error: 'Error al crear candidato.' });
     } finally {
@@ -138,10 +137,9 @@ export function createCandidatesRouter(pool: Pool) {
       }
       await dbClient.query('COMMIT');
       return res.json(r.rows[0]);
-    } catch (error: unknown) {
+    } catch (error: any) {
       await dbClient.query('ROLLBACK');
-      const dbErr = error as { code?: string };
-      if (dbErr.code === '23505') return res.status(409).json({ error: 'Email ya en uso.' });
+      if (error.code === '23505') return res.status(409).json({ error: 'Email ya en uso.' });
       console.error('[Candidate PATCH Error]:', error);
       return res.status(500).json({ error: 'Error al actualizar candidato.' });
     } finally {

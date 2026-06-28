@@ -1,6 +1,7 @@
 import type { Pool } from 'pg';
 import { runCampaignAutomation, getAutoConfig } from '../services/campaign-automation.service.js';
 import { runWorkflowCycle } from '../services/workflow.service.js';
+import { slugify } from '../utils/slug.js';
 
 // Workflow cron — runs at 08:00 UTC and 20:00 UTC every day
 const WORKFLOW_HOURS_UTC = [8, 20];
@@ -182,7 +183,7 @@ export function initCronJobs(pool: Pool): void {
 }
 
 async function runFastSync(pool: Pool): Promise<void> {
-  const slugify = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+
 
   const { rows } = await pool.query(`
     SELECT id, raw_company_name, location FROM jobs

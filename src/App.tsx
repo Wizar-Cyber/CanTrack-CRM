@@ -15,10 +15,8 @@ import { Settings } from './components/Settings/Settings';
 import { Job, DashboardStats, Candidate, Company } from './types';
 import { AnimatePresence } from 'framer-motion';
 import { Loader2 } from 'lucide-react';
-// import { ServicesList } from './components/Services/ServicesList'; // hidden
 import { JobsView } from './components/Jobs/JobsView';
 import CampaignModule from './components/Campaigns/CampaignModule';
-// import { ApplicationQueue } from './components/Jobs/ApplicationQueue';
 import { RouteManager } from './components/Routes/RouteManager';
 import { ToastContainer, useToasts } from './components/UI/Toast';
 import { ErrorBoundary } from './components/ErrorBoundary';

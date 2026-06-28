@@ -39,6 +39,7 @@ export interface ActonValeRow {
   dominio:     string;   // M — DOMINIO DE PAGINA
 }
 
+/** Result of a Google Sheets export operation */
 export interface ExportResult {
   total:              number;
   inserted:           number;

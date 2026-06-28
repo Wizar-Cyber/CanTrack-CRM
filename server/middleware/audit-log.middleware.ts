@@ -13,6 +13,7 @@ export interface AuthRequest extends Request {
   };
 }
 
+/** Logs authentication and user management requests for security monitoring */
 export function auditLogMiddleware(req: Request, _res: Response, next: NextFunction): void {
   if (req.path.startsWith('/api/auth') || req.path.startsWith('/api/users')) {
     const userId = (req as AuthRequest).user?.id ?? 'anonymous';

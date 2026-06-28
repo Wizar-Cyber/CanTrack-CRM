@@ -1,5 +1,7 @@
+/** Supported job portal sources */
 export type JobSource = 'linkedin' | 'indeed' | 'glassdoor' | 'company_website' | 'other';
 
+/** Core Job entity representing a job listing ingested from a portal */
 export interface Job {
   id: string;
   companyId:      string | null;
@@ -18,6 +20,7 @@ export interface Job {
   updatedAt:      Date;
 }
 
+/** Input for creating a new job listing */
 export interface CreateJobInput {
   companyId?:      string;
   rawCompanyName?: string;
@@ -31,6 +34,7 @@ export interface CreateJobInput {
   isEasyApply?:    boolean;
 }
 
+/** Fields that can be safely updated on a job */
 export interface UpdateJobFields {
   title?:          string;
   url?:            string;
@@ -42,6 +46,7 @@ export interface UpdateJobFields {
   isActive?:       boolean;
 }
 
+/** Paginated job list response */
 export interface JobListResult {
   data:       Job[];
   total:      number;
@@ -50,6 +55,7 @@ export interface JobListResult {
   totalPages: number;
 }
 
+/** Query parameters for job list endpoint */
 export interface JobListQuery {
   page?:   number;
   limit?:  number;

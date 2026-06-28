@@ -9,6 +9,7 @@
  *   MDIRECTOR_REPLY_TO=reply@yourcompany.com
  */
 
+/** Options for creating an MDirector email campaign */
 export interface MDirectorCampaignOptions {
   campaignName: string;
   listId: string;
@@ -22,12 +23,18 @@ export interface MDirectorCampaignOptions {
   scheduleDate?: string; // 'YYYY-MM-DD HH:MM:SS'
 }
 
+/** Result from an MDirector campaign creation */
 export interface MDirectorCampaignResult {
   campaignId: string;
   envId?: string;
   subId?: string;
 }
 
+/**
+ * MDirector email marketing service.
+ * Handles OAuth2 authentication, contact subscription, campaign creation,
+ * and delivery scheduling via the MDirector API.
+ */
 export class MDirectorService {
   private static readonly OAUTH_URL = 'https://app.mdirector.com/oauth2/token';
   private static readonly API_URL   = 'https://api.mdirector.com';

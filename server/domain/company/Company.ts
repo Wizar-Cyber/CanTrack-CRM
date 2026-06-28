@@ -1,6 +1,14 @@
+/**
+ * Enrichment status lifecycle:
+ * pending → processing → scraped | db_matched | verified | failed | skipped
+ */
 export type EnrichmentStatus =
   | 'pending' | 'processing' | 'db_matched' | 'scraped' | 'verified' | 'failed' | 'skipped';
 
+/**
+ * Core Company entity representing a business in the CRM.
+ * Used by the main `companies` table and as enriched data cache.
+ */
 export interface Company {
   id: string;
   name: string;
@@ -23,6 +31,7 @@ export interface Company {
   updatedAt:     Date;
 }
 
+/** Input for creating a new company record */
 export interface CreateCompanyInput {
   name: string;
   legalName?: string;
@@ -30,6 +39,7 @@ export interface CreateCompanyInput {
   industry?: string;
 }
 
+/** Fields that can be safely updated on a company record */
 export interface UpdateCompanyFields {
   enrichmentStatus?: EnrichmentStatus;
   industry?: string;
@@ -47,6 +57,7 @@ export interface UpdateCompanyFields {
   name?: string;
 }
 
+/** Counts of companies by enrichment status for the queue dashboard */
 export interface EnrichmentStatusSummary {
   pending:    number;
   processing: number;
@@ -54,6 +65,7 @@ export interface EnrichmentStatusSummary {
   db_matched: number;
 }
 
+/** Email send log entry for a company */
 export interface EmailLog {
   id: string;
   companyId: string;
@@ -68,6 +80,7 @@ export interface EmailLog {
   sentAt: Date;
 }
 
+/** Input for sending a staffing offer email to a company */
 export interface SendOfferInput {
   companyId: string;
   toEmail: string;

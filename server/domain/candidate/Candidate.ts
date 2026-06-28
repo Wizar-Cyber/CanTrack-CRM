@@ -1,5 +1,7 @@
+/** Candidate pipeline status */
 export type CandidateStatus = 'Available' | 'Interviewing' | 'Placed' | 'Inactive';
 
+/** Core Candidate entity representing a job seeker */
 export interface Candidate {
   id: string;
   name: string;
@@ -17,6 +19,7 @@ export interface Candidate {
   updatedAt: Date;
 }
 
+/** Input for adding a new candidate to the system */
 export interface CreateCandidateInput {
   name: string;
   role?: string;
@@ -30,6 +33,7 @@ export interface CreateCandidateInput {
   skills?: string[];
 }
 
+/** Fields that can be updated on an existing candidate */
 export interface UpdateCandidateInput {
   name?: string;
   role?: string;

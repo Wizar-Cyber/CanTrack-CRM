@@ -58,3 +58,12 @@ export const agentLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
+
+/** Webhook create: 30 req / min (scraper posts job listings) */
+export const webhookLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  message: { error: 'Too many webhook requests.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});

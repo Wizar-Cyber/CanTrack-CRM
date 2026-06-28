@@ -54,11 +54,22 @@ export interface EnrichmentData {
   _provider?: string;
 }
 
+/**
+ * Groq AI integration service.
+ * Provides company enrichment via Groq's free API tier (llama-3.1-8b-instant, mixtral-8x7b).
+ * Compatible with OpenAI interface — uses pure fetch, no SDK required.
+ */
 export class GroqService {
+  /** Returns true if GROQ_API_KEY is configured in environment */
   static isConfigured(): boolean {
     return !!process.env.GROQ_API_KEY;
   }
 
+  /**
+   * Enriches a company using Groq AI.
+   * Falls back gracefully with empty data on quota exhaustion or errors.
+   * @throws If rate limited (429) — caller should retry with different provider
+   */
   static async enrichCompany(companyName: string): Promise<EnrichmentData> {
     if (!this.isConfigured()) return { confidence_score: 0 };
 

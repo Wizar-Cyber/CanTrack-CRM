@@ -2,59 +2,87 @@ import { Router, Response } from 'express';
 import type { Pool } from 'pg';
 import { createRequireAuth, requireRole, AuthRequest } from '../middleware/auth.middleware.js';
 import { GeminiService } from '../services/gemini.service.js';
+import { JobClassifierService } from '../services/job-classifier.service.js';
+import { SERVICE_TYPES, SERVICE_TYPES_COMPACT, SERVICE_TYPE_BY_ID } from '../data/serviceTypes.js';
+import {
+  REGION_FILTER, isRegionFilterActive, companyRegionClause, jobRegionClause, isRegionMatch,
+} from '../utils/region-filter.js';
+import { slugify } from '../utils/slug.js';
 
 const ALLOWED_JOB_COLUMNS = new Set([
   'title', 'url', 'location', 'country', 'category',
-  'application_type', 'is_easy_apply', 'is_active',
+  'application_type', 'is_easy_apply', 'is_active', 'raw_company_name',
 ]);
-
-const VALID_SOURCES = ['linkedin', 'indeed', 'glassdoor', 'company_website', 'other'];
 
 export function createJobsRouter(pool: Pool) {
   const router = Router();
   const requireAuth = createRequireAuth(pool);
 
-  // GET /api/jobs
-  router.get('/', requireAuth, async (req, res: Response) => {
+  router.get('/', requireAuth, async (req, res) => {
     try {
-      const page   = Math.max(1, parseInt(req.query.page  as string) || 1);
-      const limit  = Math.min(200, Math.max(10, parseInt(req.query.limit as string) || 50));
+      const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
+      const limit = Math.min(200, Math.max(10, parseInt(req.query.limit as string) || 50));
       const offset = (page - 1) * limit;
       const search = ((req.query.search as string) || '').trim();
 
-      const params: unknown[] = [limit, offset];
+      const params: any[] = [limit, offset];
       let searchClause = '';
       if (search) {
-        searchClause = `AND (j.title ILIKE $3 OR COALESCE(c.name, j.raw_company_name) ILIKE $3 OR j.location ILIKE $3)`;
+        searchClause = `AND (
+          j.title ILIKE $3
+          OR COALESCE(c.name, j.raw_company_name) ILIKE $3
+          OR j.location ILIKE $3
+        )`;
         params.push(`%${search}%`);
       }
 
+      const regionSQL = jobRegionClause('j');
       const baseSelect = `
-        SELECT j.*,
-          COALESCE(c.name, j.raw_company_name) AS company_name,
-          c.industry           AS company_industry,
-          c.company_size       AS company_size,
-          c.hq_city            AS company_hq_city,
-          c.hq_country         AS company_hq_country,
-          c.website            AS company_website,
-          c.description        AS company_description,
-          c.enrichment_status  AS company_enrichment_status
-        FROM jobs j LEFT JOIN companies c ON j.company_id = c.id
-        WHERE j.is_active = true ${searchClause}
+        SELECT
+          j.*,
+          COALESCE(oc.nombre, qc.nombre, j.raw_company_name) AS company_name,
+          COALESCE(oc.industry, qc.industry) AS company_industry,
+          COALESCE(oc.company_size, qc.company_size) AS company_size,
+          COALESCE(oc.ciudad, qc.ciudad) AS company_hq_city,
+          'Canada' AS company_hq_country,
+          COALESCE(oc.dominio_de_pagina, qc.dominio_de_pagina, oc.website, qc.website) AS company_website,
+          COALESCE(oc.descripcion, qc.descripcion) AS company_description,
+          COALESCE(oc.enrichment_status, qc.enrichment_status) AS company_enrichment_status
+        FROM jobs j
+        LEFT JOIN ontario_companies oc ON j.province_id = oc.id AND j.province_source = 'ontario'
+        LEFT JOIN quebec_companies qc ON j.province_id = qc.id AND j.province_source = 'quebec'
+        WHERE j.is_active = true AND ${regionSQL} ${searchClause}
       `;
 
       const [rowsResult, countResult] = await Promise.all([
         pool.query(`${baseSelect} ORDER BY j.created_at DESC LIMIT $1 OFFSET $2`, params),
         pool.query(
           `SELECT COUNT(*)::int AS total FROM jobs j
-           LEFT JOIN companies c ON j.company_id = c.id
-           WHERE j.is_active = true ${searchClause}`,
+           LEFT JOIN ontario_companies oc ON j.province_id = oc.id AND j.province_source = 'ontario'
+           LEFT JOIN quebec_companies qc ON j.province_id = qc.id AND j.province_source = 'quebec'
+           WHERE j.is_active = true AND ${regionSQL} ${searchClause}`,
           search ? [`%${search}%`] : [],
         ),
       ]);
 
-      return res.json({
-        data:       rowsResult.rows,
+      // Enriquecer cada vacante con el nombre legible del servicio CanTrack
+      // y un title_display que prioriza el servicio sobre el título crudo.
+      const enriched = rowsResult.rows.map((j: any) => {
+        const svc = j.service_type_id ? SERVICE_TYPE_BY_ID[j.service_type_id] : null;
+        return {
+          ...j,
+          service_name:    svc?.name    ?? null,
+          service_number:  svc?.number  ?? null,
+          service_category: svc?.category ?? null,
+          // title_display: servicio mapeado si existe, si no el título original
+          title_display:   svc?.name    ?? j.title,
+          // has_direct_service_match: false si el clasificador no encontró ningún servicio
+          has_direct_service_match: !!svc,
+        };
+      });
+
+      res.json({
+        data:       enriched,
         total:      countResult.rows[0].total,
         page,
         limit,
@@ -62,31 +90,45 @@ export function createJobsRouter(pool: Pool) {
       });
     } catch (error) {
       console.error('[DB Error] Fetching jobs:', error);
-      return res.status(500).json({ error: 'Error al obtener trabajos.' });
+      res.status(500).json({ error: 'Error al obtener trabajos.' });
     }
   });
 
-  // GET /api/jobs/:id
-  router.get('/:id', requireAuth, async (req, res: Response) => {
+  // GET /api/jobs/:id — single job
+  router.get('/:id', requireAuth, async (req, res) => {
     try {
+      const { id } = req.params;
       const result = await pool.query(
         `SELECT j.*, COALESCE(c.name, j.raw_company_name) AS company_name,
                 c.industry, c.website, c.description, c.enrichment_status
          FROM jobs j LEFT JOIN companies c ON j.company_id = c.id
          WHERE j.id = $1 AND j.is_active = true`,
-        [req.params.id],
+        [id]
       );
       if (result.rows.length === 0) return res.status(404).json({ error: 'Vacante no encontrada.' });
-      return res.json(result.rows[0]);
+      const j: any = result.rows[0];
+      const svc = j.service_type_id ? SERVICE_TYPE_BY_ID[j.service_type_id] : null;
+      return res.json({
+        ...j,
+        service_name:    svc?.name    ?? null,
+        service_number:  svc?.number  ?? null,
+        service_category: svc?.category ?? null,
+        title_display:   svc?.name    ?? j.title,
+        has_direct_service_match: !!svc,
+      });
     } catch (error) {
       console.error('[Job GET Error]:', error);
       return res.status(500).json({ error: 'Error al obtener vacante.' });
     }
   });
 
-  // POST /api/jobs
-  router.post('/', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res: Response) => {
+  // POST /api/jobs — create job
+  // Acepta dos modos:
+  //   A) company_id + title + source + url  → vacante completa vinculada
+  //   B) raw_company_name + title + source + url → scraper inserta sin company (sync la vinculará)
+  router.post('/', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
     const { company_id, raw_company_name, title, source, url, location, country, category, application_type, is_easy_apply } = req.body;
+    const VALID_SOURCES = ['linkedin', 'indeed', 'glassdoor', 'company_website', 'other'];
     if (!title || !source || !url)
       return res.status(400).json({ error: 'title, source y url son requeridos.' });
     if (!company_id && !raw_company_name)
@@ -98,19 +140,18 @@ export function createJobsRouter(pool: Pool) {
         `INSERT INTO jobs (company_id, raw_company_name, title, source, url, location, country, category, application_type, is_easy_apply)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
         [company_id || null, raw_company_name || null, title.trim(), source, url.trim(),
-         location || null, country || null, category || null, application_type || null, is_easy_apply || false],
+         location || null, country || null, category || null, application_type || null, is_easy_apply || false]
       );
       return res.status(201).json(result.rows[0]);
-    } catch (error: unknown) {
-      const dbErr = error as { code?: string };
-      if (dbErr.code === '23503') return res.status(404).json({ error: 'La empresa especificada no existe.' });
+    } catch (error: any) {
+      if (error.code === '23503') return res.status(404).json({ error: 'La empresa especificada no existe.' });
       console.error('[Job POST Error]:', error);
       return res.status(500).json({ error: 'Error al crear vacante.' });
     }
   });
 
-  // PATCH /api/jobs/:id
-  router.patch('/:id', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res: Response) => {
+  // PATCH /api/jobs/:id — update job fields
+  router.patch('/:id', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
     const { id } = req.params;
     const updates = req.body;
     const keys = Object.keys(updates).filter(k => ALLOWED_JOB_COLUMNS.has(k));
@@ -120,7 +161,7 @@ export function createJobsRouter(pool: Pool) {
     try {
       const result = await pool.query(
         `UPDATE jobs SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND is_active = true RETURNING *`,
-        [id, ...values],
+        [id, ...values]
       );
       if (result.rows.length === 0) return res.status(404).json({ error: 'Vacante no encontrada.' });
       return res.json({ success: true, job: result.rows[0] });
@@ -130,13 +171,13 @@ export function createJobsRouter(pool: Pool) {
     }
   });
 
-  // DELETE /api/jobs/:id — soft delete
-  router.delete('/:id', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res: Response) => {
+  // DELETE /api/jobs/:id — soft delete (is_active = false)
+  router.delete('/:id', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
     const { id } = req.params;
     try {
       const result = await pool.query(
         'UPDATE jobs SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1 AND is_active = true RETURNING id',
-        [id],
+        [id]
       );
       if (result.rows.length === 0) return res.status(404).json({ error: 'Vacante no encontrada.' });
       return res.json({ success: true });
@@ -146,92 +187,71 @@ export function createJobsRouter(pool: Pool) {
     }
   });
 
-  // GET /api/stats
-  router.get('/stats/dashboard', requireAuth, async (_req, res: Response) => {
+  router.post('/classify', requireAuth, async (req: AuthRequest, res) => {
+    const { title, description, companyName, companyIndustry, jobId } = req.body;
+    if (!title) return res.status(400).json({ success: false, message: 'title es requerido' });
+
     try {
-      const result = await pool.query(`
-        SELECT
-          (SELECT COUNT(*) FROM jobs WHERE is_active = true)::int AS total_jobs,
-          (SELECT COUNT(*) FROM companies)::int AS total_companies,
-          (SELECT COUNT(*) FROM companies WHERE enrichment_status != 'pending')::int AS enriched_companies,
-          (SELECT COUNT(*) FROM companies WHERE enrichment_status = 'pending')::int AS pending_enrichment,
-          (SELECT COUNT(*) FROM applications)::int AS total_applications,
-          (SELECT COUNT(*) FROM candidates)::int AS total_candidates,
-          (SELECT COUNT(*) FROM candidates WHERE status = 'Available')::int AS active_candidates,
-          (SELECT COUNT(*) FROM candidates WHERE status = 'Placed')::int AS placed_candidates
-      `);
-      return res.json(result.rows[0]);
-    } catch (error) {
-      console.error('[Stats Error]:', error);
-      return res.status(500).json({ error: 'Error al obtener estadísticas.' });
+      const result = await JobClassifierService.classifyJob(
+        title,
+        description || '',
+        companyName || '',
+        companyIndustry || ''
+      );
+
+      // Si se envió un jobId, persiste la clasificación
+      if (jobId) {
+        await pool.query(
+          `UPDATE jobs
+           SET service_type_id = $1, service_match_confidence = $2,
+               service_match_reasoning = $3, service_match_provider = $4
+           WHERE id = $5`,
+          [result.service_id, result.confidence, result.reasoning, result._provider, jobId]
+        );
+      }
+
+      return res.json({ success: true, data: result });
+    } catch (err: any) {
+      console.error('[/api/jobs/classify]', err);
+      return res.status(500).json({ success: false, message: err.message });
     }
   });
 
-  // POST /api/mapping/prepare — AI form-fill payload
-  router.post('/mapping/prepare', requireAuth, async (req: AuthRequest, res: Response) => {
-    const { candidate, job } = req.body;
-    if (!candidate || !job) return res.status(400).json({ error: 'candidate y job son requeridos.' });
-
-    if (process.env.GEMINI_API_KEY || process.env.GROQ_API_KEY) {
-      try {
-        const prompt = `You are a recruitment assistant. Return ONLY a valid JSON object (no markdown) with this exact structure:
-{
-  "personal_info": { "first_name": "...", "last_name": "...", "email": "...", "phone": "...", "location": "..." },
-  "links": { "linkedin": "...", "portfolio": "..." },
-  "experience_summary": "2-sentence summary tailored for this role",
-  "common_questions": [
-    { "question": "Years of experience with ${(job.requiredSkills?.[0] || 'relevant tech')}", "answer": "..." },
-    { "question": "Why are you a good fit for ${job.companyName}?", "answer": "..." }
-  ]
-}
-Candidate: ${candidate.name}, ${candidate.yearsOfExperience} years exp, skills: ${candidate.skills?.join(', ')}.
-Job: ${job.title} at ${job.companyName}. Required: ${job.requiredSkills?.join(', ')}.`;
-
-        const apiKey = process.env.GROQ_API_KEY!;
-        const model = process.env.GROQ_MODEL || 'llama-3.1-8b-instant';
-        const aiRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-          body: JSON.stringify({
-            model,
-            messages: [{ role: 'user', content: prompt }],
-            response_format: { type: 'json_object' },
-            max_tokens: 512,
-            temperature: 0.2,
-          }),
-          signal: AbortSignal.timeout(15_000),
-        });
-        if (aiRes.ok) {
-          const json = await aiRes.json() as { choices?: { message?: { content?: string } }[] };
-          const parsed = JSON.parse(json.choices?.[0]?.message?.content ?? '{}');
-          return res.json({ ...parsed, _provider: 'groq' });
-        }
-      } catch { /* fall through to fallback */ }
-    }
-
-    return res.json({
-      personal_info: {
-        first_name: candidate.name?.split(' ')[0] ?? '',
-        last_name: candidate.name?.split(' ').slice(1).join(' ') ?? '',
-        email: candidate.email ?? '',
-        phone: candidate.phone ?? '',
-        location: candidate.location ?? '',
-      },
-      links: { linkedin: candidate.linkedinUrl ?? '', portfolio: candidate.portfolioUrl ?? '' },
-      _provider: 'fallback',
-    });
-  });
-
-  // POST /api/gemini/cover-letter — kept on backend, API key never exposed
-  router.post('/gemini/cover-letter', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res: Response) => {
+  /**
+   * POST /api/jobs/:id/classify
+   * Clasifica la vacante guardada en BD y persiste el resultado.
+   */
+  router.post('/:id/classify', requireAuth, requireRole('admin', 'editor'), async (req: AuthRequest, res) => {
+    const { id } = req.params;
     try {
-      const { candidate, job } = req.body;
-      if (!candidate || !job) return res.status(400).json({ error: 'candidate y job son requeridos.' });
-      const result = await GeminiService.generateCoverLetter(candidate, job);
-      return res.json(result);
-    } catch (error) {
-      console.error('[Cover Letter Error]:', error);
-      return res.status(500).json({ error: 'Error generando carta de presentación.' });
+      const jobRow = await pool.query(
+        `SELECT j.title, j.raw_company_name, c.name AS company_name, c.industry, j.id
+         FROM jobs j LEFT JOIN companies c ON j.company_id = c.id
+         WHERE j.id = $1`,
+        [id]
+      );
+      if (jobRow.rowCount === 0) return res.status(404).json({ success: false, message: 'Vacante no encontrada' });
+
+      const job = jobRow.rows[0];
+      const result = await JobClassifierService.classifyJob(
+        job.title,
+        '',
+        job.company_name || job.raw_company_name || '',
+        job.industry || ''
+      );
+
+      await pool.query(
+        `UPDATE jobs
+         SET service_type_id = $1, service_match_confidence = $2,
+             service_match_reasoning = $3, service_match_provider = $4
+         WHERE id = $5`,
+        [result.service_id, result.confidence, result.reasoning, result._provider, id]
+      );
+
+      return res.json({ success: true, data: result });
+    } catch (err: any) {
+      console.error('[/api/jobs/:id/classify]', err);
+      return res.status(500).json({ success: false, message: err.message });
     }
   });
 

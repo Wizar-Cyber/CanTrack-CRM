@@ -14,6 +14,7 @@ declare global {
   }
 }
 
+/** Attaches a unique UUID to every request for log correlation and tracing */
 export function requestIdMiddleware(req: Request, _res: Response, next: NextFunction): void {
   req.requestId = crypto.randomUUID();
   next();

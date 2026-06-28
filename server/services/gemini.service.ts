@@ -1,3 +1,8 @@
+/**
+ * Gemini AI integration service.
+ * Provides company enrichment, cover letter generation, and generic text generation
+ * via Google Gemini models (gemini-2.5-flash, gemini-3-flash-preview).
+ */
 import { GoogleGenAI } from "@google/genai";
 
 export class GeminiService {
@@ -10,6 +15,11 @@ export class GeminiService {
     return this.ai;
   }
 
+  /**
+   * Enriches a company by researching via Gemini AI.
+   * Returns structured company data or empty fields if unavailable.
+   * Never hallucinates data - returns empty string for unknown fields.
+   */
   static async enrichCompany(companyName: string): Promise<{
     industry?: string;
     company_size?: string;
@@ -69,6 +79,10 @@ Return ONLY valid JSON. No markdown fences. No extra text.`;
     return JSON.parse(text);
   }
 
+  /**
+   * Generates a personalized cover letter for a candidate applying to a job.
+   * Falls back to a template if Gemini is unavailable.
+   */
   static async generateCoverLetter(candidate: any, job: any): Promise<string> {
     const ai = this.getAI();
     if (!ai) {
@@ -91,7 +105,10 @@ Return ONLY valid JSON. No markdown fences. No extra text.`;
     }
   }
 
-  /** Generic text generation — used by AI-improve endpoints */
+  /**
+   * Generic text generation — used by AI-improve endpoints.
+   * @throws If GEMINI_API_KEY is not configured
+   */
   static async generateText(prompt: string): Promise<string> {
     const ai = this.getAI();
     if (!ai) throw new Error('GEMINI_API_KEY not configured');

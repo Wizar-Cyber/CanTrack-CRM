@@ -1,982 +1,1506 @@
-# CanTrack CRM — Auditoría Técnica Integral (20 Secciones)
+# Auditoría Técnica Completa — CanTrack CRM
 
-**Fecha:** 2026-06-16
-**Alcance:** Stack completo — Node.js (Express/React), Python (FastAPI), PostgreSQL, Docker
-**Metodología:** Análisis estático del código fuente en `/var/www/cantrack`
+> **Versión:** 1.0.0  
+> **Propósito:** Documentación técnica oficial para onboarding de desarrolladores  
+> **Stack:** Node.js 22 + Express 4 + React 19 + PostgreSQL 17 + TypeScript 5.8  
 
 ---
 
 ## Índice
 
-1. [Resumen Ejecutivo](#1-resumen-ejecutivo)
-2. [Stack Tecnológico](#2-stack-tecnológico)
-3. [Estructura del Proyecto](#3-estructura-del-proyecto)
-4. [Modelo de Datos](#4-modelo-de-datos)
-5. [API Endpoints](#5-api-endpoints)
-6. [Arquitectura y Patrones](#6-arquitectura-y-patrones)
-7. [Autenticación y Autorización](#7-autenticación-y-autorización)
-8. [Seguridad](#8-seguridad)
-9. [Manejo de Errores](#9-manejo-de-errores)
-10. [Logging y Observabilidad](#10-logging-y-observabilidad)
-11. [Testing](#11-testing)
-12. [Frontend (React)](#12-frontend-react)
-13. [Microservicio Optimus_rutas](#13-microservicio-optimus_rutas)
-14. [Infraestructura y Deploy](#14-infraestructura-y-deploy)
-15. [Dependencias y Riesgos](#15-dependencias-y-riesgos)
-16. [Duplicación y Deuda Técnica](#16-duplicación-y-deuda-técnica)
-17. [Internacionalización](#17-internacionalización)
-18. [Rendimiento y Escalabilidad](#18-rendimiento-y-escalabilidad)
-19. [Recomendaciones Priorizadas](#19-recomendaciones-priorizadas)
-20. [Confianza y Precisión](#20-confianza-y-precisión)
+1. [Arquitectura General](#1-arquitectura-general)
+2. [Configuración de Entidades](#2-configuración-de-entidades)
+3. [Inicialización del Sistema](#3-inicialización-del-sistema)
+4. [Scraping e Ingesta de Información](#4-scraping-e-ingesta-de-información)
+5. [Sincronización](#5-sincronización)
+6. [Cron Jobs](#6-cron-jobs)
+7. [Servicio Optimus Route](#7-servicio-optimus-route)
+8. [Scripts de Configuración](#8-scripts-de-configuración)
+9. [Seed Inicial](#9-seed-inicial)
+10. [Dependencias entre Módulos](#10-dependencias-entre-módulos)
+11. [Variables de Entorno](#11-variables-de-entorno)
+12. [Base de Datos](#12-base-de-datos)
+13. [APIs](#13-apis)
+14. [Dependencias Externas](#14-dependencias-externas)
+15. [Flujo Completo del Sistema](#15-flujo-completo-del-sistema)
+16. [Mapa Completo de Dependencias](#16-mapa-completo-de-dependencias)
+17. [Guía para Nuevo Desarrollador](#17-guía-para-nuevo-desarrollador)
 
 ---
 
-## 1. Resumen Ejecutivo
+## 1. Arquitectura General
 
-CanTrack CRM es un sistema monorepo para reclutamiento técnico con enfoque en el mercado colombiano. Integra scraping de empleos, enriquecimiento de empresas vía IA (Gemini/Groq/Ollama/WebSearch), orquestación de campañas de email (MDirector), automatización con Playwright, y optimización de rutas (OR-Tools via microservicio Python).
+### Tipo de Arquitectura
 
-**Fortalezas:**
-- Arquitectura limpia con separación por capas (domain/application/services/routes)
-- Uso activo de Pino para logging estructurado
-- PostgreSQL con esquema normalizado y migraciones idempotentes
-- Docker multi-stage con compilación optimizada
-- 16 tests unitarios existentes
-
-**Debilidades críticas:**
-- `server.ts` con 3908 líneas y 111 rutas inline (mezcla concerns)
-- Rutas de autenticación duplicadas: `server.ts:718-902` y `server/routes/auth.routes.ts`
-- `console.log`/`console.error` residual (~15 ocurrencias) coexistiendo con Pino
-- `.gitignore` incluye `*.test.ts` — los tests están excluidos del control de versiones
-- Sin paginación en `GET /api/companies` (riesgo OOM con >1000 empresas)
-- Password hardcoded en `docker-compose.yml:31`
-- CSP deshabilitado en Helmet
-- 0 tests en frontend React
-- 0 tests en el microservicio Python
-
----
-
-## 2. Stack Tecnológico
-
-| Capa | Tecnología | Versión | Archivo |
-|------|-----------|---------|---------|
-| Runtime Node | Node.js | 22 | `Dockerfile:1` |
-| Backend framework | Express | 4.21.2 | `package.json:28` |
-| Frontend framework | React | 19.0.0 | `package.json:43` |
-| Lenguaje Frontend | TypeScript | 5.8 | `tsconfig.json` |
-| Bundler | Vite | 6.2 | `package.json:47` |
-| Base de datos principal | PostgreSQL | (vía CasaOS) | `docker-compose.yml` |
-| Microservicio rutas | Python 3.10 + FastAPI | — | `Optimus_rutas/Dockerfile` |
-| ORM Python | SQLAlchemy 2.0 async | — | `Optimus_rutas/requirements.txt` |
-| Optimizador rutas | OR-Tools | — | `Optimus_rutas/requirements.txt` |
-| Logging | Pino + pino-pretty | 10.3 / 13.1 | `package.json:38-39` |
-| Testing Node | Vitest + Supertest | 3.1 / 7.2 | `package.json:62,59` |
-| Testing Python | pytest | — | `Optimus_rutas/pytest.ini` |
-| Auth | JWT (jsonwebtoken) + bcryptjs | 9.0 / 3.0 | `package.json` |
-| UI | Tailwind CSS v4, Framer Motion, Lucide React | — | `package.json` |
-| Routing React | react-router-dom | 7.13 | `package.json:45` |
-| Automatización | Playwright + playwright-extra | 1.59 | `package.json:40-41` |
-| IA | Google Gemini, Groq, Ollama | — | `server/services/` |
-
----
-
-## 3. Estructura del Proyecto
+**Monolito Modular** con un microservicio auxiliar (Optimus_rutas).  
+Sigue una arquitectura limpia en capas para el backend:
 
 ```
-cantrack/
-├── server.ts                          # Entry point Express (3908 líneas)
-├── server/
-│   ├── application/                   # Casos de uso (auth, company, job, etc.)
-│   │   ├── auth/                      # Login, Setup, ChangePassword, ManageUsers
-│   │   ├── company/                   # CRUD + Enrich + Export companies
-│   │   ├── job/                       # CRUD jobs
-│   │   ├── candidate/                 # CandidateUseCases
-│   │   ├── apply/                     # ApplicationUseCases
-│   │   └── sync/                      # SyncScrapedJobs
-│   ├── domain/                        # Entidades + interfaces repositorio
-│   │   ├── company/Company.ts
-│   │   ├── job/Job.ts
-│   │   ├── candidate/Candidate.ts
-│   │   ├── application/Application.ts
-│   │   ├── user/User.ts
-│   │   └── shared/DomainError.ts
-│   ├── services/                      # Infraestructura
-│   │   ├── enrichment.service.ts      # Orquestador Gemini→Groq→WebSearch
-│   │   ├── workflow.service.ts        # Pipeline completo (sync→enrich→classify→export)
-│   │   ├── email-campaign.service.ts  # Campañas MDirector
-│   │   ├── application-agent.service.ts  # Playwright automation
-│   │   ├── gemini.service.ts / groq.service.ts / ollama.service.ts / websearch.service.ts
-│   │   ├── google-sheets.service.ts
+Routes → Use Cases (Application) → Domain ← Infrastructure
+                                  → Services → External APIs
+```
+
+### Stack Tecnológico
+
+| Capa | Tecnología | Versión | Propósito |
+|------|-----------|---------|-----------|
+| **Runtime** | Node.js | 22 | Servidor backend |
+| **Backend** | Express | 4.21 | Framework HTTP |
+| **Frontend** | React | 19 | UI SPA |
+| **Lenguaje** | TypeScript | 5.8 | Tipado estático |
+| **Build** | Vite | 6.2 | Bundler frontend + dev server |
+| **CSS** | Tailwind CSS | 4.1 | Estilos utilitarios |
+| **DB Driver** | pg (node-postgres) | 8.20 | Conector PostgreSQL |
+| **Auth** | jsonwebtoken + bcryptjs | 9.0 / 3.0 | JWT + hash |
+| **Logging** | pino | 10.3 | Logger estructurado |
+| **Testing** | Vitest + Supertest | 3.1 / 7.2 | Tests unitarios e integración |
+| **AI** | @google/genai, fetch (Groq) | 1.29 | Enriquecimiento IA |
+| **Scraping** | playwright | 1.59 | Automatización navegador |
+| **Container** | Docker + Compose | — | Despliegue |
+| **Proxy** | Nginx | — | Reverse proxy |
+
+### Organización del Proyecto
+
+```
+/var/www/cantrack/
+├── server.ts                    # Entry point backend
+├── server/                      # Backend
+│   ├── application/             # Use cases (casos de uso)
+│   │   ├── auth/                #   Login, Setup, ChangePassword, etc.
+│   │   ├── company/             #   CRUD + Enrichment
+│   │   ├── job/                 #   Job CRUD
+│   │   ├── candidate/           #   Candidate management
+│   │   ├── apply/               #   Application flow
+│   │   └── sync/                #   Scraped job sync
+│   ├── domain/                  # Entidades + interfaces de repositorio
+│   │   ├── company/             #   Company entity + ICompanyRepository
+│   │   ├── job/                 #   Job entity + IJobRepository
+│   │   ├── user/                #   User entity + IUserRepository
+│   │   ├── candidate/           #   Candidate entity
+│   │   ├── application/         #   Application entity
+│   │   └── shared/              #   DomainError base class
+│   ├── services/                # Lógica de negocio + integraciones
+│   │   ├── enrichment.service.ts
+│   │   ├── email-campaign.service.ts
+│   │   ├── campaign-automation.service.ts
 │   │   ├── mdirector.service.ts
+│   │   ├── google-sheets.service.ts
+│   │   ├── gemini.service.ts / groq.service.ts / ollama.service.ts
 │   │   ├── job-classifier.service.ts
-│   │   ├── greenhouse.service.ts / lever.service.ts / portal-detector.ts
-│   │   └── campaign-automation.service.ts
-│   ├── routes/                        # Routers Express
-│   │   ├── auth.routes.ts             # 11 endpoints (refactorizados)
-│   │   ├── companies.routes.ts        # 10 endpoints
-│   │   ├── jobs.routes.ts             # 8 endpoints
-│   │   ├── campaign.routes.ts         # 14 endpoints (743 líneas)
-│   │   ├── ontario.routes.ts          # 448 líneas
-│   │   ├── candidates.routes.ts       # 5 endpoints
-│   │   ├── applications.routes.ts     # 4 endpoints
-│   │   ├── enrichment.routes.ts       # 2 endpoints
-│   │   ├── sync.routes.ts             # 1 endpoint
-│   │   ├── webhook.routes.ts          # 3 endpoints
-│   │   └── agent.routes.ts            # 48 líneas (comentado en server.ts)
-│   ├── middleware/
-│   │   ├── auth.middleware.ts         # JWT verify + role check
+│   │   ├── workflow.service.ts
+│   │   ├── automation.service.ts
+│   │   ├── portal-detector.ts
+│   │   └── providers/           # Chain-of-responsibility IA
+│   │       ├── IEnrichmentProvider.ts
+│   │       ├── ProviderChain.ts
+│   │       ├── GeminiProvider.ts
+│   │       ├── GroqProvider.ts
+│   │       ├── OllamaProvider.ts
+│   │       └── WebSearchProvider.ts
+│   ├── infrastructure/          # Implementaciones de repositorios
+│   │   └── database/
+│   │       ├── BaseRepository.ts
+│   │       ├── CompanyRepository.ts
+│   │       ├── JobRepository.ts
+│   │       ├── UserRepository.ts
+│   │       ├── CandidateRepository.ts
+│   │       └── ProvinceCompanyRepository.ts
+│   ├── middleware/              # Express middleware
+│   │   ├── auth.middleware.ts
 │   │   ├── error.middleware.ts
 │   │   ├── rate-limit.middleware.ts
 │   │   ├── request-id.middleware.ts
+│   │   ├── request-logger.middleware.ts
 │   │   └── audit-log.middleware.ts
-│   ├── lib/
-│   │   ├── config.ts                  # Validación env vars + pool + constantes
-│   │   ├── logger.ts                  # Pino estructurado
-│   │   └── validation.ts             # Schemas Zod
-│   └── utils/
-│       ├── passwordPolicy.ts
-│       ├── region-filter.ts
-│       ├── normalization.ts
-│       └── slug.ts
-├── src/                               # Frontend React
-│   ├── App.tsx                        # Componente raíz + router
-│   ├── components/
-│   │   ├── Auth/                      # Login, Setup, ChangePassword
-│   │   ├── Campaigns/CampaignModule.tsx
-│   │   ├── Companies/                  # CompanyList, CompanyDetail, SendOfferModal
-│   │   ├── Dashboard/Dashboard.tsx
-│   │   ├── Jobs/                      # JobTable, JobDetail, JobsView, ApplicationQueue
-│   │   ├── Routes/                    # RouteManager, GeocodingManager
-│   │   ├── Settings/                  # Settings, UserManagement, ProfileSettings, ExcelExport
-│   │   ├── Candidates/               # CandidatesList
-│   │   ├── Layout/                   # Sidebar, Topbar
-│   │   ├── UI/                       # Toast, Badges, LogoIcon, TipoSelector
-│   │   └── ErrorBoundary.tsx
-│   └── contexts/AuthContext.tsx
-├── db/
-│   ├── schema.sql                     # Schema completo + seeds (~400 líneas)
-│   └── migrations/                    # Migraciones incrementales SQL
-│       ├── 003_triggers_and_indexes.sql
-│       ├── 004_normalize_addresses.sql
-│       └── 005_fix_address_assignments.sql
-├── scripts/                           # Scripts de utilidad (30+ archivos)
-│   ├── deploy-vps.sh                  # Deploy manual SCP/bash
-│   ├── export-to-excel.ts / export-to-sheets.ts
-│   ├── enrich-companies.ts
-│   ├── seed-mdirector-templates.ts
-│   └── ... (migraciones one-off, diagnósticos)
-├── Optimus_rutas/                     # Microservicio Python
-│   ├── app/
-│   │   ├── main.py                   # FastAPI entry point
-│   │   ├── models/db.py              # SQLAlchemy models (Route, RouteStop, GeocodingCache)
-│   │   ├── services/                 # route_optimizer.py, geocoding_service.py, etc.
-│   │   ├── routes/                   # geocoding_endpoints, health_endpoints, routes_endpoints
-│   │   └── utils/                    # config, database, logger
-│   ├── alembic/                      # Migrations SQLAlchemy
-│   └── frontend/                     # HTML/JS/CSS estático
-├── docker-compose.yml                # 3 servicios (app, optimus-rutas, ollama)
-├── Dockerfile                        # Multi-stage Node 22
-└── nginx.conf                        # Reverse proxy
+│   ├── routes/                  # Route handlers
+│   │   ├── auth.routes.ts
+│   │   ├── companies.routes.ts
+│   │   ├── jobs.routes.ts
+│   │   ├── campaign.routes.ts
+│   │   ├── candidates.routes.ts
+│   │   ├── applications.routes.ts
+│   │   ├── sync.routes.ts
+│   │   ├── export.routes.ts
+│   │   ├── webhook.routes.ts
+│   │   ├── health.routes.ts
+│   │   ├── enrichment.routes.ts
+│   │   └── workflow.routes.ts
+│   ├── automation/              # Cron jobs
+│   │   └── cron-jobs.ts
+│   ├── lib/                     # Config, logger, validation
+│   ├── data/                    # Datos estáticos (serviceTypes, mdirectorSegments)
+│   └── utils/                   # Utilidades
+├── src/                         # Frontend React
+│   ├── components/              # Componentes por dominio
+│   ├── contexts/                # AuthContext
+│   ├── services/                # apiClient, geminiService
+│   └── utils/                   # tipo.ts
+├── db/                          # Migraciones SQL
+├── scripts/                     # Scripts CLI (30+)
+├── Optimus_rutas/               # Microservicio Python
+├── docs/                        # Documentación
+├── docker-compose.yml
+├── Dockerfile
+└── nginx.conf
 ```
 
----
-
-## 4. Modelo de Datos
-
-### 4.1 Esquema PostgreSQL (CanTrack)
-
-Extraído de `db/schema.sql:10-400`.
-
-**Tablas principales:**
-
-| Tabla | Columnas | PK | FK | Índices |
-|-------|----------|----|----|---------|
-| `users` | id, email, password_hash, first_name, last_name, role, is_active, created_at, updated_at | id UUID | — | idx_users_email |
-| `companies` | id, name, slug, legal_name, industry, company_size, hq_city, hq_province, hq_country, exact_address, phone, contact_email, website, description, known_ats_portal, enrichment_status, enriched_at, created_at, updated_at | id UUID | — | idx_companies_slug, idx_companies_enrichment_status |
-| `company_tech_stack` | id, company_id, technology | id UUID | companies(id) CASCADE | UNIQUE(company_id, technology) |
-| `jobs` | id, company_id, title, source, url, location, country, category, application_type, is_easy_apply, is_active, created_at, updated_at | id UUID | companies(id) RESTRICT | idx_jobs_company_id, idx_jobs_created_at, idx_jobs_source, idx_jobs_is_active |
-| `job_required_skills` | id, job_id, skill | id UUID | jobs(id) CASCADE | UNIQUE(job_id, skill) |
-| `user_saved_jobs` | user_id, job_id, is_favorite, saved_at | (user_id, job_id) | users(id), jobs(id) | — |
-| `candidates` | id, name, role, email, phone, location, linkedin_url, resume_url, years_of_experience, status, bio, created_at, updated_at | id UUID | — | idx_candidates_status |
-| `candidate_skills` | id, candidate_id, skill | id UUID | candidates(id) CASCADE | UNIQUE(candidate_id, skill) |
-| `applications` | id, job_id, candidate_id, status, applied_date, notes, created_at, updated_at | id UUID | jobs(id) RESTRICT, candidates(id) RESTRICT | idx_applications_status, idx_applications_job_id, idx_applications_candidate_id |
-| `scraped_jobs` | id (SERIAL), fuente, titulo, empresa, url_postulacion, keyword, fecha_creacion | id SERIAL | — | idx_scraped_jobs_fuente, idx_scraped_jobs_fecha |
-| `ontario_companies` | id, nombre, telefono, tipo, correo, direccion, provincia, region, ciudad, pueblo, work, descripcion, dominio_de_pagina, lista_de_llamadas, is_duplicate, status, created_at, updated_at | id UUID | — | idx_ontario_companies_nombre_unique |
-
-**Enums:** `enrichment_status_enum` (pending, processing, db_matched, scraped, verified, failed), `application_status_enum` (Saved, Applied, Interview, Offer, Rejected, Placed), `candidate_status_enum` (Available, Interviewing, Placed, Inactive), `job_source_enum` (linkedin, indeed, glassdoor, company_website, other)
-
-### 4.2 Esquema Optimus_rutas (SQLAlchemy)
-
-Definido en `Optimus_rutas/app/models/db.py:55-137`.
-
-| Tabla | Columnas | PK | FK |
-|-------|----------|----|----|
-| `routes` | id, user_id, name, status, start_address, start_lat, start_lng, return_to_start, average_speed_kmh, total_distance_km, estimated_time_minutes, current_stop_index, notes, created_at, updated_at, started_at, completed_at, deleted_at | id String(36) | — |
-| `route_stops` | id, route_id, order, address, lat, lng, label, distance_from_previous_km, status, visited_at, notes | id String(36) | routes(id) CASCADE |
-| `geocoding_cache` | id, address_normalized, lat, lng, confidence_score, mapbox_response_raw, created_at | id String(36) | — |
-
-### 4.3 Relaciones Clave
-
-- `companies` 1:N `jobs` (con RESTRICT en delete)
-- `companies` 1:N `company_tech_stack` (con CASCADE)
-- `jobs` 1:N `job_required_skills` (con CASCADE)
-- `jobs` N:M `users` via `user_saved_jobs`
-- `jobs` N:M `candidates` via `applications` (con RESTRICT)
-- `routes` 1:N `route_stops` (con CASCADE, ordenado por `order`)
-
----
-
-## 5. API Endpoints
-
-### 5.1 Rutas Inline en `server.ts`
-
-111 definiciones de ruta directas en `server.ts`. Principales:
-
-| Método | Ruta | Auth | Roles | Rate Limit |
-|--------|------|------|-------|------------|
-| GET | `/api/health` | — | — | — |
-| GET | `/api/config/mapbox` | JWT | — | — |
-| GET | `/api/geocoding/status` | JWT | — | — |
-| POST | `/api/auth/setup` | — | — | setupLimiter |
-| POST | `/api/auth/login` | — | — | authLimiter |
-| POST | `/api/auth/logout` | — | — | — |
-| GET | `/api/auth/me` | JWT | — | — |
-| PATCH | `/api/auth/profile` | JWT | — | — |
-| PATCH | `/api/auth/password` | JWT | — | — |
-| GET | `/api/users` | JWT | admin | — |
-| POST | `/api/users` | JWT | admin | — |
-| PATCH | `/api/users/:id/role` | JWT | admin | — |
-| DELETE | `/api/users/:id` | JWT | admin | — |
-| GET | `/api/companies` | JWT | — | — |
-| GET | `/api/companies/:id` | JWT | — | — |
-| POST | `/api/companies` | JWT | admin, editor | — |
-| PATCH | `/api/companies/:id/tipo` | JWT | — | — |
-| DELETE | `/api/companies/all` | JWT | admin | — |
-| POST | `/api/companies/export` | JWT | — | exportLimiter |
-| POST | `/api/gemini/enrich` | JWT | admin, editor | — |
-| POST | `/api/enrichment/process-next` | JWT | — | — |
-| GET | `/api/enrichment/status` | JWT | — | — |
-| GET | `/api/region-filter` | JWT | — | — |
-| GET | `/api/jobs` | JWT | — | — |
-| GET | `/api/jobs/:id` | JWT | — | — |
-| POST | `/api/jobs` | JWT | admin, editor | — |
-| PATCH | `/api/jobs/:id` | JWT | admin, editor | — |
-| DELETE | `/api/jobs/:id` | JWT | admin, editor | — |
-| GET | `/api/stats` | JWT | — | — |
-| GET | `/api/dashboard` | JWT | — | — |
-| POST | `/api/sync/scraped-jobs` | JWT | — | — |
-| POST | `/api/webhook/scraper` | webhook_secret | — | — |
-| POST | `/api/webhook/enrich` | webhook_secret | — | — |
-| GET | `/api/webhook/enrich/status` | JWT | — | — |
-| GET | `/api/campaigns/config` | JWT | admin, editor | — |
-| PATCH | `/api/campaigns/config` | JWT | admin | — |
-| GET | `/api/campaigns/preview` | JWT | admin, editor | — |
-| POST | `/api/campaigns/send` | JWT | admin | — |
-| GET | `/api/campaigns/history` | JWT | admin, editor | — |
-| GET | `/api/campaigns/sheet-companies` | JWT | — | — |
-
-### 5.2 Rutas en `server/routes/` (refactorizadas)
-
-Auth routes (`auth.routes.ts`):
-
-| Método | Ruta | Auth | Roles | Rate Limit |
-|--------|------|------|-------|------------|
-| POST | `/api/auth/setup` | — | — | setupLimiter |
-| POST | `/api/auth/login` | — | — | authLimiter |
-| POST | `/api/auth/logout` | — | — | — |
-| GET | `/api/auth/me` | JWT | — | — |
-| PATCH | `/api/auth/profile` | JWT | — | — |
-| PATCH | `/api/auth/password` | JWT | — | — |
-| GET | `/api/auth/password-policy` | — | — | — |
-| GET | `/api/users` | JWT | admin | — |
-| POST | `/api/users` | JWT | admin | — |
-| PATCH | `/api/users/:id/role` | JWT | admin | — |
-| DELETE | `/api/users/:id` | JWT | admin | — |
-
-**Nota:** Hay duplicación funcional entre las rutas inline de `server.ts:718-902` y las de `server/routes/auth.routes.ts`. Dependiendo de qué módulo se importe (ninguno se importa actualmente en server.ts), ambas copias podrían estar activas.
-
-Companies routes (`companies.routes.ts:34-390`):
-
-| Método | Ruta | Auth | Roles |
-|--------|------|------|-------|
-| GET | `/api/companies` | JWT | — |
-| GET | `/api/companies/:id` | JWT | — |
-| POST | `/api/companies` | JWT | admin, editor |
-| PATCH | `/api/companies/:id` | JWT | admin, editor |
-| DELETE | `/api/companies/all` | JWT | admin |
-| DELETE | `/api/companies/:id` | JWT | admin |
-| POST | `/api/companies/export` | JWT | exportLimiter |
-| POST | `/api/companies/import` | JWT | admin, editor |
-| POST | `/api/companies/enrich` | JWT | admin, editor (enrichLimiter) |
-| POST | `/api/companies/:id/send-offer` | JWT | admin, editor |
-| GET | `/api/companies/:id/email-logs` | JWT | — |
-
-Campaign routes (`campaign.routes.ts:49-743`):
-
-| Método | Ruta | Auth | Roles |
-|--------|------|------|-------|
-| GET | `/api/campaigns/templates` | JWT | admin, editor |
-| GET | `/api/campaigns/template-map` | JWT | admin, editor |
-| POST | `/api/campaigns/template-map` | JWT | admin |
-| DELETE | `/api/campaigns/template-map/:region/:work_label` | JWT | admin |
-| POST | `/api/campaigns/send-template` | JWT | admin |
-| POST | `/api/campaigns/send-test` | JWT | admin |
-| POST | `/api/campaigns/webhook/bounce` | — | — |
-| GET | `/api/campaigns/suppression` | JWT | admin, editor |
-| POST | `/api/campaigns/suppression` | JWT | admin |
-| DELETE | `/api/campaigns/suppression/:id` | JWT | admin |
-| GET | `/api/campaigns/auto-config` | JWT | admin, editor |
-| PATCH | `/api/campaigns/auto-config` | JWT | admin |
-| POST | `/api/campaigns/auto-run` | JWT | admin |
-| GET | `/api/campaigns/history` | JWT | admin, editor |
-| GET | `/api/campaigns/distinct-work` | JWT | admin, editor |
-
-Jobs routes (`jobs.routes.ts:18-239`):
-
-| Método | Ruta | Auth | Roles |
-|--------|------|------|-------|
-| GET | `/api/jobs` | JWT | — |
-| GET | `/api/jobs/:id` | JWT | — |
-| POST | `/api/jobs` | JWT | admin, editor |
-| PATCH | `/api/jobs/:id` | JWT | admin, editor |
-| DELETE | `/api/jobs/:id` | JWT | admin, editor |
-| GET | `/api/jobs/stats/dashboard` | JWT | — |
-| POST | `/api/jobs/mapping/prepare` | JWT | — |
-| POST | `/api/jobs/gemini/cover-letter` | JWT | admin, editor |
-
-### 5.3 Endpoints del Microservicio (Optimus_rutas)
-
-Definidos en `Optimus_rutas/app/routes/`.
-
-| Método | Ruta | Descripción |
-|--------|------|-------------|
-| GET | `/health` | Health check |
-| GET | `/health/db` | DB connection check |
-| POST | `/geocode` | Geocodificar dirección (Mapbox) |
-| POST | `/routes` | Crear ruta |
-| GET | `/routes` | Listar rutas |
-| GET | `/routes/{id}` | Obtener ruta |
-| PATCH | `/routes/{id}` | Actualizar ruta |
-| PATCH | `/routes/{id}/stop` | Actualizar parada |
-| DELETE | `/routes/{id}` | Eliminar ruta |
-
-### 5.4 Totales
-
-- **Server.ts inline:** ~50 endpoints únicos
-- **Routes refactorizadas:** ~55 endpoints
-- **Optimus_rutas:** 9 endpoints
-- **Endpoints totales:** ~95+ (con duplicación entre inline y refactorizado)
-
----
-
-## 6. Arquitectura y Patrones
-
-### 6.1 Patrones Identificados
-
-| Patrón | Ubicación | Implementación |
-|--------|-----------|----------------|
-| **Chain of Responsibility** | `server/services/enrichment.service.ts` | Proveedores de enriquecimiento en cadena: Gemini → Groq → Ollama → WebSearch. Cada provider llena campos vacíos y pasa al siguiente si faltan datos. |
-| **Repository** | `server/domain/*/I*Repository.ts` | Interfaces para Company, Job, Candidate, Application, User. Implementaciones inline con SQL crudo. |
-| **Use Case / Interactor** | `server/application/*/*.ts` | Casos de uso separados (CreateCompany, GetCompanies, Login, Setup, etc.) con inyección de dependencias via constructor. |
-| **MVC** | Server completo | Model (domain/entities + DB queries), View (React), Controller (routes + services). |
-| **Strategy** | `server/services/enrichment.service.ts:37-40` | mergeInto() aplica merge strategy field-by-field entre providers. |
-| **Middleware Chain** | `server.ts` setup | Express middleware pipeline: request-id → cookieParser → cors → helmet → audit-log → auth → routes → error handler. |
-| **Factory** | `server/middleware/auth.middleware.ts:21` | `createRequireAuth(pool)` retorna middleware bound al pool. |
-| **Singleton** | `server/lib/config.ts:43` | Pool de PostgreSQL. |
-| **Debounced Write** | `server.ts:70-91` | Export a Excel con debounce de 10s para batching. |
-
-### 6.2 Diagrama de Arquitectura
+### Flujo General de Ejecución
 
 ```mermaid
 graph TB
-    subgraph "Frontend (React + Vite)"
-        A[App.tsx] --> B[AuthContext]
-        A --> C[Componentes UI]
-        C --> D[apiClient.ts]
+    subgraph "Startup sequence"
+        A[npm run dev / docker-compose up]
+        B[server.ts loads dotenv/config]
+        C[Express app init]
+        D[PostgreSQL pool connect]
+        E[Auto-migrations run]
+        F[Cron jobs start]
+        G[Server listening :3000]
+        A --> B --> C --> D --> E --> F --> G
     end
 
-    subgraph "Backend (Express + Node 22)"
-        D --> E[server.ts]
-        E --> F[Middleware Chain]
-        F --> G[Router Inline 50+ endpoints]
-        F --> H[Router Refactorizado 55+ endpoints]
-        G --> I[Application Layer]
-        H --> I
-        I --> J[Domain Entities]
-        I --> K[Services Layer]
-        K --> L[EnrichmentService]
-        K --> M[WorkflowService]
-        K --> N[EmailCampaignService]
-        K --> O[ApplicationAgentService]
-        L --> P[GeminiService]
-        L --> Q[GroqService]
-        L --> R[OllamaService]
-        L --> S[WebSearchService]
+    subgraph "Request flow"
+        H[Browser] -->|HTTP| Nginx
+        Nginx -->|:3000| Express
+        Express -->|/api/*| Routes
+        Routes -->|auth check| AuthMiddleware
+        Routes -->|data| DB[(PostgreSQL)]
+        Routes -->|enrich| AI[AI Providers]
+        Routes -->|email| MDirector
+        Routes -->|sheets| GoogleSheets
+        Routes -->|routes| Optimus
     end
-
-    subgraph "Microservicio (Python FastAPI)"
-        T[main.py] --> U[Route Optimizer OR-Tools]
-        T --> V[Geocoding Service Mapbox]
-        T --> W[SQLAlchemy Async]
-    end
-
-    subgraph "Infraestructura"
-        X[(PostgreSQL CasaOS)]
-        Y[MDirector API]
-        Z[Google Sheets API]
-        AA[Ollama Local]
-    end
-
-    E --> X
-    T --> X
-    N --> Y
-    O --> Z
-    K --> AA
-    V --> AA
 ```
 
-### 6.3 Flujo de Enriquecimiento
+### Cómo Inicia la Aplicación
+
+Archivo: `server.ts` (518 líneas)
+
+1. **`import 'dotenv/config'`** — Carga variables de entorno ANTES que cualquier otro import
+2. **Configura Express** con helmet, cors, cookie-parser, JSON parser (1MB limit)
+3. **Conecta PostgreSQL** vía `pg.Pool` usando `DATABASE_URL`
+4. **Ejecuta auto-migraciones** (`runMigrations()`): tablas nuevas y columnas faltantes
+5. **Inicia cron jobs** (`initCronJobs(pool)`) — geocoding, enrichment, campaigns, workflow
+6. **Configura rate limiters** por ruta
+7. **Importa dinámicamente** todos los routers
+8. **Configura Vite** (dev mode) o sirve `dist/` estático (production)
+9. **Escucha en `0.0.0.0:3000`**
+
+---
+
+## 2. Configuración de Entidades
+
+### Tabla Maestra de Entidades
+
+| Entidad | Tabla BD | Relaciones | Servicio Principal | Endpoints | Seed |
+|---------|----------|-----------|-------------------|-----------|------|
+| **User** | `users` | → email_logs, routes, application_queue | Auth Routes | `/api/auth/*`, `/api/users/*` | No (setup inicial) |
+| **Company** | `companies` | → jobs, email_logs, route_stops | Company Routes | `/api/companies/*` | `db/seed.sql` (55) |
+| **Job** | `jobs` | → companies, applications, application_queue | Job Routes | `/api/jobs/*` | `db/seed.sql` (1) |
+| **Candidate** | `candidates` | → applications, candidate_skills | Candidate Routes | `/api/candidates/*` | No |
+| **Application** | `applications` | → jobs, candidates | Application Routes | `/api/applications/*` | No |
+| **OntarioCompany** | `ontario_companies` | → jobs (province_id) | Ontario Routes | `/api/ontario/*` | No (~8,055 rows) |
+| **QuebecCompany** | `quebec_companies` | → jobs (province_id) | Quebec Routes | `/api/quebec/*` | No (~15,676 rows) |
+| **CampaignConfig** | `campaign_config` | — (singleton) | Campaign Routes | `/api/campaigns/config` | `server.ts` insert |
+| **Route** | `routes` | → route_stops, users | Visits Routes | `/api/routes/*` | No |
+| **RouteStop** | `route_stops` | → routes, companies | Visits Routes | `/api/routes/*` | No |
+
+### Entidad: User
+
+- **Archivo entidad:** `server/domain/user/User.ts`
+- **Archivo repositorio:** `server/infrastructure/database/UserRepository.ts`
+- **Archivo interfaz:** `server/domain/user/IUserRepository.ts`
+- **Migraciones:** Auto-migración en `server.ts:runMigrations()` (solo si existen columnas nuevas)
+- **Validaciones:** Email regex, password min 8 chars, role permitido (admin/editor/viewer)
+- **Enums:** `UserRole = 'admin' | 'editor' | 'viewer'`
+- **Middlewares:** `auth.middleware.ts` (JWT), `rate-limit.middleware.ts`
+
+### Entidad: Company
+
+- **Archivo entidad:** `server/domain/company/Company.ts`
+- **Archivo repositorio:** `server/infrastructure/database/CompanyRepository.ts`
+- **Migraciones principales:**
+  - `server.ts:runMigrations()` — columnas: phone, contact_email, hq_region, hq_town, suggested_services, google_maps_status, tipo, last_campaign_sent_at
+  - Elimina columnas legacy: sector, is_publicly_traded, stock_ticker, confidence_score, needs_manual_review
+- **Enums:** `EnrichmentStatus`, `CompanyTipo` (verde/naranja/morado/rojo)
+- **Column allowlist:** `ALLOWED_COMPANY_COLUMNS` en `companies.routes.ts:18-23`
+
+### Entidad: Job
+
+- **Archivo entidad:** `server/domain/job/Job.ts`
+- **Migraciones:** `server.ts` — service_type_id, service_match_confidence, service_match_reasoning, service_match_provider
+- **Enums:** `JobSource = 'linkedin' | 'indeed' | 'glassdoor' | 'company_website' | 'other'`
+- **Deduplicación:** índice único `idx_jobs_company_title_dedup` (raw_company_name + title, donde is_active = true)
+
+### Entidad: Ontario/Quebec Company
+
+- **Tablas:** `ontario_companies`, `quebec_companies` (~8,000 y ~15,000 filas respectivamente)
+- **Campos en español:** nombre, telefono, tipo, correo, direccion, provincia, region, ciudad, pueblo, work, descripcion, dominio_de_pagina
+- **Enriquecimiento:** enrichment_status, lat, lng, suggested_services, last_campaign_at, email_status, email_bounce_count
+
+---
+
+## 3. Inicialización del Sistema
+
+### `npm install`
+
+Instala dependencias de `package.json`:
+- **Producción:** express, pg, jsonwebtoken, bcryptjs, playwright, @google/genai, exceljs, googleapis, pino, zod, react, etc.
+- **Desarrollo:** typescript, vitest, supertest, testcontainers, tsx, tailwindcss
+
+### `npm run dev`
+
+Ejecuta `tsx server.ts` — el flujo completo:
+
+1. **Carga `.env`** vía `dotenv/config` (línea 2 de `server.ts`)
+2. **Valida variables requeridas** en `server/lib/config.ts`:
+   - `JWT_SECRET` (min 32 chars) — si falta, `process.exit(1)`
+   - `DATABASE_URL` — si falta, `process.exit(1)`
+3. **Conecta PostgreSQL** con Pool (max 10 conexiones)
+4. **Ejecuta `runMigrations()`**: ~30 ALTER TABLE/CREATE TABLE idempotentes
+5. **Inicia cron jobs** vía `initCronJobs(pool)`:
+   - Geocoding a los 10s, luego cada 60 min
+   - Campaign check a los 60s, luego cada 15 min
+   - Workflow check a los 90s, luego cada 15 min
+   - Fast Sync a los 30s, luego cada 5 min
+   - Enrichment a los 3s, luego cada 8s (5 por ciclo)
+6. **Configura Express** con helmet, cors, cookieParser, JSON body parser
+7. **Configura rate limiters** (auth, api, heavy, setup, agent, password)
+8. **Importa dinámicamente** 15 routers (ver `server.ts:462-490`)
+9. **Configura Vite middleware** (dev) o static `dist/` (prod)
+10. **Inicia servidor** en `0.0.0.0:3000`
+
+### `docker-compose up`
+
+Levanta 3 servicios:
+
+```
+docker-compose.yml
+├── app          → Build desde Dockerfile, puerto :3000
+├── optimus-rutas → Build desde Optimus_rutas/Dockerfile, puerto :8000
+└── ollama       → Imagen ollama/ollama:latest, puerto :11434
+```
+
+Redes: `cantrack-network` (interna) + `postgresql_default` (CasaOS externa)
+
+### Servicios externos necesarios
+
+| Servicio | Variable | ¿Requerido en dev? | Notas |
+|----------|----------|-------------------|-------|
+| PostgreSQL | `DATABASE_URL` | **Sí** | Todo el sistema depende de BD |
+| Gemini AI | `GEMINI_API_KEY` | No | Sin esto, usa Groq → Ollama → WebSearch |
+| Groq AI | `GROQ_API_KEY` | No | Fallback de Gemini |
+| MDirector | `MDIRECTOR_*` | No | Solo para campañas de email |
+| Mapbox | `MAPBOX_TOKEN` | No | Geocoding usa Nominatim como fallback |
+| Google Sheets | `GOOGLE_SERVICE_ACCOUNT_CREDENTIALS` | No | Export opcional |
+
+### NO utiliza
+
+- **Redis**: El proyecto NO tiene Redis. El cache es en memoria (`server/utils/cache.ts`)
+- **Colas/RabbitMQ**: No. Usa setInterval + queries directas a BD
+- **Workers/Bull**: No. Todo corre en el mismo proceso
+- **Socket.IO**: No. Polling HTTP cada 60s
+
+---
+
+## 4. Scraping e Ingesta de Información
+
+### ¿Cómo funciona la ingesta?
+
+**NO hay un scraper integrado en el proyecto CanTrack CRM.**  
+La ingesta ocurre a través de **webhooks** que reciben datos de scrapers externos.
+
+### Punto de entrada
+
+`POST /api/webhook/scraper` — archivo: `server/routes/webhook.routes.ts`
+
+### Flujo completo
 
 ```mermaid
 sequenceDiagram
-    actor User
-    participant UI as React UI
-    participant API as Express API
-    participant ES as EnrichmentService
-    participant GEM as Gemini
-    participant GRO as Groq
-    participant WS as WebSearch
+    participant Scraper as Scraper Externo
+    participant Webhook as POST /api/webhook/scraper
+    participant Province as province-helpers
     participant DB as PostgreSQL
+    participant Classifier as JobClassifierService
+    participant Queue as Enrichment Queue
 
-    User->>UI: Click "Enrich"
-    UI->>API: POST /api/enrichment/process-next
-    API->>DB: SELECT next pending company
-    DB-->>API: company data
-    API->>ES: enrichCompany(company)
+    Scraper->>Webhook: {fuente, titulo, empresa, url_postulacion}
+    Webhook->>Webhook: Validar WEBHOOK_SECRET
+    Webhook->>Webhook: Validar campos requeridos
+    Webhook->>Webhook: Filtro regional (REGION_FILTER)
     
-    ES->>GEM: getEnrichmentData(name, industry)
-    alt Gemini returns partial data
-        GEM-->>ES: {industry, website, ...}
-        ES->>GRO: getEnrichmentData(name, missingFields)
-        GRO-->>ES: {phone, description, ...}
-        ES->>WS: search(name)
-        WS-->>ES: {contact_email, ...}
-    else Gemini fails
-        ES->>GRO: getEnrichmentData(name)
-        GRO-->>ES: partial data
-        ES->>WS: search(name, missingFields)
-        WS-->>ES: remaining fields
+    Webhook->>Province: findCompanyInBothTables(empresa)
+    alt Empresa existe
+        Province-->>Webhook: {id, table, src}
+    else Empresa nueva
+        Province->>Province: enrichAndInsertCompany(empresa)
+        Province-->>Webhook: {id, src} (nueva)
     end
-
-    ES->>DB: UPDATE companies SET ...
-    ES-->>API: enriched data
-    API-->>UI: {success: true, data}
-    User->>UI: Sees enriched fields
+    
+    Webhook->>DB: INSERT INTO jobs (...)
+    Webhook-->>Scraper: {success: true, isNew, province, companyId}
+    
+    DB->>Classifier: classifyJob(titulo) [background]
+    Classifier->>DB: UPDATE jobs SET service_type_id
+    
+    Note over Queue: Cron de enrichment procesa después
+    Queue->>DB: enrichNextPending()
 ```
 
-### 6.4 Flujo de Workflow Completo
+### Archivos principales
+
+| Archivo | Rol |
+|---------|-----|
+| `server/routes/webhook.routes.ts` | Receptor del webhook (131 líneas) |
+| `server/utils/province-helpers.ts` | Búsqueda/creación en tablas provinciales (132 líneas) |
+| `server/services/job-classifier.service.ts` | Clasificación IA de vacantes (411 líneas) |
+| `server/services/portal-detector.ts` | Detección de ATS desde URL (108 líneas) |
+| `server/services/automation.service.ts` | Postulación automatizada con Playwright (361 líneas) |
+
+### APIs consumidas por portal-detector
+
+| Portal | API Endpoint |
+|--------|-------------|
+| **Greenhouse** | `https://boards-api.greenhouse.io/v1/boards/{slug}/jobs/{id}/applications` |
+| **Lever** | `https://api.lever.co/v0/postings/{id}/apply` |
+| **Ashby** | `https://api.ashbyhq.com/applicationForm.submit` |
+| **SmartRecruiters** | `https://api.smartrecruiters.com/v1/companies/{slug}/postings/{id}/questionnaire/apply` |
+| **LinkedIn** | `null` (requiere extensión de navegador) |
+| **Indeed** | `null` (requiere extensión de navegador) |
+| **Workday** | `null` (requiere extensión de navegador) |
+
+### Manejo de errores
+
+- Validación de `WEBHOOK_SECRET` → 401 si no coincide
+- Validación de campos requeridos → 400 si falta empresa/titulo/url
+- Filtro regional → 200 con `{skipped: true}` si fuera de región
+- Duplicados → `ON CONFLICT DO UPDATE` en jobs
+- Errores de BD → 500 genérico
+
+### Reintentos
+
+No hay sistema de reintentos explícito para webhooks.  
+El cron de Fast Sync (`runFastSync` cada 5 min) reprocesa jobs con `province_id IS NULL`, actuando como reintento.
+
+---
+
+## 5. Sincronización
+
+### ¿Qué sincroniza?
+
+El sistema sincroniza **jobs no vinculados a empresas** desde la tabla `jobs` hacia `companies` y `ontario_companies`/`quebec_companies`.
+
+### Flujo de Sincronización
+
+```mermaid
+graph LR
+    A[Scraped Jobs<br/>(webhook)] -->|Jobs sin company_id| B[Sync Job]
+    B -->|raw_company_name| C{Existe en companies?}
+    C -->|Sí| D[UPDATE job SET company_id]
+    C -->|No| E[INSERT INTO companies]
+    E --> D
+    D --> F[JobClassifierService<br/>classifyJob()]
+    F --> G[UPDATE job SET service_type_id]
+```
+
+### Módulos participantes
+
+| Módulo | Archivo | Rol |
+|--------|---------|-----|
+| Sync Routes | `server/routes/sync.routes.ts` | Endpoint `POST /api/sync/scraped-jobs` |
+| Workflow Service | `server/services/workflow.service.ts` | `syncJobs()` — mismo proceso batch |
+| Cron Fast Sync | `server/automation/cron-jobs.ts` | `runFastSync()` cada 5 min |
+| Job Classifier | `server/services/job-classifier.service.ts` | Clasificación IA en background |
+
+### Tablas que actualiza
+
+| Tabla | Operación |
+|-------|-----------|
+| `jobs` | `SET company_id, province_id, province_source, service_type_id` |
+| `companies` | `INSERT` (si no existe) |
+| `scraped_jobs` | `SELECT` (legacy, solo lectura) |
+
+### Servicios que consume
+
+- **`EnrichmentService`** — solo para workflow completo
+- **`JobClassifierService`** — clasifica cada job vinculado
+- **`province-helpers.ts`** — para búsqueda en tablas provinciales
+- **`region-filter.ts`** — para filtrar jobs fuera de región configurada
+
+---
+
+## 6. Cron Jobs
+
+Todos los cron jobs corren **in-process** mediante `setInterval`/`setTimeout`.  
+No hay expresión cron tradicional ni daemon externo.
+
+Archivo: `server/automation/cron-jobs.ts` (377 líneas)
+
+| Cron | Archivo | Expresión (equivalente) | Frecuencia | Función ejecutada | Dependencias |
+|------|---------|------------------------|------------|-------------------|-------------|
+| **Geocoding** | `cron-jobs.ts:136-146` | `0 * * * *` | Cada 60 min (10s delay inicial) | `geocodePendingCompanies()` | Mapbox API o Nominatim |
+| **Enrichment** | `cron-jobs.ts:164-182` | `* * * * *` (8s entre batches) | Cada 8s (5 empresas/batch, 3s delay inicial) | `enrichNextPending()` | EnrichmentService, JobClassifierService |
+| **Fast Sync** | `cron-jobs.ts:157-160` | `*/5 * * * *` | Cada 5 min (30s delay inicial) | `runFastSync()` | slugify, province-helpers |
+| **Campaign Auto** | `cron-jobs.ts:148-150` | `*/15 * * * *` | Cada 15 min (60s delay inicial) | `checkAndRunCampaigns()` | CampaignAutomationService |
+| **Workflow** | `cron-jobs.ts:152-154` | `0 8,20 * * *` | Cada 15 min (check), ejecuta a las 08:00 y 20:00 UTC | `checkAndRunWorkflow()` | runWorkflowCycle |
+
+### Detalle de cada cron
+
+#### Geocoding (`geocodePendingCompanies`)
+- Lee `ontario_companies` y `quebec_companies` donde `lat IS NULL`
+- Usa Mapbox (paralelo, 10 concurrencia, 100ms entre chunks)
+- Fallback a Nominatim (secuencial, 1.1s entre requests)
+- Saltea direcciones fallidas en la misma ejecución
+- **Posibles fallos:** Timeout de Mapbox, rate limiting de Nominatim
+
+#### Enrichment (`enrichNextPending`)
+- Desatasca companies en 'processing' por más de 5 min
+- Solo enriquece companies con jobs vinculados
+- Procesa 5 por ciclo con 1.2s entre cada uno
+- Actualiza `enrichment_status`, datos enriquecidos, y sugerencias de servicios
+- **Posibles fallos:** API keys expiradas, cuota de IA agotada
+
+#### Fast Sync (`runFastSync`)
+- Jobs con `province_id IS NULL` y `raw_company_name` no vacío
+- Detecta provincia desde `location` (QC → quebec, etc.)
+- Crea empresa en tabla provincial si no existe
+- **Posibles fallos:** Datos inconsistentes, duplicados
+
+#### Campaign Automation (`checkAndRunCampaigns`)
+- Verifica `campaign_config.auto_enabled`
+- Solo corre en la hora configurada (`auto_schedule_hour`, default 08:00 UTC)
+- Una vez por día (verifica `auto_last_run_at`)
+- **Posibles fallos:** MDirector autenticación, templates faltantes
+
+#### Workflow (`checkAndRunWorkflow`)
+- Corre en horas UTC fijas (08:00 y 20:00)
+- Deduplica por slot horario
+- Ejecuta ciclo completo: requeue → sync → enrich → copy → export
+- **Posibles fallos:** Cualquier paso puede fallar individualmente (resultado PARTIAL)
+
+---
+
+## 7. Servicio Optimus Route
+
+### ¿Qué es?
+
+**Optimus_rutas** es un microservicio en **Python FastAPI** para optimización de rutas de visitas comerciales. Resuelve variantes del Problema del Viajante (TSP) usando Mapbox.
+
+### Dónde está implementado
+
+```
+Optimus_rutas/
+├── app/
+│   ├── main.py                    # Entry point FastAPI
+│   ├── models/
+│   │   ├── db.py                  # Modelos SQLAlchemy
+│   │   └── schemas.py             # Pydantic schemas
+│   ├── routes/
+│   │   ├── routes_endpoints.py    # CRUD de rutas
+│   │   ├── geocoding_endpoints.py # Geocodificación
+│   │   └── health_endpoints.py    # Health check
+│   ├── services/
+│   │   ├── route_optimizer.py     # Algoritmo TSP/VRP
+│   │   ├── route_service.py       # Lógica de rutas
+│   │   ├── distance_calculator.py # Distancias Mapbox
+│   │   └── geocoding_service.py   # Geocodificación Mapbox
+│   ├── repositories/              # Acceso a datos
+│   └── utils/
+│       ├── config.py              # Config desde env
+│       ├── database.py            # Conexión asyncpg
+│       └── logger.py              # Logging
+├── alembic/                       # Migraciones BD
+├── Dockerfile
+└── requirements.txt
+```
+
+### Configuración
+
+Variables de entorno en `Optimus_rutas/.env`:
+
+```env
+DATABASE_URL=postgresql+asyncpg://casaos:casaos@postgresql:5432/casaos
+MAPBOX_TOKEN=pk.eyJ1...
+```
+
+### API que utiliza
+
+| API | Propósito |
+|-----|-----------|
+| **Mapbox Matrix API** | Cálculo de distancias y tiempos entre puntos |
+| **Mapbox Geocoding API** | Conversión direcciones → coordenadas |
+
+### Flujo completo
+
+```mermaid
+sequenceDiagram
+    participant CRM as CanTrack CRM
+    participant Optimus as Optimus_rutas :8000
+    participant Mapbox as Mapbox API
+    participant DB as PostgreSQL
+
+    CRM->>Optimus: POST /api/optimize {stops, start_address}
+    Optimus->>Mapbox: Geocode addresses
+    Mapbox-->>Optimus: Coordinates
+    Optimus->>Mapbox: Distance Matrix
+    Mapbox-->>Optimus: Distances & times
+    Optimus->>Optimus: Solve TSP (nearest neighbor / 2-opt)
+    Optimus-->>CRM: {ordered_stops, total_distance, total_time}
+    CRM->>DB: Save optimized route
+```
+
+### Integración con el CRM
+
+- CanTrack CRM llama a `POST /optimus/api/optimize` configurado vía `OPTIMUS_URL`
+- Comparten la misma base de datos PostgreSQL
+- Tablas compartidas: `routes`, `route_stops` (creadas por auto-migraciones de CanTrack)
+- El CRM envía stops, Optimus devuelve orden optimizado
+
+---
+
+## 8. Scripts de Configuración
+
+### Scripts npm (`package.json`)
+
+| Script | Comando | Propósito |
+|--------|---------|-----------|
+| `dev` | `tsx server.ts` | Inicia servidor en modo desarrollo |
+| `build` | `vite build` | Compila frontend para producción |
+| `preview` | `vite preview` | Vista previa del build |
+| `clean` | `rm -rf dist` | Limpia artefactos de build |
+| `lint` | `tsc --noEmit` | Type-check sin emitir archivos |
+| `test` | `vitest run` | Ejecuta todos los tests |
+| `test:watch` | `vitest` | Tests en modo watch |
+
+### Scripts CLI (`scripts/`)
+
+Hay **30+ scripts** en la carpeta `scripts/`. Los principales:
+
+| Script | Lenguaje | Propósito |
+|--------|----------|-----------|
+| `init-db.mjs` | JS | Inicializa BD desde schema.sql |
+| `check-db.mjs` | JS | Verifica conexión a PostgreSQL |
+| `check-schema.mjs` | JS | Verifica estructura de tablas |
+| `enrich-companies.ts` | TS | Enriquecimiento manual de companies |
+| `export-to-excel.ts` | TS | Exporta companies a Excel |
+| `export-to-sheets.ts` | TS | Exporta companies a Google Sheets |
+| `deploy-vps.sh` | Bash | Despliegue automatizado a VPS |
+| `seed-mdirector-templates.ts` | TS | Siembra templates MDirector |
+| `migrate-*.ts/.mjs` | Varios | Migraciones one-shot |
+| `check-status.ts` | TS | Estado general del sistema |
+| `validate-geographic-data.py` | Python | Validación de datos geográficos |
+
+### Scripts Docker/Infra
+
+| Archivo | Propósito |
+|---------|-----------|
+| `Dockerfile` | Build multi-etapa para producción |
+| `docker-compose.yml` | Orquestación de 3 servicios |
+| `nginx.conf` | Reverse proxy con rutas |
+| `tunnel.py` | SSH tunnel para PostgreSQL remoto |
+| `run-enrichment.ps1` | PowerShell script para Windows |
+| `start-dev.ps1` | PowerShell script para desarrollo en Windows |
+
+### ¿Existe un script de setup automático desde cero?
+
+**No.** No existe un script que configure todo automáticamente.
+
+Lo más cercano:
+1. `scripts/init-db.mjs` — solo inicializa BD (requiere `.env` configurado)
+2. `deploy-vps.sh` — scripts de despliegue manual paso a paso
+
+**Lo que faltaría para un setup automático:**
+
+Un script `setup.sh` que:
+1. Verifique prerrequisitos (Node 22+, Docker, psql)
+2. Copie `.env.example` → `.env` y solicite valores interactivamente
+3. Ejecute `npm install`
+4. Cree la BD y ejecute `schema.sql + seed.sql`
+5. Inicie servicios Docker (PostgreSQL, Ollama)
+6. Ejecute migraciones
+7. Inicie el servidor
+8. Verifique health endpoint
+
+---
+
+## 9. Seed Inicial
+
+### Archivo `db/seed.sql` (69 líneas)
+
+Contiene **55 empresas** de ejemplo con **1 vacante**.
+
+### Datos Insertados
+
+| Tabla | Registros | Propósito |
+|-------|-----------|-----------|
+| `companies` | 55 | Empresas semilla (Quala, Sezzle, MixRank, 3Pillar, etc.) |
+| `jobs` | 1 | Vacante de ejemplo para Quala |
+
+Las empresas incluyen datos como: nombre, slug, industria, ciudad, provincia, país, website, descripción.
+
+### Datos creados por auto-migraciones (`server.ts:runMigrations()`)
+
+| Tabla | Datos | Propósito |
+|-------|-------|-----------|
+| `campaign_config` | 1 fila con UUID fijo | Config singleton de campañas |
+
+### Roles y Permisos
+
+NO hay seed de roles. Los roles se definen en TypeScript:
+```typescript
+// server/domain/user/User.ts
+export type UserRole = 'admin' | 'editor' | 'viewer';
+```
+
+El primer usuario se crea vía `POST /api/auth/setup` con rol `admin`.
+
+### Estados y Tipos
+
+| Dominio | Valores | Definido en |
+|---------|---------|------------|
+| `enrichment_status_enum` | pending, processing, db_matched, scraped, verified, failed, skipped | `db/schema.sql` + `server/domain/company/Company.ts` |
+| `application_status_enum` | pending, reviewing, rejected, accepted, withdrawn | `db/schema.sql` |
+| `candidate_status_enum` | Available, Interviewing, Placed, Inactive | `db/schema.sql` + `server/domain/candidate/Candidate.ts` |
+| `job_source_enum` | linkedin, indeed, glassdoor, company_website, other | `db/schema.sql` + `server/domain/job/Job.ts` |
+| `company_tipo` | verde, naranja, morado, rojo | `server.ts:runMigrations()` |
+| `route_status` | draft, active, paused, completed, cancelled | `server.ts:runMigrations()` |
+| `stop_status` | pending, visited, skipped, failed | `server.ts:runMigrations()` |
+
+---
+
+## 10. Dependencias entre Módulos
+
+### Grafo de Dependencias
+
+```mermaid
+graph TD
+    subgraph "Domain Layer"
+        Company[company/]
+        Job[job/]
+        User[user/]
+        Candidate[candidate/]
+        Application[application/]
+        Shared[shared/]
+    end
+
+    subgraph "Application Layer"
+        Auth[application/auth/]
+        CompanyUC[application/company/]
+        JobUC[application/job/]
+        CandidateUC[application/candidate/]
+        ApplyUC[application/apply/]
+        SyncUC[application/sync/]
+    end
+
+    subgraph "Services"
+        Enrich[enrichment.service]
+        Gemini[gemini.service]
+        Groq[groq.service]
+        Ollama[ollama.service]
+        WebSearch[websearch.service]
+        ProviderChain[ProviderChain]
+        MDirector[mdirector.service]
+        Sheets[google-sheets.service]
+        EmailCamp[email-campaign.service]
+        CampaignAuto[campaign-automation.service]
+        JobClassifier[job-classifier.service]
+        Workflow[workflow.service]
+        Automation[automation.service]
+        PortalDetect[portal-detector]
+    end
+
+    subgraph "Infrastructure"
+        BaseRepo[BaseRepository]
+        CompanyRepo[CompanyRepository]
+        JobRepo[JobRepository]
+        UserRepo[UserRepository]
+        CandidateRepo[CandidateRepository]
+        ProvinceRepo[ProvinceCompanyRepository]
+    end
+
+    subgraph "Routes"
+        AuthR[auth.routes]
+        CompanyR[companies.routes]
+        JobR[jobs.routes]
+        CampaignR[campaign.routes]
+        CandidateR[candidates.routes]
+        SyncR[sync.routes]
+        WebhookR[webhook.routes]
+        ExportR[export.routes]
+        WorkflowR[workflow.routes]
+        HealthR[health.routes]
+    end
+
+    subgraph "Cron Jobs"
+        Geocoding[geocodePendingCompanies]
+        EnrichCron[enrichNextPending]
+        FastSync[runFastSync]
+        CampaignCron[checkAndRunCampaigns]
+        WorkflowCron[checkAndRunWorkflow]
+    end
+
+    subgraph "External"
+        DB[(PostgreSQL)]
+        GeminiAPI[Gemini AI]
+        GroqAPI[Groq AI]
+        OllamaAPI[Ollama Local]
+        Mapbox[Mapbox API]
+        DDG[DuckDuckGo]
+        Wiki[Wikipedia]
+        MDAPI[MDirector API]
+        GSheets[Google Sheets API]
+        Optimus[Optimus_rutas]
+    end
+
+    %% Routes → Use Cases
+    AuthR --> Auth
+    CompanyR --> CompanyUC
+    JobR --> JobUC
+    SyncR --> SyncUC
+    CandidateR --> CandidateUC
+
+    %% Routes → Services
+    CompanyR --> Enrich
+    CompanyR --> MDirector
+    CompanyR --> JobClassifier
+    CampaignR --> Sheets
+    CampaignR --> MDirector
+    CampaignR --> EmailCamp
+    WebhookR --> JobClassifier
+    SyncR --> JobClassifier
+    WorkflowR --> Workflow
+
+    %% Use Cases → Domain
+    Auth --> User
+    CompanyUC --> Company
+    JobUC --> Job
+    SyncUC --> Job
+    CandidateUC --> Candidate
+
+    %% Use Cases → Infrastructure
+    Auth --> UserRepo
+    CompanyUC --> CompanyRepo
+    JobUC --> JobRepo
+    CandidateUC --> CandidateRepo
+
+    %% Services → AI Providers
+    Enrich --> ProviderChain
+    ProviderChain --> Gemini
+    ProviderChain --> Groq
+    ProviderChain --> Ollama
+    ProviderChain --> WebSearch
+    Gemini --> GeminiAPI
+    Groq --> GroqAPI
+    Ollama --> OllamaAPI
+    WebSearch --> DDG
+    WebSearch --> Wiki
+
+    %% Services → External
+    MDirector --> MDAPI
+    Sheets --> GSheets
+    Workflow --> Optimus
+
+    %% Repositories → DB
+    BaseRepo --> DB
+    CompanyRepo --> DB
+    JobRepo --> DB
+    UserRepo --> DB
+    ProvinceRepo --> DB
+
+    %% Cron → Services
+    Geocoding --> Mapbox
+    EnrichCron --> Enrich
+    EnrichCron --> JobClassifier
+    FastSync --> ProvinceRepo
+    CampaignCron --> CampaignAuto
+    WorkflowCron --> Workflow
+
+    %% Automation → Portal Detection
+    Automation --> PortalDetect
+```
+
+---
+
+## 11. Variables de Entorno
+
+| Variable | Obligatoria | Valor ejemplo | Dónde se usa |
+|----------|-------------|---------------|-------------|
+| `PORT` | No | `3000` | `server/lib/config.ts`, `server.ts` |
+| `ALLOWED_ORIGINS` | No | `http://localhost:5173,http://localhost:3000` | `server.ts` (CORS) |
+| `APP_URL` | No | `http://187.124.237.242:3000` | Server |
+| `NODE_ENV` | No | `development` | `server/lib/config.ts` |
+| `DATABASE_URL` | **Sí** | `postgresql://user:pass@host:5432/db` | `server/lib/config.ts` (Pool) |
+| `DATABASE_POOL_SIZE` | No | `10` | Server |
+| `JWT_SECRET` | **Sí** | `<64-char-hex>` | `server/lib/config.ts` (firma JWT) |
+| `WEBHOOK_SECRET` | **Sí** | `<64-char-hex>` | `server/routes/webhook.routes.ts` |
+| `COOKIE_SECURE` | No | `false` | `server/utils/auth-helpers.ts` |
+| `GEMINI_API_KEY` | No | `AIzaSy...` | `server/services/gemini.service.ts` |
+| `GROQ_API_KEY` | No | `gsk_...` | `server/services/groq.service.ts` |
+| `GROQ_MODEL` | No | `llama-3.1-8b-instant` | `server/services/groq.service.ts` |
+| `OLLAMA_BASE_URL` | No | `http://ollama:11434` | `server/services/ollama.service.ts` |
+| `OLLAMA_MODEL` | No | `qwen2:0.5b` | `server/services/ollama.service.ts` |
+| `MDIRECTOR_USERNAME` | No | `107843` | `server/services/mdirector.service.ts` |
+| `MDIRECTOR_PASSWORD` | No | `<hash>` | `server/services/mdirector.service.ts` |
+| `MDIRECTOR_FROM_EMAIL` | No | `info@vsmservices.ca` | `server/services/mdirector.service.ts` |
+| `MDIRECTOR_FROM_NAME` | No | `VSM Services` | `server/services/mdirector.service.ts` |
+| `MDIRECTOR_REPLY_TO` | No | `info@vsmservices.ca` | `server/services/mdirector.service.ts` |
+| `MAPBOX_TOKEN` | No | `pk.eyJ1...` | `server/automation/cron-jobs.ts` |
+| `OPTIMUS_URL` | No | `http://optimus-rutas:8000` | Server |
+| `ONTARIO_SHEETS_ID` | No | `1su_tF9...` | `server/services/google-sheets.service.ts` |
+| `QUEBEC_SHEETS_ID` | No | `1wP72JY...` | `server/services/google-sheets.service.ts` |
+| `GOOGLE_SERVICE_ACCOUNT_CREDENTIALS` | No | `{"type":"service_account"...}` | `server/services/google-sheets.service.ts` |
+| `AUTOMATION_SUBMIT_ENABLED` | No | `false` | `server/services/automation.service.ts` |
+| `REGION_FILTER` | No | `QC` / `ON` | `server/utils/region-filter.ts` |
+| `AGENT_SKIP_HOURS` | No | `true` | Server |
+| `ANTHROPIC_API_KEY` | No | `sk-ant-...` | Server |
+| `LOG_LEVEL` | No | `debug` | `server/lib/logger.ts` |
+| `DISABLE_HMR` | No | `true` | `vite.config.ts` |
+
+---
+
+## 12. Base de Datos
+
+### Motor
+
+PostgreSQL 17, sin ORM. Se usa el driver `pg` directamente.
+
+### Tablas (27 tablas)
+
+| # | Tabla | Propósito | Filas aprox |
+|---|-------|-----------|-------------|
+| 1 | `users` | Usuarios del sistema | ~5 |
+| 2 | `companies` | Empresas enriquecidas (CRM) | ~200 |
+| 3 | `company_tech_stack` | Stack tecnológico de empresas | 0 |
+| 4 | `jobs` | Vacantes de trabajo | ~1,000 |
+| 5 | `job_required_skills` | Habilidades requeridas | 0 |
+| 6 | `user_saved_jobs` | Jobs guardados por usuario | 0 |
+| 7 | `candidates` | Candidatos | ~50 |
+| 8 | `candidate_skills` | Habilidades de candidatos | 0 |
+| 9 | `applications` | Postulaciones | 0 |
+| 10 | `scraped_jobs` | Jobs legacy del scraper | 0 |
+| 11 | `ontario_companies` | Empresas de Ontario | ~8,055 |
+| 12 | `quebec_companies` | Empresas de Quebec | ~15,676 |
+| 13 | `email_campaign_log` | Historial de campañas | Variable |
+| 14 | `email_suppression` | Emails bloqueados | Variable |
+| 15 | `campaign_config` | Config singleton de campañas | 1 |
+| 16 | `mdirector_template_map` | Mapeo region+work → template | Variable |
+| 17 | `service_templates` | Plantillas HTML de servicios | Variable |
+| 18 | `application_queue` | Cola de postulaciones automáticas | 0 |
+| 19 | `routes` | Rutas de visita | Variable |
+| 20 | `route_stops` | Paradas de ruta | Variable |
+| 21 | `automation_log` | Log de automatización | Variable |
+| 22 | `automation_alerts` | Alertas de automatización | Variable |
+| 23 | `email_logs` | Log de emails enviados | Variable |
+| 24 | `candidates` (duck?) | — | — |
+| 25+ | Tablas de sistema | Extensiones, enums | — |
+
+### Diagrama ER
+
+```mermaid
+erDiagram
+    users ||--o{ email_logs : sends
+    users ||--o{ application_queue : creates
+    users ||--o{ routes : creates
+    users {
+        uuid id PK
+        varchar email UK
+        varchar password_hash
+        varchar first_name
+        varchar last_name
+        varchar role
+        boolean is_active
+    }
+
+    companies ||--o{ jobs : has
+    companies ||--o{ email_logs : receives
+    companies ||--o{ route_stops : visited
+    companies ||--o{ email_campaign_log : targeted
+    companies ||--o{ company_tech_stack : has
+    companies {
+        uuid id PK
+        varchar name
+        varchar slug UK
+        varchar industry
+        varchar company_size
+        varchar enrichment_status
+        varchar tipo
+        text website
+        text description
+        timestamp enriched_at
+    }
+
+    jobs ||--o{ applications : receives
+    jobs ||--o{ application_queue : queued
+    jobs ||--o{ job_required_skills : requires
+    jobs {
+        uuid id PK
+        uuid company_id FK
+        varchar title
+        varchar source
+        text url
+        varchar location
+        varchar service_type_id
+        uuid province_id FK
+        varchar province_source
+        boolean is_active
+    }
+
+    candidates ||--o{ candidate_skills : has
+    candidates ||--o{ applications : submits
+    candidates {
+        uuid id PK
+        varchar name
+        varchar email
+        varchar status
+        text bio
+    }
+
+    applications {
+        uuid id PK
+        uuid job_id FK
+        uuid candidate_id FK
+        varchar status
+    }
+
+    ontario_companies ||--o{ jobs : linked
+    ontario_companies {
+        uuid id PK
+        text nombre
+        text telefono
+        text correo
+        text direccion
+        text work
+        varchar enrichment_status
+        float lat
+        float lng
+    }
+
+    quebec_companies {
+        uuid id PK
+        text nombre
+        text telefono
+        text correo
+        text direccion
+        text work
+        varchar enrichment_status
+        float lat
+        float lng
+    }
+
+    routes ||--o{ route_stops : contains
+    routes {
+        uuid id PK
+        varchar name
+        varchar status
+        float total_distance_km
+        uuid created_by FK
+    }
+
+    route_stops {
+        uuid id PK
+        uuid route_id FK
+        uuid company_id FK
+        int order_index
+        varchar address
+        float lat
+        float lng
+        varchar status
+    }
+
+    campaign_config ||--o{ email_campaign_log : configures
+    campaign_config {
+        uuid id PK
+        int new_company_days
+        int resend_interval_days
+        boolean auto_enabled
+        int auto_schedule_hour
+    }
+
+    email_campaign_log {
+        uuid id PK
+        uuid company_id FK
+        varchar company_name
+        varchar company_email
+        varchar work_label
+        varchar mdirector_campaign_id
+        varchar status
+        timestamp sent_at
+    }
+```
+
+### Índices principales
+
+| Índice | Tabla | Columnas | Tipo |
+|--------|-------|----------|------|
+| `idx_jobs_url` | jobs | url | B-tree |
+| `idx_jobs_company_title_dedup` | jobs | raw_company_name, title | Único parcial (is_active) |
+| `idx_ontario_companies_nombre_unique` | ontario_companies | LOWER(nombre) | Único parcial (!is_duplicate) |
+| `idx_quebec_companies_nombre_unique` | quebec_companies | LOWER(nombre) | Único parcial (!is_duplicate) |
+| `idx_routes_status` | routes | status | B-tree |
+| `idx_route_stops_route_id` | route_stops | route_id | B-tree |
+| `idx_ecl_company_id` | email_campaign_log | company_id | B-tree |
+| `idx_ecl_sent_at` | email_campaign_log | sent_at | B-tree |
+| `idx_email_suppression_email` | email_suppression | LOWER(email) | Único parcial |
+| `idx_app_queue_status` | application_queue | status | B-tree |
+
+### Migraciones
+
+**Auto-migraciones** (en `server.ts:runMigrations()`):
+- Idempotentes (`ALTER TABLE ADD COLUMN IF NOT EXISTS`)
+- Se ejecutan cada vez que inicia el servidor
+- Crean tablas, columnas, tipos enum, índices
+
+**Migraciones manuales** (en `db/migrations/`):
+| Archivo | Propósito |
+|---------|-----------|
+| `003_triggers_and_indexes.sql` | Índices adicionales + triggers |
+| `004_normalize_addresses.sql` | Normalización de direcciones |
+| `005_fix_address_assignments.sql` | Corrección de asignaciones |
+| `006_fulltext_indexes.sql` | Índices de búsqueda全文 |
+
+### Constraints
+
+- `fk_companies_jobs: jobs.company_id → companies.id`
+- `fk_routes_created_by: routes.created_by → users.id`
+- `fk_route_stops_route_id: route_stops.route_id → routes.id ON DELETE CASCADE`
+- `fk_route_stops_company_id: route_stops.company_id → companies.id`
+- `UNIQUE(route_id, order_index)` en route_stops
+- `UNIQUE(region, work_label)` en mdirector_template_map
+- `CHECK (email IS NOT NULL OR domain IS NOT NULL)` en email_suppression
+
+---
+
+## 13. APIs
+
+### Endpoints de Autenticación
+
+| Método | Ruta | Auth | Servicio | Parámetros | Respuesta |
+|--------|------|------|----------|------------|-----------|
+| POST | `/api/auth/login` | Público | Login | `{email, password}` | `{token, user}` |
+| POST | `/api/auth/setup` | Público | Setup | `{email, password, firstName, lastName}` | `{token, user}` |
+| POST | `/api/auth/logout` | Público | — | — | `{success}` |
+| GET | `/api/auth/me` | JWT | GetCurrentUser | — | `{user}` |
+| PATCH | `/api/auth/profile` | JWT | UpdateProfile | `{firstName, lastName}` | `{user}` |
+| PATCH | `/api/auth/password` | JWT | ChangePassword | `{currentPassword, newPassword}` | `{success}` |
+
+### Endpoints de Usuarios
+
+| Método | Ruta | Auth | Parámetros | Respuesta |
+|--------|------|------|------------|-----------|
+| GET | `/api/users` | Admin | — | `[users]` |
+| POST | `/api/users` | Admin | `{email, password, firstName, lastName, role}` | `{user}` |
+| PATCH | `/api/users/:id/role` | Admin | `{role}` | `{user}` |
+| DELETE | `/api/users/:id` | Admin | — | `{success}` |
+
+### Endpoints de Companies
+
+| Método | Ruta | Auth | Parámetros | Respuesta |
+|--------|------|------|------------|-----------|
+| GET | `/api/companies` | JWT | `?includeUnenriched=1` | `[Company]` |
+| GET | `/api/companies/:id` | JWT | — | `Company` |
+| POST | `/api/companies` | Admin/Editor | `{name, legal_name?, website?, industry?}` | `Company` |
+| PATCH | `/api/companies/:id` | Admin/Editor | Campos en allowlist | `{success}` |
+| DELETE | `/api/companies/:id` | Admin | — | `{success}` |
+| POST | `/api/gemini/enrich` | Admin/Editor | `{companyId, companyName}` | `{success, source, data}` |
+| POST | `/api/enrichment/process-next` | JWT | — | `{companyId, data, remaining}` |
+| GET | `/api/enrichment/status` | JWT | — | `{pending, processing, scraped, db_matched}` |
+| POST | `/api/companies/export` | JWT | `{ids?, serviceId?}` | Excel file |
+| PATCH | `/api/companies/:id/tipo` | JWT | `{tipo}` | `{success}` |
+| POST | `/api/companies/:id/send-offer` | Admin/Editor | `{toEmail, employeeTypeId, subject, ...}` | `{success}` |
+| GET | `/api/companies/:id/email-logs` | JWT | — | `[EmailLog]` |
+| POST | `/api/companies/:id/suggest-services` | Admin/Editor | — | `{success, data}` |
+| GET | `/api/companies/:id/suggest-services` | JWT | — | `{success, data, _cached}` |
+
+### Endpoints de Campañas
+
+| Método | Ruta | Auth | Parámetros | Respuesta |
+|--------|------|------|------------|-----------|
+| GET | `/api/campaigns/config` | Admin/Editor | — | Config |
+| PATCH | `/api/campaigns/config` | Admin | Campos de config | `{success}` |
+| GET | `/api/campaigns/preview` | Admin/Editor | — | Preview |
+| POST | `/api/campaigns/send` | Admin | `{contacts}` | Result |
+| GET | `/api/campaigns/history` | Admin/Editor | `?limit=N` | History |
+| GET | `/api/campaigns/sheet-companies` | JWT | — | `{total, companies}` |
+
+### Endpoints de Webhook
+
+| Método | Ruta | Auth | Parámetros | Respuesta |
+|--------|------|------|------------|-----------|
+| POST | `/api/webhook/scraper` | WEBHOOK_SECRET | `{fuente, titulo, empresa, url_postulacion}` | `{success, isNew, province}` |
+| POST | `/api/webhook/enrich` | WEBHOOK_SECRET | `{limit?, delay?, sync?}` | `{success, message, pid}` |
+| GET | `/api/webhook/enrich/status` | JWT | — | `{running, lastRun}` |
+
+### Endpoints de Sincronización
+
+| Método | Ruta | Auth | Parámetros | Respuesta |
+|--------|------|------|------------|-----------|
+| POST | `/api/sync/scraped-jobs` | JWT | — | `{synced, newCompanies, message}` |
+
+### Endpoints de Salud
+
+| Método | Ruta | Auth | Parámetros | Respuesta |
+|--------|------|------|------------|-----------|
+| GET | `/api/health` | Público | — | `{status: 'ok'}` |
+
+---
+
+## 14. Dependencias Externas
+
+| API Externa | Tipo | Propósito | Autenticación | Archivo |
+|------------|------|-----------|---------------|---------|
+| **Google Gemini** | AI | Enriquecimiento primario de empresas | API Key | `server/services/gemini.service.ts` |
+| **Groq** | AI | Enriquecimiento fallback (rápido/barato) | API Key | `server/services/groq.service.ts` |
+| **Ollama** | AI Local | Enriquecimiento offline | URL local | `server/services/ollama.service.ts` |
+| **DuckDuckGo** | Web Search | Enriquecimiento último recurso | Sin auth | `server/services/websearch.service.ts` |
+| **Wikipedia** | Web Search | Enriquecimiento último recurso | Sin auth | `server/services/websearch.service.ts` |
+| **MDirector** | Email Marketing | Campañas de correo | OAuth2 (user/pass) | `server/services/mdirector.service.ts` |
+| **Google Sheets** | Spreadsheets | Exportación de datos | Service Account JWT | `server/services/google-sheets.service.ts` |
+| **Mapbox** | Geocoding | Geocodificación de direcciones | Token | `server/automation/cron-jobs.ts` |
+| **Nominatim (OSM)** | Geocoding | Geocodificación fallback | Sin auth (User-Agent) | `server/automation/cron-jobs.ts` |
+| **PostgreSQL** | Database | Persistencia principal | Connection string | `server/lib/config.ts` |
+| **Optimus_rutas** | Route Optimization | Optimización de rutas | Interno (HTTP) | `Optimus_rutas/` |
+
+### Cómo se conectan
+
+**Google Gemini**: SDK `@google/genai` con API Key
+```typescript
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+```
+
+**Groq**: API REST compatible con OpenAI
+```typescript
+fetch('https://api.groq.com/openai/v1/chat/completions', {
+  headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }
+});
+```
+
+**MDirector**: OAuth2 + REST API
+```typescript
+// Autenticación
+POST https://app.mdirector.com/oauth2/token {username, password, grant_type}
+// Operaciones
+POST https://api.mdirector.com/api_list       (crear listas)
+POST https://api.mdirector.com/api_campaign    (crear campañas)
+POST https://api.mdirector.com/api_subscriber  (suscriptores)
+POST https://api.mdirector.com/api_delivery    (envíos)
+```
+
+**Google Sheets**: Service Account JWT + googleapis SDK
+```typescript
+const auth = new JWT({ email, key, scopes: ['https://www.googleapis.com/auth/spreadsheets'] });
+const sheets = google.sheets({ version: 'v4', auth });
+```
+
+**Mapbox**: REST API con token en querystring
+```typescript
+const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${query}.json?access_token=${MAPBOX_TOKEN}`;
+```
+
+**Optimus_rutas**: HTTP directo (localhost:8000 en Docker)
+```typescript
+const OPTIMUS_URL = process.env.OPTIMUS_URL || 'http://optimus-rutas:8000';
+```
+
+---
+
+## 15. Flujo Completo del Sistema
+
+### Ruta completa de un dato: desde el webhook hasta el frontend
 
 ```mermaid
 flowchart LR
-    A[Scraped Jobs] --> B[syncJobs]
-    B --> C{C empresa existe?}
-    C -->|Sí| D[Link job → company]
-    C -->|No| E[Crear company]
-    E --> D
-    D --> F[enrichAllPending]
-    F --> G[Gemini]
-    G --> H[Groq fallback]
-    H --> I[WebSearch fallback]
-    I --> J[copyToProvinceTables]
-    J --> K[Ontario table]
-    J --> L[Quebec table]
-    K --> M[exportToSheets]
-    L --> M
-    M --> N[(Google Sheets)]
+    A[Scraper Externo] -->|Webhook POST| B(Webhook Route)
+    B --> C{¿Empresa existe?}
+    C -->|No| D[Crear en provincia table]
+    C -->|Sí| E[Usar companyId existente]
+    D --> F[Insertar job]
+    E --> F
+    F --> G[Job Classifier<br/>clasifica en background]
+    G --> H[(PostgreSQL)]
+    
+    H --> I{Cron FastSync<br/>cada 5 min}
+    I -->|jobs sin province_id| J[Vincular a provincia]
+    J --> H
+    
+    H --> K{Cron Enrichment<br/>cada 8s}
+    K --> L[EnrichmentService]
+    L --> M[AI Provider Chain]
+    M --> N[Gemini → Groq → Ollama → WebSearch]
+    N --> O[Actualizar datos empresa]
+    O --> H
+    
+    H --> P{Cron Workflow<br/>08:00 / 20:00}
+    P --> Q[exportToSheets]
+    Q --> R[Google Sheets]
+    
+    H --> S{API Request<br/>Frontend}
+    S -->|GET /api/campaigns/sheet-companies| T[Empresas del Sheet + BD]
+    S -->|GET /api/jobs| U[Lista de vacantes]
+    T --> V[React UI]
+    U --> V
+```
+
+### Ciclo de vida de una empresa
+
+```
+Webhook recibe scraper job
+  → findCompanyInBothTables() busca en ontario/quebec_companies
+  → Si no existe: enrichAndInsertCompany() la crea con enrichment_status='pending'
+  → Se inserta el job vinculado a esa empresa
+  → FastSync cada 5 min: jobs con province_id IS NULL → los vincula
+  → Enrichment cada 8s: toma empresa pending → AI enrichment → datos actualizados
+  → Workflow 08/20 UTC: requeue → sync → enrich → copy → export
+  → Campaign automation: empresa elegible → recibe email marketing
+  → Geocoding: si no tiene lat/lng → se geocodifica
 ```
 
 ---
 
-## 7. Autenticación y Autorización
+## 16. Mapa Completo de Dependencias
 
-### 7.1 Mecanismo
+### Estructura de archivos con dependencias
 
-- **JWT** firmado con `HS256`, secret validado a mínimo 32 caracteres (`server/lib/config.ts:36`)
-- **Expiración:** 8 horas, sincronizada entre JWT y cookie (`server/lib/config.ts:37-38`)
-- **Dual token transport:** Cookie httpOnly (preferente) + Bearer header (fallback) (`server/middleware/auth.middleware.ts:34-39`)
-- **Verificación activa:** Cada request verifica que el usuario siga activo en DB (`auth.middleware.ts:54-66`)
-- **Roles:** `admin`, `editor`, `viewer` (verificado via `requireRole()` middleware)
-- **Rate limiting:** `authLimiter` en login/setup, `setupLimiter` en setup, `enrichLimiter` en enrich, `exportLimiter` en export
+```
+server.ts
+├── server/lib/config.ts          (dotenv, pg.Pool)
+├── server/lib/logger.ts           (pino)
+├── server/middleware/auth.middleware.ts   (jsonwebtoken, pg)
+├── server/middleware/request-id.middleware.ts
+├── server/middleware/audit-log.middleware.ts
+├── server/middleware/request-logger.middleware.ts
+├── server/automation/cron-jobs.ts
+│   ├── server/services/campaign-automation.service.ts
+│   │   ├── server/services/mdirector.service.ts
+│   │   └── server/data/mdirectorSegments.ts
+│   ├── server/services/workflow.service.ts
+│   │   ├── server/services/enrichment.service.ts
+│   │   ├── server/services/job-classifier.service.ts
+│   │   ├── server/utils/slug.ts
+│   │   └── server/utils/region-filter.ts
+│   ├── server/utils/slug.ts
+│   └── server/services/enrichment.service.ts
+│       └── server/services/providers/
+│           ├── ProviderChain.ts
+│           ├── GeminiProvider.ts  → server/services/gemini.service.ts
+│           ├── GroqProvider.ts    → server/services/groq.service.ts
+│           ├── OllamaProvider.ts  → server/services/ollama.service.ts
+│           └── WebSearchProvider.ts → server/services/websearch.service.ts
+│
+├── server/routes/*.routes.ts (15 archivos)
+│   ├── server/middleware/auth.middleware.ts
+│   ├── server/services/*.service.ts
+│   ├── server/lib/config.ts
+│   ├── server/data/serviceTypes.ts
+│   ├── server/utils/region-filter.ts
+│   └── server/utils/*.ts (varios)
+│
+└── server/infrastructure/database/*.ts
+    └── server/domain/*/*.ts (entidades e interfaces)
 
-### 7.2 Seguridad de Contraseñas
+src/ (Frontend)
+├── src/main.tsx → src/App.tsx
+├── src/App.tsx
+│   ├── src/contexts/AuthContext.tsx
+│   ├── src/services/apiClient.ts
+│   ├── src/components/*.tsx (todos los componentes)
+│   ├── src/types.ts
+│   └── server/services/apiClient.ts
+└── src/index.css (Tailwind)
 
-- **Hashing:** bcryptjs con 12 rondas (`server/lib/config.ts:52`)
-- **Política:** Mínimo 8 caracteres, al menos 1 mayúscula, 1 número, 1 símbolo (`server/utils/passwordPolicy.ts`)
-- **Lockout:** 5 intentos fallidos → bloqueo 15 minutos (`server/lib/config.ts:53-54`, implementado en `auth.routes.ts`)
-- **Validación Zod:** Schemas para login, setup, changePassword (`server/lib/validation.ts`)
-
-### 7.3 Duplicación Crítica
-
-Las rutas auth están definidas en dos lugares:
-1. **Inline:** `server.ts:718-902` — setup, login, logout, me, profile, password, users CRUD
-2. **Refactorizado:** `server/routes/auth.routes.ts:119-341` — mismo conjunto + password-policy endpoint
-
-**Riesgo:** `server/routes/auth.routes.ts` no es importado en `server.ts`. Dependiendo de cambios futuros, ambas copias podrían activarse causando conflictos de ruta.
-
----
-
-## 8. Seguridad
-
-### 8.1 Hallazgos
-
-| # | Hallazgo | Severidad | Ubicación | Descripción |
-|---|----------|-----------|-----------|-------------|
-| S1 | Password hardcoded en compose | **CRÍTICA** | `docker-compose.yml:31` | `DATABASE_URL=postgresql+asyncpg://casaos:casaos@postgresql:5432/casaos` — credencial visible |
-| S2 | CSP deshabilitado | **ALTA** | `server.ts` (Helmet config) | `contentSecurityPolicy: false` permite XSS via inline styles |
-| S3 | Tests ignorados por git | **ALTA** | `.gitignore:11` | `*.test.ts` excluye tests del repo — los tests no tienen versionado |
-| S4 | Sin tasa en companies GET | **MEDIA** | `server.ts:908` | `GET /api/companies` (y su equivalente refactorizado) sin rate limiter |
-| S5 | Sin paginación en companies | **MEDIA** | `server.ts:908` | Retorna todas las empresas sin límite — riesgo OOM |
-| S6 | Sin refresh token | **MEDIA** | `server/routes/auth.routes.ts` | JWT 8h sin rotación — ventana larga si es robado |
-| S7 | `.env` en `.gitignore` | **OK** | `.gitignore:7` | `.env` explícitamente ignorado — buena práctica |
-| S8 | Sin CSRF protection | **MEDIA** | `server.ts` | Cookie httpOnly previene XSS theft pero CSRF via cookie es posible |
-| S9 | console.log en server.ts | **BAJA** | `server.ts:89,99` | `console.log` usado en autoexport — expone datos en producción |
-| S10 | Sin límite de tamaño body | **BAJA** | `server.ts` | Express sin `limit` en body parser — DoS potencial |
-| S11 | `secure: false` en dev | **BAJA** | `auth.routes.ts:15` | Cookie sin Secure en desarrollo |
-| S12 | Catch silencioso en agent | **BAJA** | `application-agent.service.ts` | `catch { /* silent */ }` traga errores |
-| S13 | SQL injection mitigado | **OK** | Todos | Queries parametrizados con `$1`, `$2` — buena práctica |
-| S14 | JWT_SECRET validado | **OK** | `server/lib/config.ts:36` | Min 32 caracteres — buena práctica |
-| S15 | Inyección por table name | **BAJA** | `email-campaign.service.ts` | Interpolación `${table}` mitigada por enum controlado |
-
-### 8.2 Helmet Config
-
-Confirmar el estado de CSP en `server.ts`. Buscar `contentSecurityPolicy` para verificar.
-
----
-
-## 9. Manejo de Errores
-
-### 9.1 Backend
-
-| Aspecto | Estado | Detalle |
-|---------|--------|---------|
-| Global unhandledRejection | ✅ Implementado | `server.ts:43-45` — logger.error |
-| Global uncaughtException | ✅ Implementado | `server.ts:46-49` — logger.fatal + exit |
-| Error middleware | ✅ Implementado | `server/middleware/error.middleware.ts` |
-| Formato respuesta inconsistente | ⚠️ Mixto | Algunos endpoints retornan `{ error: string }`, otros `{ success: false, message }` |
-| Catch con `any` | ⚠️ Frecuente | `catch (err: any)` en múltiples servicios |
-| catch silencioso | ⚠️ Presente | `application-agent.service.ts` |
-| Errores de validación Zod | ✅ Implementado | Schemas en `server/lib/validation.ts` |
-
-### 9.2 Frontend
-
-| Aspecto | Estado | Detalle |
-|---------|--------|---------|
-| ErrorBoundary | ✅ Existe | `src/components/ErrorBoundary.tsx` — implementado pero no claro si envuelve toda la app |
-| Toast system | ✅ Existe | `src/components/UI/Toast.tsx` — implementado |
-| Silent catch blocks | ⚠️ Presente | `ApplicationQueue.tsx` — catch vacío |
-| Sin retry en AuthContext | ⚠️ Riesgo | Fallo de sesión recreada silenciosamente |
-
-### 9.3 Microservicio Python
-
-| Aspecto | Estado |
-|---------|--------|
-| Exception handler AppError | ✅ Implementado (`main.py:83-91`) |
-| Exception handler genérico | ✅ Implementado (`main.py:93-103`) |
-| Logging de errores | ✅ Vía `logger.exception()` |
+Optimus_rutas/ (Microservicio Python)
+├── app/main.py → app/routes/* → app/services/* → app/repositories/*
+└── app/utils/database.py → PostgreSQL (asyncpg)
+```
 
 ---
 
-## 10. Logging y Observabilidad
+## 17. Guía para Nuevo Desarrollador
 
-### 10.1 Estado Actual
+### Paso a Paso
 
-| Componente | Herramienta | Estado |
-|------------|-------------|--------|
-| Logger estructurado | Pino | ✅ En uso en `server/lib/logger.ts` |
-| Pretty-print dev | pino-pretty | ✅ Solo en desarrollo |
-| Redact de secrets | Pino redact | ✅ Passwords, tokens redactados |
-| Request ID middleware | Custom UUID | ✅ `server/middleware/request-id.middleware.ts` |
-| Audit log middleware | Custom | ✅ `server/middleware/audit-log.middleware.ts` |
-| Child logger con contexto | `requestLogger()` | ✅ `server/lib/logger.ts:31-33` |
-| `console.log` residual | — | ⚠️ ~15 ocurrencias en server.ts, scripts |
-| Health check | Endpoint GET /api/health | ✅ Implementado |
-| Métricas Prometheus | — | ❌ No implementado |
-| Tracing distribuido | — | ❌ No implementado |
+#### 1. Clonar el proyecto
 
-### 10.2 console.log Residual
+```bash
+git clone <repo-url> cantrack
+cd cantrack
+```
 
-Ocurrencias encontradas en `server.ts`:
-- Línea 89: `console.log('[AutoExport/Excel] ...')`
-- Línea 99: `console.warn('[AutoExport/Sheets] ...')`
+#### 2. Instalar dependencias
 
-Posiblemente más en scripts y servicios.
+```bash
+npm install
+```
 
----
+Esto instala todas las dependencias de `package.json` (producción + desarrollo).
 
-## 11. Testing
+#### 3. Configurar variables de entorno
 
-### 11.1 Tests Existents (16 archivos)
+```bash
+cp .env.example .env
+```
 
-| Archivo | Tipo | Assertions |
-|---------|------|------------|
-| `server/application/auth/Login.test.ts` | Unitario | Mock LoginUseCase |
-| `server/application/auth/Setup.test.ts` | Unitario | Mock SetupUseCase |
-| `server/application/auth/ChangePassword.test.ts` | Unitario | Mock ChangePasswordUseCase |
-| `server/application/auth/ManageUsers.test.ts` | Unitario | Mock ManageUsersUseCase |
-| `server/application/company/CreateCompany.test.ts` | Unitario | Mock CreateCompanyUseCase |
-| `server/application/job/CreateJob.test.ts` | Unitario | Mock CreateJobUseCase |
-| `server/domain/shared/DomainError.test.ts` | Unitario | DomainError |
-| `server/lib/config.test.ts` | Unitario | Env config validation |
-| `server/lib/validation.test.ts` | Unitario | Zod schemas |
-| `server/middleware/auth.middleware.test.ts` | Unitario | JWT + role middleware |
-| `server/routes/auth.routes.test.ts` | Integración | Supertest + testcontainers |
-| `server/routes/campaign.routes.test.ts` | Integración | Supertest + testcontainers |
-| `server/services/campaign-automation.service.test.ts` | Unitario | Servicio mockeado |
-| `server/services/email-campaign.service.test.ts` | Unitario | Servicio mockeado |
-| `server/utils/passwordPolicy.test.ts` | Unitario | Password validation |
-| `server/campaign.data-integrity.test.ts` | Integración | Data integrity |
+Editar `.env` con al menos:
 
-### 11.2 Cobertura por Capa
+```env
+# Mínimo requerido para arrancar
+DATABASE_URL=postgresql://user:password@localhost:5432/cantrack
+JWT_SECRET=<generar con: node -e "console.log(require('crypto').randomBytes(64).toString('hex'))">
 
-| Capa | Tests | Cobertura estimada |
-|------|-------|--------------------|
-| Domain | 1 archivo | ~20% |
-| Application (use cases) | 5 archivos | ~40% |
-| Routes (integración) | 2 archivos | ~15% |
-| Services | 2 archivos | ~15% |
-| Middleware | 1 archivo | ~30% |
-| Lib/Utils | 3 archivos | ~50% |
-| **Frontend React** | **0 archivos** | **0%** |
-| **Python microservice** | **0 archivos** | **0%** |
+# Opcionales pero recomendados
+GEMINI_API_KEY=your-key-here
+GROQ_API_KEY=your-key-here
+```
 
-### 11.3 Problemas
+#### 4. Inicializar base de datos
 
-- `*.test.ts` en `.gitignore:11` — los tests no se commitean al repo
-- Sin tests para frontend (componentes React)
-- Sin tests para Python microservice (aunque existe `pytest.ini`)
-- Sin E2E tests para el agente Playwright
+Opción A — PostgreSQL local:
+```bash
+createdb cantrack
+psql -d cantrack -f db/schema.sql
+psql -d cantrack -f db/seed.sql
+```
 
----
+Opción B — Script Node:
+```bash
+npx tsx scripts/init-db.mjs
+```
 
-## 12. Frontend (React)
+#### 5. Verificar conexión
 
-### 12.1 Estructura
+```bash
+npx tsx scripts/check-db.mjs
+```
 
-- **Entry point:** `src/main.tsx`
-- **Root component:** `src/App.tsx` (365 líneas) — router, context provider, componentes layout
-- **UI Library:** Tailwind CSS v4 + Framer Motion + Lucide React
-- **Routing:** react-router-dom v7 con `BrowserRouter`, `ProtectedRoute`, `MainLayout`
-- **State:** React hooks (useState, useEffect, useCallback) + AuthContext
-- **API Client:** `src/services/apiClient.ts` — fetch wrapper con JWT
+#### 6. Iniciar backend
 
-### 12.2 Componentes Principales
+```bash
+npm run dev
+```
 
-| Componente | Archivo | Líneas | Estado |
-|------------|---------|--------|--------|
-| App (root) | `src/App.tsx` | 365 | Activo |
-| Auth/Login | `src/components/Auth/Login.tsx` | — | Activo |
-| Auth/Setup | `src/components/Auth/Setup.tsx` | — | Activo |
-| CampaignModule | `src/components/Campaigns/CampaignModule.tsx` | — | Activo |
-| CompaniesHub | `src/components/Companies/CompaniesHub.tsx` | — | Activo |
-| CompanyDetail | `src/components/Companies/CompanyDetail.tsx` | — | Activo |
-| CompanyList | `src/components/Companies/CompanyList.tsx` | — | Activo |
-| Dashboard | `src/components/Dashboard/Dashboard.tsx` | — | Activo |
-| JobsView | `src/components/Jobs/JobsView.tsx` | — | Activo |
-| JobTable | `src/components/Jobs/JobTable.tsx` | — | Activo |
-| JobDetail | `src/components/Jobs/JobDetail.tsx` | — | Activo |
-| ApplicationQueue | `src/components/Jobs/ApplicationQueue.tsx` | — | Comentado en App.tsx |
-| RouteManager | `src/components/Routes/RouteManager.tsx` | — | Activo |
-| GeocodingManager | `src/components/Routes/GeocodingManager.tsx` | — | Activo |
-| ErrorBoundary | `src/components/ErrorBoundary.tsx` | — | Activo |
-| Toast | `src/components/UI/Toast.tsx` | — | Activo |
-| Sidebar | `src/components/Layout/Sidebar.tsx` | — | Activo |
-| Topbar | `src/components/Layout/Topbar.tsx` | — | Activo |
+Esto arranca:
+- Express en `http://localhost:3000`
+- Cron jobs en background
+- Vite dev server integrado
 
-### 12.3 Observaciones
+#### 7. Setup inicial
 
-- **ErrorBoundary** existe pero no está claro si envuelve toda la aplicación (verificar en App.tsx línea 24: se importa pero se usa como wrapper alrededor de las rutas)
-- **ApplicationQueue** comentado en `App.tsx:21`
-- **ServicesList** comentado en `App.tsx:18`
-- **0 tests** para cualquier componente React
-- **Tipos TypeScript** definidos en `src/types.ts`
-- **Mock data** en `src/mockData.ts` — sugiere desarrollo temprano con datos falsos
+Abrir `http://localhost:3000/setup` y crear el primer usuario administrador.
 
----
+#### 8. Verificar health
 
-## 13. Microservicio Optimus_rutas
+```bash
+curl http://localhost:3000/api/health
+# → {"status": "ok"}
+```
 
-### 13.1 Stack
+#### 9. Ejecutar tests
 
-- **Framework:** FastAPI
-- **ORM:** SQLAlchemy 2.0 asyncio
-- **Optimizador:** OR-Tools (TSP solver)
-- **Geocoding:** Mapbox API
-- **Base de datos:** PostgreSQL (misma instancia que CanTrack)
-- **Migrations:** Alembic
-- **Testing:** pytest (configurado en `pytest.ini` pero 0 tests implementados)
+```bash
+npm test          # 104 tests
+npm run lint      # 0 errores TypeScript
+```
 
-### 13.2 Servicios
+#### 10. Usar Docker (opcional)
 
-| Servicio | Archivo | Descripción |
-|----------|---------|-------------|
-| Route Optimizer | `app/services/route_optimizer.py` | TSP con OR-Tools, distancia euclidiana o Mapbox |
-| Geocoding | `app/services/geocoding_service.py` | Mapbox con caché en DB |
-| Distance Calculator | `app/services/distance_calculator.py` | Cálculo de distancias entre paradas |
-| Route Service | `app/services/route_service.py` | Orquestación CRUD + optimización |
+```bash
+docker-compose up -d
+```
 
-### 13.3 API
+Esto levanta:
+- CanTrack CRM en `:3000`
+- Optimus_rutas en `:8000`
+- Ollama en `:11434`
 
-| Método | Ruta | Controller |
-|--------|------|------------|
-| GET | `/health` | `health_endpoints.py` |
-| GET | `/health/db` | `health_endpoints.py` |
-| POST | `/geocode` | `geocoding_endpoints.py` |
-| POST | `/routes` | `routes_endpoints.py` |
-| GET | `/routes` | `routes_endpoints.py` |
-| GET | `/routes/{id}` | `routes_endpoints.py` |
-| PATCH | `/routes/{id}` | `routes_endpoints.py` |
-| PATCH | `/routes/{id}/stop` | `routes_endpoints.py` |
-| DELETE | `/routes/{id}` | `routes_endpoints.py` |
+Requiere PostgreSQL externo (CasaOS o configurar local).
 
-### 13.4 Observaciones
+#### 11. Probar scraping
 
-- Excelente arquitectura con FastAPI moderno (async, lifespan, type hints)
-- Alembic configurado para migraciones pero usa `Base.metadata.create_all` en startup
-- 0 tests implementados a pesar de tener `pytest.ini`
-- Frontend HTML estático servido por FastAPI
-- Dependencia de `playwright-extra-plugin-stealth@0.0.1` (no mantenido)
+Simular webhook:
+```bash
+curl -X POST http://localhost:3000/api/webhook/scraper \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: tu-secret" \
+  -d '{
+    "fuente": "linkedin",
+    "titulo": "Software Engineer",
+    "empresa": "Test Corp",
+    "url_postulacion": "https://linkedin.com/jobs/view/123"
+  }'
+```
+
+#### 12. Ver sincronización
+
+```bash
+curl http://localhost:3000/api/sync/scraped-jobs \
+  -H "Authorization: Bearer <token>"
+```
+
+#### 13. Ver enrichment queue
+
+```bash
+curl http://localhost:3000/api/enrichment/status \
+  -H "Authorization: Bearer <token>"
+# → {"pending": 0, "processing": 0, "scraped": 55, "db_matched": 0}
+```
+
+#### 14. Ver logs en tiempo real
+
+```bash
+# El servidor usa pino-pretty en desarrollo — logs coloreados en consola
+# Para Docker:
+docker-compose logs -f app
+```
+
+### Verificación de que todo funciona
+
+- [ ] `npm run lint` → 0 errors
+- [ ] `npm test` → 104 passed
+- [ ] `curl localhost:3000/api/health` → 200 OK
+- [ ] Login en browser → dashboard visible
+- [ ] Webhook → job creado en BD
+- [ ] Sincronización → empresa vinculada
+- [ ] Enrichment → datos enriquecidos
+- [ ] Services listados en frontend
 
 ---
 
-## 14. Infraestructura y Deploy
+## Apéndice A: Comandos Útiles
 
-### 14.1 Docker
+```bash
+# Desarrollo
+npm run dev              # Iniciar servidor
+npm test                 # Tests
+npm run lint             # Type-check
 
-| Servicio | Puerto | Dockerfile | Dependencias |
-|----------|--------|------------|--------------|
-| app (Node) | 3000 | `./Dockerfile` | optimus-rutas |
-| optimus-rutas (Python) | 8000 | `./Optimus_rutas/Dockerfile` | — |
-| ollama | 11434 | `ollama/ollama:latest` | — |
+# BD
+npx tsx scripts/check-db.mjs          # Verificar conexión
+npx tsx scripts/check-status.ts       # Estado del sistema
+npx tsx scripts/enrich-companies.ts   # Enriquecer companies manual
+npx tsx scripts/export-to-excel.ts    # Exportar a Excel
+npx tsx scripts/export-to-sheets.ts   # Exportar a Google Sheets
 
-### 14.2 Redes Docker
+# Docker
+docker-compose up -d     # Iniciar servicios
+docker-compose logs -f   # Ver logs
+docker-compose down      # Detener servicios
 
-- `cantrack-network`: Red interna para los 3 servicios
-- `postgresql_default`: Red externa de CasaOS para PostgreSQL (driver bridge)
-
-### 14.3 Volúmenes
-
-- `ollama-data`: Persistencia de modelos Ollama
-- `optimus-data`: Definido pero no usado explícitamente
-
-### 14.4 Deploy
-
-- **Script:** `scripts/deploy-vps.sh` — manual SCP + bash
-- **CI/CD:** ❌ No implementado
-- **Reverse proxy:** nginx.conf con upstream `app:3000`, WebSocket support para socket.io
-- **SSL:** No configurado en nginx.conf (proxy pasa tráfico HTTP en puerto 80)
-
-### 14.5 Dockerfile Node
-
-- **Builder:** Node 22, npm ci, Chromium deps, Playwright install
-- **Runtime:** Node 22 slim, Chromium deps, usuario no-root `nodejs`
-- **Multi-stage:** Sí, optimizado con COPY selectivo
-- **Start:** `npx tsx server.ts` (sin compilación previa en producción)
-
-### 14.6 Observaciones
-
-- Password PostgreSQL hardcoded en `docker-compose.yml:31`
-- Sin healthcheck en docker-compose
-- Sin limitación de recursos para `app` y `optimus-rutas` (solo `ollama` tiene memory limit)
-- Sin SSL termination configurado
-- Sin CI/CD pipeline
+# SSH Tunnel (para BD remota)
+python tunnel.py         # O: ssh -L 5434:127.0.0.1:5432 root@187.124.237.242 -N
+```
 
 ---
 
-## 15. Dependencias y Riesgos
+## Apéndice B: Posibles Problemas y Soluciones
 
-### 15.1 Dependencias Críticas
-
-| Dependencia | Versión | Propósito | Riesgo |
-|-------------|---------|-----------|--------|
-| `playwright` | ^1.59.1 | Automatización navegador | Actualizaciones frecuentes |
-| `playwright-extra` | ^4.3.6 | Plugin system | Mantenimiento comunitario |
-| `playwright-extra-plugin-stealth` | ^0.0.1 | Evasión detección | **No mantenido** — versión 0.0.1 |
-| `@google/genai` | ^1.29.0 | Gemini API | Estable |
-| `groq-sdk` | (no listado) | — | — |
-| `express` | ^4.21.2 | HTTP framework | Estable, LTS |
-| `react` | ^19.0.0 | UI framework | Estable |
-| `pino` | ^10.3.1 | Logging | Estable |
-| `zod` | ^3.23.8 | Validación | Estable |
-| `helmet` | ^8.1.0 | Seguridad HTTP headers | Estable |
-| `or-tools` | (no especificado) | Optimización rutas | Estable |
-
-### 15.2 Riesgos Identificados
-
-| Riesgo | Impacto | Probabilidad | Mitigación |
-|--------|---------|--------------|------------|
-| playwright-extra-plugin-stealth abandonado | Alto (agente deja de funcionar) | Media | Migrar a Playwright nativo + fingerprint |
-| .env.example desactualizado | Medio (setup incorrecto) | Baja | Sincronizar con .env |
-| OR-Tools breaking changes | Medio | Baja | Pin version en requirements.txt |
-| Gemini API deprecation | Alto | Baja | Mantener fallbacks Groq/Ollama |
-| Chromium system deps en Docker | Medio (build fail) | Baja | Usar `playwright-docker` image |
-
----
-
-## 16. Duplicación y Deuda Técnica
-
-### 16.1 Duplicación de Código
-
-| # | Código Duplicado | Ubicación A | Ubicación B | Líneas |
-|---|-----------------|-------------|-------------|--------|
-| D1 | Rutas auth (setup, login, logout, me, profile, password, users CRUD) | `server.ts:718-902` (inline) | `server/routes/auth.routes.ts:119-341` | ~180 c/u |
-| D2 | `JWT_EXPIRES_IN = '8h'` | `server/lib/config.ts:37` | `server/routes/auth.routes.ts:20` | 1 c/u |
-| D3 | `ACCOUNT_LOCKOUT_THRESHOLD = 5` | `server/lib/config.ts:53` | `server/routes/auth.routes.ts:10` | 1 c/u |
-| D4 | `ACCOUNT_LOCKOUT_MINUTES = 15` | `server/lib/config.ts:54` | `server/routes/auth.routes.ts:11` | 1 c/u |
-| D5 | `COOKIE_OPTS` / cookie config | `server/routes/auth.routes.ts:13-18` | `server.ts` (inline en auth) | ~5 c/u |
-| D6 | Companies routes (CRUD completo) | `server.ts:908-...` (inline) | `server/routes/companies.routes.ts` | ~200+ c/u |
-
-### 16.2 Deuda Técnica
-
-| # | Item | Esfuerzo Est. | Impacto |
-|---|------|---------------|---------|
-| T1 | Refactorizar server.ts en routers | 2-3 días | Alto — elimina duplicación, mejora mantenibilidad |
-| T2 | Reemplazar console.log residual por Pino | 2-4 horas | Medio — logging consistente |
-| T3 | Sincronizar constantes auth | 1 hora | Bajo — prevenir drift |
-| T4 | Agregar tests frontend | 3-5 días | Alto — 0% cobertura actual |
-| T5 | Agregar tests Python | 2-3 días | Alto — 0 tests a pesar de pytest.ini |
-| T6 | Revisar `.gitignore` (sacar *.test.ts) | 5 min | Crítico — tests no versionados |
-| T7 | Mover password de docker-compose a secrets | 1 hora | Crítico — seguridad |
-| T8 | Agregar paginación a GET /api/companies | 4-6 horas | Medio — prevenir OOM |
-
----
-
-## 17. Internacionalización
-
-### 17.1 Idioma del Código
-
-- **Código backend:** Español e inglés mixto
-- **Nombres de variables:** Mayormente español (tipo, trabajo, empresa, etc.)
-- **Mensajes de error al usuario:** Español (`Error interno del servidor`, `Autenticación requerida`)
-- **Comentarios:** Mixto (inglés técnico, español funcional)
-- **Nombres de archivos:** Inglés
-- **Nombres de tablas DB:** Inglés (companies, jobs, candidates, applications)
-- **Nombres de columnas DB:** Mixto (ontario_companies tiene `nombre`, `telefono`, `tipo`, `correo`, `direccion`, `pueblo` en español)
-
-### 17.2 Evaluación
-
-- No hay framework de i18n (react-intl, i18next, etc.)
-- Strings hardcodeados en español en componentes React
-- Apropiado para mercado colombiano actual, pero limitante si se expande a otros países
-
----
-
-## 18. Rendimiento y Escalabilidad
-
-### 18.1 Cuellos de Botella Identificados
-
-| # | Problema | Ubicación | Impacto |
-|---|----------|-----------|---------|
-| P1 | `GET /api/companies` sin paginación | `server.ts:908` | Riesgo OOM con +1000 empresas |
-| P2 | N+1 queries en loops | `enrichment.service.ts`, `workflow.service.ts` | Lento al procesar batches grandes |
-| P3 | Pool PostgreSQL fijo en 10 conexiones | `server/lib/config.ts:45` | Limitante bajo concurrencia alta |
-| P4 | Debounce de export en memoria | `server.ts:70-76` | Pérdida de datos si el server crashea |
-| P5 | Sin caché HTTP (ETag, Cache-Control) | `server.ts` | Respuestas no cacheadas |
-| P6 | `lazy="selectin"` en SQLAlchemy | `Optimus_rutas/app/models/db.py:94` | Podría causar N+1 en joins complejos |
-| P7 | Sin índices en algunas FK | Schema completo | Performance degradado en joins |
-
-### 18.2 Escalabilidad
-
-- **Horizontal:** Stateless (JWT), escalable con múltiples instancias
-- **Vertical:** Pool DB configurable, queries parametrizados
-- **Frontend:** Vite bundle optimizado, lazy loading no implementado
-- **Base de datos:** Schema normalizado 3NF, índices en columnas de búsqueda frecuente
-
----
-
-## 19. Recomendaciones Priorizadas
-
-### Prioridad Crítica (Esta Semana)
-
-| # | Acción | Área | Archivos | Esfuerzo |
-|---|--------|------|----------|----------|
-| CR1 | Sacar `*.test.ts` de `.gitignore` y commitear tests | Testing | `.gitignore` | 5 min |
-| CR2 | Mover password PostgreSQL a Docker secrets | Seguridad | `docker-compose.yml` | 1 hora |
-| CR3 | Reemplazar console.log residual por Pino | Logging | `server.ts`, scripts | 2-4 horas |
-| CR4 | Agregar paginación a GET /api/companies | Performance | `server/routes/companies.routes.ts` | 4-6 horas |
-
-### Prioridad Alta (2 Semanas)
-
-| # | Acción | Área | Esfuerzo |
-|---|--------|------|----------|
-| A1 | Refactorizar server.ts: extraer auth/companies routes a router files | Arquitectura | 2-3 días |
-| A2 | Eliminar constantes duplicadas (JWT_EXPIRES_IN, ACCOUNT_LOCKOUT) | Calidad | 1 hora |
-| A3 | Sincronizar rutas inline vs refactorizadas — decidir cuál eliminar | Arquitectura | 1 día |
-| A4 | Agregar tests para componentes React (Vitest + Testing Library) | Testing | 3-5 días |
-| A5 | Agregar tests para Optimus_rutas (pytest) | Testing | 2-3 días |
-| A6 | Re-habilitar CSP o migrar a Tailwind CSP-compatible | Seguridad | 4-8 horas |
-
-### Prioridad Media (1 Mes)
-
-| # | Acción | Área | Esfuerzo |
-|---|--------|------|----------|
-| M1 | Agregar refresh token rotation | Auth | 1-2 días |
-| M2 | Agregar CSRF protection (double-submit cookie) | Seguridad | 4-6 horas |
-| M3 | Agregar rate limiting a GET /api/companies | Seguridad | 2-3 horas |
-| M4 | Implementar lazy loading en rutas React | Frontend | 1-2 días |
-| M5 | Agregar healthcheck en docker-compose | Infra | 1 hora |
-| M6 | Agregar Prometheus metrics endpoint | Observabilidad | 1-2 días |
-
-### Prioridad Baja (Próximo Trimestre)
-
-| # | Acción | Área | Esfuerzo |
-|---|--------|------|----------|
-| L1 | Migrar playwright-extra-plugin-stealth a alternativa mantenida | Automation | 2-3 días |
-| L2 | Agregar CI/CD (GitHub Actions) | DevOps | 1-2 días |
-| L3 | Agregar SSL termination (Let's Encrypt + nginx) | Seguridad | 4-6 horas |
-| L4 | Agregar i18n framework | Frontend | 3-5 días |
-| L5 | Implementar tests E2E con Playwright Test Runner | Testing | 3-5 días |
-
----
-
-## 20. Confianza y Precisión
-
-### 20.1 Metodología
-
-Esta auditoría se realizó mediante análisis estático del código fuente en `/var/www/cantrack`. Todos los hallazgos están referenciados a archivos y líneas específicas. No se ejecutó la aplicación ni se realizaron pruebas dinámicas.
-
-### 20.2 Índice de Confianza por Sección
-
-| Sección | Confianza | Base |
-|---------|-----------|------|
-| 1. Resumen Ejecutivo | **Alta** | Síntesis de hallazgos directos |
-| 2. Stack Tecnológico | **Alta** | Extraído de package.json, Dockerfiles |
-| 3. Estructura del Proyecto | **Alta** | Tree real del filesystem |
-| 4. Modelo de Datos | **Alta** | Extraído de db/schema.sql y models/db.py |
-| 5. API Endpoints | **Alta** | Grep directo sobre server.ts y routes/ |
-| 6. Arquitectura | **Alta** | Análisis de imports y flujo de llamadas |
-| 7. Autenticación | **Alta** | Lectura directa de auth.middleware.ts y auth.routes.ts |
-| 8. Seguridad | **Alta** | Hallazgos directos verificables |
-| 9. Manejo de Errores | **Media** | Algunos catch blocks requieren ejecución para verificar |
-| 10. Logging | **Alta** | Lectura directa de logger.ts y server.ts |
-| 11. Testing | **Alta** | Conteo directo de archivos *.test.ts |
-| 12. Frontend | **Alta** | Lectura de App.tsx y estructura de componentes |
-| 13. Optimus_rutas | **Alta** | Lectura directa de archivos Python |
-| 14. Infraestructura | **Alta** | Lectura de docker-compose.yml, Dockerfile, nginx.conf |
-| 15. Dependencias | **Alta** | Extraído de package.json y requirements.txt |
-| 16. Duplicación | **Alta** | Comparación directa de archivos |
-| 17. Internacionalización | **Media** | Requeriría revisión completa de strings |
-| 18. Rendimiento | **Media** | Inferido de patrones de código, no medido |
-| 19. Recomendaciones | **Alta** | Basado en hallazgos confirmados |
-| 20. Esta sección | **Alta** | Metodología documentada |
-
-### 20.3 Limitaciones
-
-- No se realizaron pruebas de penetración
-- No se ejecutaron tests para verificar cobertura real
-- No se analizaron dependencias transitivas (npm audit)
-- No se verificó la configuración de producción real vs. docker-compose
-- Algunos hallazgos de rendimiento son inferencias no medidas
-- El estado de CSP deshabilitado es inferido (buscar `contentSecurityPolicy: false` en server.ts)
-
----
-
-*Documento generado el 2026-06-16. Todos los hallazgos deben verificarse manualmente antes de actuar sobre ellos.*
+| Problema | Causa | Solución |
+|----------|-------|----------|
+| Server no arranca | `JWT_SECRET` no configurado | Generar con crypto.randomBytes(64).toString('hex') |
+| BD connection failed | `DATABASE_URL` incorrecta o PostgreSQL no disponible | Verificar credenciales, crear BD |
+| CORS errors | `ALLOWED_ORIGINS` no incluye el origen del frontend | Agregar URL al .env |
+| AI enrichment no funciona | API keys no configuradas o cuota agotada | Verificar GEMINI_API_KEY / GROQ_API_KEY |
+| MDirector campaigns fallan | Credenciales incorrectas | Verificar MDIRECTOR_USERNAME/PASSWORD |
+| Geocoding no avanza | MAPBOX_TOKEN no configurado | Usa Nominatim (1 req/s) — más lento |
+| TypeScript errors | Import sin extensión `.js` | Agregar `.js` a imports locales (ESM requirement) |
+| Tests fallan | DATABASE_URL no configurada para tests de integración | Configurar BD de test |
+| Docker no conecta a BD | Red `postgresql_default` no existe | Crear red externa o cambiar configuración |

@@ -1,172 +1,130 @@
-import { Router, Response, Request } from 'express';
+import { Router, Response } from 'express';
 import type { Pool } from 'pg';
+import { createRequireAuth, requireRole, AuthRequest } from '../middleware/auth.middleware.js';
+import { JobClassifierService } from '../services/job-classifier.service.js';
+import { REGION_FILTER, isRegionFilterActive, isRegionMatch } from '../utils/region-filter.js';
+import { spawn } from 'child_process';
+import { findCompanyInBothTables, enrichAndInsertCompany } from '../utils/province-helpers.js';
 
-const VALID_SOURCES = new Set(['linkedin', 'indeed', 'glassdoor', 'company_website', 'other']);
-
-function normalizeText(value: unknown): string {
-  return String(value ?? '').trim().replace(/\s+/g, ' ');
-}
-
-function normalizeOptional(value: unknown): string | null {
-  const normalized = normalizeText(value);
-  return normalized || null;
-}
-
-function normalizeCompanyName(value: unknown): string {
-  return normalizeText(value).toLowerCase();
-}
-
-async function insertImportedCompany(pool: Pool, tableName: 'ontario_companies' | 'quebec_companies', body: Record<string, unknown>) {
-  const { nombre, telefono, tipo, correo, direccion, provincia, region, ciudad, pueblo, work, descripcion, dominio_de_pagina, lista_de_llamadas } = body;
-  const nombreLimpio = normalizeOptional(nombre);
-  if (!nombreLimpio) {
-    return { status: 400, payload: { error: 'Campo requerido: nombre.' } };
-  }
-
-  const duplicateCheck = await pool.query(
-    `SELECT id, nombre FROM ${tableName}
-     WHERE LOWER(REGEXP_REPLACE(TRIM(nombre), '\\s+', ' ', 'g')) = $1
-       AND is_duplicate = FALSE
-     LIMIT 1`,
-    [normalizeCompanyName(nombreLimpio)]
-  );
-
-  if (duplicateCheck.rows.length > 0) {
-    return {
-      status: 409,
-      payload: {
-        success: false,
-        message: 'Empresa ya existe',
-        duplicate: true,
-        existing_id: duplicateCheck.rows[0].id,
-        existing_name: duplicateCheck.rows[0].nombre,
-      },
-      duplicateName: nombreLimpio,
-    };
-  }
-
-  const result = await pool.query(
-    `INSERT INTO ${tableName}
-     (nombre, telefono, tipo, correo, direccion, provincia, region, ciudad, pueblo, work, descripcion, dominio_de_pagina, lista_de_llamadas, status)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending')
-     RETURNING id`,
-    [
-      nombreLimpio,
-      normalizeOptional(telefono),
-      normalizeOptional(tipo),
-      normalizeOptional(correo),
-      normalizeOptional(direccion),
-      normalizeOptional(provincia),
-      normalizeOptional(region),
-      normalizeOptional(ciudad),
-      normalizeOptional(pueblo),
-      normalizeOptional(work),
-      normalizeOptional(descripcion),
-      normalizeOptional(dominio_de_pagina),
-      normalizeOptional(lista_de_llamadas),
-    ]
-  );
-
-  return {
-    status: 201,
-    payload: {
-      success: true,
-      company_id: result.rows[0].id,
-      message: 'Empresa insertada correctamente',
-    },
-    insertedName: nombreLimpio,
-    insertedId: result.rows[0].id,
-  };
-}
+// ── Module-level state for enrichment batch ────────────────────────────────
+let enrichRunning = false;
+let enrichLastRun: { startedAt: string; finishedAt?: string; exitCode?: number | null; pid?: number } | null = null;
 
 export function createWebhookRouter(pool: Pool) {
   const router = Router();
 
-  // POST /api/webhook/scraper — called by external scrapers, authenticated by secret header
-  router.post('/scraper', async (req: Request, res: Response) => {
+  router.post('/scraper', async (req: AuthRequest, res: Response) => {
     const secret = req.headers['x-webhook-secret'];
     if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET)
-      return res.status(401).json({ error: 'Webhook secret inválido.' });
+      return res.status(401).json({ error: 'Invalid webhook secret.' });
 
-    const { fuente, titulo, empresa, url_postulacion } = req.body;
+    const { fuente, titulo, empresa, url_postulacion, location, country } = req.body;
     if (!empresa || !titulo || !url_postulacion)
-      return res.status(400).json({ error: 'Campos requeridos: empresa, titulo, url_postulacion.' });
+      return res.status(400).json({ error: 'Required fields: empresa, titulo, url_postulacion.' });
+
+    if (isRegionFilterActive() && !isRegionMatch(location, country, titulo, empresa, url_postulacion)) {
+      return res.json({ success: true, skipped: true, reason: `Outside region ${REGION_FILTER}` });
+    }
 
     try {
-      const sourceCandidate = normalizeText(fuente).toLowerCase();
-      const source = VALID_SOURCES.has(sourceCandidate) ? sourceCandidate : 'other';
-      const applicationUrl = normalizeText(url_postulacion);
-      
-      // ── Verificar duplicados por URL ──────────────────────────────────────
-      const duplicateCheck = await pool.query(
-        `SELECT id FROM jobs WHERE url = $1 LIMIT 1`,
-        [applicationUrl]
-      );
-      
-      if (duplicateCheck.rows.length > 0) {
-        console.log(`[Webhook/Scraper] Duplicado por URL: ${applicationUrl}`);
-        return res.status(409).json({
-          success: false,
-          message: 'URL ya existe',
-          duplicate: true,
-          existing_id: duplicateCheck.rows[0].id,
-        });
+      const validSources = new Set(['linkedin', 'indeed', 'glassdoor', 'company_website']);
+      const source = validSources.has((fuente || '').toLowerCase()) ? fuente.toLowerCase() : 'other';
+
+      const existing = await findCompanyInBothTables(pool, empresa);
+      let companyId: string;
+      let province: string;
+      let isNew = false;
+
+      if (existing) {
+        companyId = existing.id;
+        province = existing.src;
+        console.log(`[Webhook] Existing company: ${empresa} -> ${existing.table}`);
+      } else {
+        isNew = true;
+        const created = await enrichAndInsertCompany(pool, empresa);
+        companyId = created.id;
+        province = created.src;
       }
 
-      // ── Insertar en jobs con raw_company_name ────────────────────────────
-      const result = await pool.query(
-        `INSERT INTO jobs (raw_company_name, title, source, url)
-         VALUES ($1, $2, $3::job_source_enum, $4)
+      const insertResult = await pool.query(
+        `INSERT INTO jobs (raw_company_name, title, source, url, province_id, province_source)
+         VALUES ($1, $2, $3::job_source_enum, $4, $5, $6)
+         ON CONFLICT (LOWER(TRIM(COALESCE(raw_company_name,''))), LOWER(TRIM(COALESCE(title,''))))
+           WHERE is_active = true
+           DO UPDATE SET url = EXCLUDED.url, province_id = COALESCE(EXCLUDED.province_id, jobs.province_id), updated_at = NOW()
          RETURNING id`,
-        [normalizeText(empresa), normalizeText(titulo), source, applicationUrl]
+        [empresa, titulo, source, url_postulacion, companyId, province]
       );
 
-      // ── Log ──────────────────────────────────────────────────────────────
-      console.log(`[Webhook/Scraper] Job insertado: ${result.rows[0].id} (${empresa} - ${titulo})`);
-      
-      return res.json({ 
-        success: true, 
-        job_id: result.rows[0].id,
-        message: 'Job insertado correctamente' 
-      });
+      if (insertResult.rowCount && insertResult.rowCount > 0) {
+        const newJobId = insertResult.rows[0].id;
+        JobClassifierService.classifyJob(titulo, '', empresa, '')
+          .then(result => pool.query(
+            `UPDATE jobs SET service_type_id=$1, service_match_confidence=$2, service_match_reasoning=$3, service_match_provider=$4 WHERE id=$5`,
+            [result.service_id, result.confidence, result.reasoning, result._provider, newJobId]
+          ))
+          .catch(err => console.warn('[Webhook Classify]', err.message));
+      }
+
+      return res.json({ success: true, isNew, province, companyId });
     } catch (error) {
       console.error('[Webhook Error]:', error);
-      return res.status(500).json({ error: 'Error interno del servidor.' });
+      return res.status(500).json({ error: 'Internal server error.' });
     }
   });
 
-  // POST /api/webhook/ontario — Recibir datos de Ontario Companies post-scrape
-  router.post('/ontario', async (req: Request, res: Response) => {
+  router.post('/enrich', async (req: AuthRequest, res: Response) => {
     const secret = req.headers['x-webhook-secret'];
     if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET)
-      return res.status(401).json({ error: 'Webhook secret inválido.' });
+      return res.status(401).json({ error: 'Webhook secret invalido.' });
 
-    try {
-      const result = await insertImportedCompany(pool, 'ontario_companies', req.body);
-      if ('duplicateName' in result) console.log(`[Webhook/Ontario] Duplicado por nombre: ${result.duplicateName}`);
-      if ('insertedName' in result) console.log(`[Webhook/Ontario] Empresa insertada: ${result.insertedId} (${result.insertedName})`);
-      return res.status(result.status).json(result.payload);
-    } catch (error) {
-      console.error('[Webhook/Ontario Error]:', error);
-      return res.status(500).json({ error: 'Error interno del servidor.' });
+    if (enrichRunning) {
+      return res.status(409).json({
+        error: 'Ya hay un batch de enriquecimiento en curso.',
+        lastRun: enrichLastRun,
+      });
     }
+
+    const limit = Math.max(1, Math.min(200, parseInt(req.body?.limit, 10) || 20));
+    const delay = Math.max(200, Math.min(10_000, parseInt(req.body?.delay, 10) || 1200));
+    const runSync = req.body?.sync === true || req.body?.sync === 'true';
+
+    const scriptArgs = ['tsx', 'scripts/enrich-companies.ts', '--limit', String(limit), '--delay', String(delay)];
+    const child = spawn(process.platform === 'win32' ? 'npx.cmd' : 'npx', scriptArgs, {
+      cwd: process.cwd(),
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      detached: false,
+    });
+
+    enrichRunning = true;
+    enrichLastRun = { startedAt: new Date().toISOString(), pid: child.pid };
+
+    child.stdout?.on('data', d => process.stdout.write(`[Enrich] ${d}`));
+    child.stderr?.on('data', d => process.stderr.write(`[Enrich err] ${d}`));
+    child.on('close', code => {
+      enrichRunning = false;
+      enrichLastRun = { ...enrichLastRun!, finishedAt: new Date().toISOString(), exitCode: code };
+      console.log(`[Webhook Enrich] termino con codigo ${code}`);
+    });
+
+    if (runSync) {
+      pool.query(`
+        SELECT COUNT(*)::int AS n FROM jobs WHERE company_id IS NULL AND raw_company_name IS NOT NULL
+      `).then(r => console.log(`[Webhook Enrich] jobs pendientes de sync: ${r.rows[0].n}`))
+        .catch(() => {});
+    }
+
+    return res.json({
+      success: true,
+      message: `Batch de enriquecimiento lanzado (limit=${limit}, delay=${delay}ms).`,
+      pid: child.pid,
+      startedAt: enrichLastRun.startedAt,
+    });
   });
 
-  // POST /api/webhook/quebec — Recibir datos de Quebec Companies post-scrape
-  router.post('/quebec', async (req: Request, res: Response) => {
-    const secret = req.headers['x-webhook-secret'];
-    if (!process.env.WEBHOOK_SECRET || secret !== process.env.WEBHOOK_SECRET)
-      return res.status(401).json({ error: 'Webhook secret inválido.' });
-
-    try {
-      const result = await insertImportedCompany(pool, 'quebec_companies', req.body);
-      if ('duplicateName' in result) console.log(`[Webhook/Quebec] Duplicado por nombre: ${result.duplicateName}`);
-      if ('insertedName' in result) console.log(`[Webhook/Quebec] Empresa insertada: ${result.insertedId} (${result.insertedName})`);
-      return res.status(result.status).json(result.payload);
-    } catch (error) {
-      console.error('[Webhook/Quebec Error]:', error);
-      return res.status(500).json({ error: 'Error interno del servidor.' });
-    }
+  router.get('/enrich/status', createRequireAuth(pool), async (_req: AuthRequest, res: Response) => {
+    res.json({ running: enrichRunning, lastRun: enrichLastRun });
   });
 
   return router;
